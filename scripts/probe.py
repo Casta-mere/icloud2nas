@@ -68,14 +68,20 @@ def run_worker(
         )
         assert proc.stdout is not None and proc.stdin is not None
         for line in proc.stdout:
-            event = json.loads(line)
+            try:
+                event = json.loads(line)
+                ev = str(event["ev"])
+            except (ValueError, KeyError, TypeError):
+                print(f"  [raw] {line.rstrip()}")  # not an event: stray output from the worker
+                continue
             events.append(event)
-            detail = {k: v for k, v in event.items() if k not in ("ev", "ts")}
-            print(f"  [{event['ev']}] {json.dumps(detail, ensure_ascii=False)}")
-            if event["ev"] == "need_mfa":
+            fields = {k: v for k, v in event.items() if k not in ("ev", "ts")}
+            print(f"  [{ev}] {json.dumps(fields, ensure_ascii=False)}")
+            if ev == "need_mfa":
                 code = input("  Apple sent a 2FA code to your trusted devices. Enter it: ").strip()
                 proc.stdin.write(json.dumps({"code": code}) + "\n")
                 proc.stdin.flush()
+        proc.stdin.close()
         rc = proc.wait()
     return rc, events
 
@@ -134,11 +140,13 @@ def main(argv: list[str]) -> int:
         args.apple_id, args.region, workdir, mode_extras={"recent": args.recent}
     ) | {"I2N_PASSWORD": env["I2N_PASSWORD"]}
     rc, _ = run_worker("sync", sync_env, log_path=log)
+    report["sync_exit"] = rc
     print(f"  exit {rc}; filenames icloudpd would write are in {log} (grep 'DRY RUN')")
 
     print("4/4 dry-run full listing (reconcile) — timing it")
     started = time.monotonic()
     rc, events = run_worker("reconcile", env, log_path=log)
+    report["reconcile_exit"] = rc
     plan = next((e for e in events if e["ev"] == "reconcile_plan"), None)
     report["listing_seconds"] = round(time.monotonic() - started, 1)
     report["remote_total"] = plan["remote_total"] if plan else None
@@ -147,6 +155,10 @@ def main(argv: list[str]) -> int:
     out = workdir / f"report-{args.apple_id}.json"
     out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"report written to {out}")
+    failed = [k for k in ("sync_exit", "reconcile_exit") if report.get(k) != 0]
+    if failed:
+        print(f"probe FAILED: {', '.join(failed)} non-zero; see {log}")
+        return 1
     return 0
 
 
