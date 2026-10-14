@@ -85,6 +85,15 @@ def test_folder_structure_none_flattens(photos_tree: tuple[Path, Path]) -> None:
     assert paths == {os.path.join(str(lib), f"x_{id7('F1')}.HEIC")}
 
 
+def test_month_boundary_uses_local_zone(photos_tree: tuple[Path, Path]) -> None:
+    _, lib = photos_tree
+    # 2024-05-01 03:00 in Shanghai is 2024-04-30 19:00 UTC; the folder must follow the local zone
+    taken_utc = datetime(2024, 4, 30, 19, 0, tzinfo=ZoneInfo("UTC"))
+    asset = make_asset("MB1", "IMG_1.HEIC", taken_utc)
+    paths = expected_paths(asset, str(lib), FilePolicy())
+    assert paths == {os.path.join(str(lib), "2024", "05", f"IMG_1_{id7('MB1')}.HEIC")}
+
+
 def test_filename_builder_matches_icloudpd_policy(photos_tree: tuple[Path, Path]) -> None:
     asset = make_asset("Q9", "IMG_9.JPG", TAKEN, item_type=HEIC)
     assert filename_builder(FilePolicy())(asset) == f"IMG_9_{id7('Q9')}.JPG"

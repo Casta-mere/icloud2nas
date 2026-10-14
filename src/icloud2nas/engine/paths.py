@@ -21,6 +21,7 @@ from pyicloud_ipd.raw_policy import RawTreatmentPolicy
 from pyicloud_ipd.services.photos import PhotoAsset
 from pyicloud_ipd.utils import disambiguate_filenames
 from pyicloud_ipd.version_size import AssetVersionSize, LivePhotoVersionSize
+from tzlocal import get_localzone
 
 from icloud2nas.engine.job import FilePolicy
 
@@ -48,7 +49,11 @@ def date_dir(asset: PhotoAsset, library_dir: str, folder_structure: str) -> str:
     if folder_structure.lower() == "none":
         return os.path.normpath(library_dir)
     try:
-        rel = folder_structure.format(asset.created)
+        created = asset.created.astimezone(get_localzone())
+    except (ValueError, OSError):  # icloudpd keeps the raw value for unrepresentable dates
+        created = asset.created
+    try:
+        rel = folder_structure.format(created)
     except ValueError:  # icloudpd falls back to the epoch for unrepresentable dates
         rel = folder_structure.format(datetime.datetime.fromtimestamp(0))
     return os.path.normpath(os.path.join(library_dir, rel))
