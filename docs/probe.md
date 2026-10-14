@@ -16,7 +16,8 @@ What it verifies (spec §14):
 2. Both accounts list the same zone name for their shared library (dedupe assumption).
 3. Dry-run download of the 20 most recent assets: check the `[DRY RUN]` lines in the log for
    the `YYYY/MM/NAME_<7 chars>.EXT` layout.
-4. Full listing time and asset count per account (reconcile cost).
+4. A dry-run sync of the first shared library zone, proving the shared zone accepts both the asset listing and the Recently Deleted query.
+5. Full listing time and asset count per account (reconcile cost).
 
 Everything runs with `dry_run=true`; nothing is downloaded or moved. Cookies land in
 `.probe/cookies/<apple-id>/` — delete that folder afterwards if the machine is shared.

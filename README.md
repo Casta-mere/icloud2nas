@@ -40,3 +40,4 @@ See `docs/probe.md` for the real-account probe.
 Events arrive on stdout as JSON lines; icloudpd's log goes to stderr. Exit codes:
 0 ok · 1 failed · 3 needs 2FA (non-interactive) · 4 password rejected · 5 Apple unavailable ·
 6 reconcile fused (plan written, nothing deleted — re-run with `--apply-plan FILE` to execute).
+The full orchestrator contract is in [docs/worker-protocol.md](docs/worker-protocol.md).
