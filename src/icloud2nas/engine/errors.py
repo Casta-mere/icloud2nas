@@ -44,7 +44,7 @@ def classify(exc: BaseException) -> tuple[ExitCode, str]:
     if isinstance(exc, PyiCloudServiceNotActivatedException):
         return ExitCode.FAILED, "not_activated"
     if isinstance(exc, PyiCloudAPIResponseException):
-        if exc.code == "429" or "429" in (exc.reason or ""):
+        if exc.code in ("429", "ACCESS_DENIED") or "429" in (exc.reason or ""):
             return ExitCode.UNAVAILABLE, "ratelimit"
         return ExitCode.FAILED, "api"
     return ExitCode.FAILED, "unknown"

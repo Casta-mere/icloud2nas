@@ -91,7 +91,10 @@ def check_touchpoints() -> None:
         actual = list(inspect.signature(fn).parameters)
         if actual != names:
             raise RuntimeError(f"{fn.__name__} signature changed: {actual}")
-    for attr in ("replace_status", "set_payload", "set_error", "get_progress", "set_current_user"):
+    for attr in (
+        "replace_status", "set_payload", "set_error", "get_progress", "set_current_user",
+        "set_global_config", "set_user_configs", "get_current_user",
+    ):
         if not callable(getattr(StatusExchange, attr, None)):
             raise RuntimeError(f"StatusExchange.{attr} missing")
     for attr in ("all", "recently_deleted"):
@@ -182,6 +185,7 @@ def authenticate(
 ) -> PyiCloudService:
     """Log in: saved session first, password + 2FA if needed. pyicloud exceptions propagate."""
     providers = {p.value: fns for p, fns in build_password_providers(password).items()}
+    os.makedirs(spec.cookie_dir, exist_ok=True)  # pyicloud_ipd only mkdir()s the last level
     return authenticator(
         logger,
         spec.region,

@@ -14,6 +14,11 @@ from icloud2nas.engine.reconcile import (
 )
 
 
+def test_empty_remote_listing_fuses() -> None:
+    assert compute_plan(set(), {"/l/a.HEIC", "/l/b.HEIC"}, "/l", remote_total=0).fused is True
+    assert compute_plan(set(), set(), "/l", remote_total=0).fused is False
+
+
 @pytest.mark.parametrize(
     ("extraneous", "local_total", "fused"),
     [

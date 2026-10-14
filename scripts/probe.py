@@ -6,8 +6,9 @@
 /probe/report-a.json /probe/report-b.json
 
 Steps per account: interactive login (asks for the 2FA code), list libraries, dry-run download
-of the N most recent assets, dry-run full listing via reconcile (times it). Nothing is deleted:
-every mode runs with dry_run=true and the download goes to <workdir>/photos/<local-part>.
+of the N most recent assets, dry-run sync of the first shared zone (if any), dry-run full
+listing via reconcile (times it). Nothing is deleted: every mode runs with dry_run=true and the
+download goes to <workdir>/photos/<local-part>.
 """
 
 from __future__ import annotations
@@ -121,13 +122,13 @@ def main(argv: list[str]) -> int:
     log = workdir / "logs" / f"{args.apple_id}.log"
     report: dict[str, Any] = {"apple_id": args.apple_id, "region": args.region}
 
-    print("1/4 login")
+    print("1/5 login")
     rc, _ = run_worker("auth", env, log_path=log)
     if rc != 0:
         print(f"login failed with exit code {rc}; see {log}")
         return rc
 
-    print("2/4 list libraries")
+    print("2/5 list libraries")
     rc, events = run_worker("list", env, log_path=log)
     libs = next((e for e in events if e["ev"] == "libraries"), None)
     if rc != 0 or libs is None:
@@ -135,7 +136,7 @@ def main(argv: list[str]) -> int:
         return rc or 1
     report["personal"], report["shared"] = libs["personal"], libs["shared"]
 
-    print(f"3/4 dry-run download of the {args.recent} most recent assets")
+    print(f"3/5 dry-run download of the {args.recent} most recent assets")
     sync_env = build_env(
         args.apple_id, args.region, workdir, mode_extras={"recent": args.recent}
     ) | {"I2N_PASSWORD": env["I2N_PASSWORD"]}
@@ -143,7 +144,27 @@ def main(argv: list[str]) -> int:
     report["sync_exit"] = rc
     print(f"  exit {rc}; filenames icloudpd would write are in {log} (grep 'DRY RUN')")
 
-    print("4/4 dry-run full listing (reconcile) — timing it")
+    if report["shared"]:
+        zone = report["shared"][0]
+        print(f"4/5 dry-run download from shared zone {zone} (also queries Recently Deleted)")
+        shared_env = build_env(
+            args.apple_id,
+            args.region,
+            workdir,
+            mode_extras={
+                "recent": args.recent,
+                "library_zone": zone,
+                "target_dir": str(workdir / "photos" / "shared" / zone),
+            },
+        ) | {"I2N_PASSWORD": env["I2N_PASSWORD"]}
+        rc, _ = run_worker("sync", shared_env, log_path=log)
+        report["shared_sync_exit"] = rc
+        report["shared_zone_probed"] = zone
+        print(f"  exit {rc}")
+    else:
+        print("4/5 no shared library on this account; skipping the shared-zone probe")
+
+    print("5/5 dry-run full listing (reconcile) — timing it")
     started = time.monotonic()
     rc, events = run_worker("reconcile", env, log_path=log)
     report["reconcile_exit"] = rc
@@ -155,7 +176,8 @@ def main(argv: list[str]) -> int:
     out = workdir / f"report-{args.apple_id}.json"
     out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"report written to {out}")
-    failed = [k for k in ("sync_exit", "reconcile_exit") if report.get(k) != 0]
+    steps = ("sync_exit", "shared_sync_exit", "reconcile_exit")
+    failed = [k for k in steps if k in report and report[k] != 0]
     if failed:
         print(f"probe FAILED: {', '.join(failed)} non-zero; see {log}")
         return 1

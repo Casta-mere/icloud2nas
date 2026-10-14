@@ -139,3 +139,15 @@ def test_run_sync_wires_core_single_run(monkeypatch: pytest.MonkeyPatch) -> None
     assert ucfg.auto_delete is False and providers[PasswordProvider.PARAMETER][0]("u") == "pw"
     assert callable(passer) and callable(downloader) and callable(lp_gen)
     assert exchange.get_current_user() == "a@icloud.com"
+
+
+def test_authenticate_creates_cookie_dir(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cookie_dir = tmp_path / "cookies" / "a@icloud.com"
+    spec = _spec("auth", cookie_dir=str(cookie_dir))
+    monkeypatch.setattr(adapter, "authenticator", lambda *a: "icloud")
+    adapter.authenticate(
+        spec, "pw", StatusExchange(), lambda: None, logging.getLogger("t")
+    )
+    assert cookie_dir.is_dir()

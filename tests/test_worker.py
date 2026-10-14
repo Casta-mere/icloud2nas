@@ -12,7 +12,10 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from icloudpd.status import Status, StatusExchange
-from pyicloud_ipd.exceptions import PyiCloudFailedLoginException
+from pyicloud_ipd.exceptions import (
+    PyiCloudFailedLoginException,
+    PyiCloudServiceUnavailableException,
+)
 
 from icloud2nas import worker as worker_mod
 from icloud2nas.engine.errors import ExitCode, HardExit
@@ -159,7 +162,7 @@ def test_unexpected_exception_is_reported_not_raised(monkeypatch: pytest.MonkeyP
 
 
 def test_download_counter_counts_icloudpd_downloaded_lines() -> None:
-    logger, counter = worker_mod.setup_logging()
+    logger, counter, _recorder = worker_mod.setup_logging()
     logger.info("Downloaded %s", "x.HEIC")
     logger.info("Downloaded %s", "y.MOV")
     logger.info("%s already exists", "x.HEIC")
@@ -375,3 +378,67 @@ def test_stray_stdout_from_icloudpd_does_not_corrupt_events(
     rc, events = run_main("sync", _sync_job(photos, lib))
     assert rc == 0 and events[-1]["ev"] == "done"  # every stdout line parsed as JSON
     assert "icloudpd-photo-error" in capsys.readouterr().err
+
+
+def test_sync_download_phase_unavailable_exits_5(
+    photos_tree: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    photos, lib = photos_tree
+    monkeypatch.setattr(worker_mod.adapter, "authenticate", lambda *a: FakeICloud())
+
+    def fake_run_sync(
+        spec: Any, password: str, exchange: Any, notificator: Any, logger: Any
+    ) -> int:
+        logger.info(
+            PyiCloudServiceUnavailableException(
+                "Apple iCloud is temporary refusing to serve icloudpd"
+            )
+        )
+        return 1
+
+    monkeypatch.setattr(worker_mod.adapter, "run_sync", fake_run_sync)
+    rc, events = run_main("sync", _sync_job(photos, lib))
+    assert rc == 5
+    assert events[-1]["ev"] == "error" and events[-1]["kind"] == "unavailable"
+
+
+def test_reconcile_fuses_on_empty_remote_listing(
+    photos_tree: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    photos, lib = photos_tree
+    (lib / "2024" / "05").mkdir(parents=True)
+    files = [lib / "2024" / "05" / f"f_{i}.HEIC" for i in range(3)]
+    for f in files:
+        f.write_bytes(b"x")
+    icloud = FakeICloud()
+    icloud.photos.all = []
+    monkeypatch.setattr(worker_mod.adapter, "authenticate", lambda *a: icloud)
+    plans = tmp_path / "plans"
+    rc, events = run_main("reconcile", _sync_job(photos, lib, plan_dir=str(plans)))
+    assert rc == 6
+    assert events[-1]["ev"] == "reconcile_plan" and events[-1]["fused"] is True
+    assert all(f.exists() for f in files)
+    assert len((plans / "run-1.txt").read_text(encoding="utf-8").splitlines()) == 3
+
+
+def test_run_reports_touchpoint_mismatch_as_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def mismatch() -> None:
+        raise RuntimeError("icloudpd 9.9.9 installed")
+
+    monkeypatch.setattr(worker_mod.adapter, "check_touchpoints", mismatch)
+    rc, events = run_main("auth", {**BASE, "interactive": True})
+    assert rc == 1 and events[-1]["ev"] == "error"
+
+
+def test_recently_deleted_pass_skips_malformed_asset(
+    photos_tree: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    photos, lib = photos_tree
+    icloud = FakeICloud()
+    icloud.photos.recently_deleted = [object()]
+    monkeypatch.setattr(worker_mod.adapter, "authenticate", lambda *a: icloud)
+    monkeypatch.setattr(worker_mod.adapter, "run_sync", lambda *a: 0)
+    rc, events = run_main("sync", _sync_job(photos, lib))
+    assert rc == 0
+    assert any(e["ev"] == "warning" for e in events)
+    assert events[-1]["ev"] == "done" and events[-1]["stats"]["trashed"] == 0

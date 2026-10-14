@@ -47,24 +47,40 @@ class DownloadCounter(logging.Handler):
             self.downloaded += 1
 
 
-def setup_logging(level: int = logging.INFO) -> tuple[logging.Logger, DownloadCounter]:
+class LastExceptionRecorder(logging.Handler):
+    """Remembers the last exception object icloudpd logged (core_single_run: logger.info(error))."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.last: BaseException | None = None
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if isinstance(record.msg, BaseException):
+            self.last = record.msg
+
+
+def setup_logging(
+    level: int = logging.INFO,
+) -> tuple[logging.Logger, DownloadCounter, LastExceptionRecorder]:
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(
         logging.Formatter("%(asctime)s %(levelname)-8s %(message)s", "%Y-%m-%d %H:%M:%S")
     )
     counter = DownloadCounter()
+    recorder = LastExceptionRecorder()
     logger = logging.getLogger(ICLOUDPD_LOGGER)
     logger.handlers.clear()
     logger.setLevel(level)
     logger.propagate = False
     logger.addHandler(handler)
     logger.addHandler(counter)
+    logger.addHandler(recorder)
     pyicloud = logging.getLogger("pyicloud_ipd")
     pyicloud.handlers.clear()
     pyicloud.setLevel(level)
     pyicloud.propagate = False
     pyicloud.addHandler(handler)
-    return logger, counter
+    return logger, counter, recorder
 
 
 class Worker:
@@ -86,7 +102,7 @@ class Worker:
         self.today = today
         self.mfa_timed_out = False
         self.exchange = WorkerStatusExchange(emitter)
-        self.logger, self.counter = setup_logging()
+        self.logger, self.counter, self.recorder = setup_logging()
 
     # -- icloudpd callback -------------------------------------------------------------------
 
@@ -110,6 +126,7 @@ class Worker:
             watchdog = MfaWatchdog(self.exchange, self.spec.mfa_timeout_s, self._on_mfa_timeout)
             watchdog.start()
         try:
+            adapter.check_touchpoints()
             return self._dispatch()
         except HardExit as exc:
             return exc.code
@@ -171,6 +188,11 @@ class Worker:
             stop.set()
             sampler.join(timeout=5)
         if result != 0:
+            logged = self.recorder.last
+            if logged is not None:
+                code, kind = classify(logged)
+                self.emitter.emit("error", kind=kind, message=str(logged))
+                return code
             self.emitter.emit(
                 "error", kind="icloudpd", message=f"icloudpd returned {result}, see run log"
             )
@@ -206,7 +228,15 @@ class Worker:
         assert spec.target_dir and spec.photos_root
         moved = 0
         for asset in adapter.iter_recently_deleted(library):
-            for path in expected_paths(asset, spec.target_dir, spec.policy):
+            try:
+                candidates = expected_paths(asset, spec.target_dir, spec.policy)
+            except Exception as exc:  # noqa: BLE001 - a bad record must not fail a finished sync
+                self.emitter.emit(
+                    "warning",
+                    message=f"skipping recently-deleted asset {getattr(asset, 'id', '?')}: {exc}",
+                )
+                continue
+            for path in candidates:
                 if not os.path.isfile(path):
                     continue
                 if spec.dry_run:

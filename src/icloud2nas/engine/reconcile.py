@@ -37,6 +37,8 @@ class ReconcilePlan:
 
     @property
     def fused(self) -> bool:
+        if self.remote_total == 0 and self.local_total > 0:
+            return True  # an empty listing is far more likely an API hiccup than a wiped library
         return is_fused(len(self.extraneous), self.local_total)
 
 

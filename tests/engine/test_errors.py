@@ -48,6 +48,9 @@ def test_classify_rate_limit_by_code_or_reason() -> None:
         ExitCode.UNAVAILABLE,
         "ratelimit",
     )
+    assert classify(
+        PyiCloudAPIResponseException("might be trying to throttle requests", "ACCESS_DENIED")
+    ) == (ExitCode.UNAVAILABLE, "ratelimit")
     assert classify(PyiCloudAPIResponseException("HTTP 429 Too Many", None)) == (
         ExitCode.UNAVAILABLE,
         "ratelimit",
