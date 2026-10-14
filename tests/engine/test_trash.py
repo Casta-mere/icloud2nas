@@ -66,6 +66,7 @@ def test_purge_removes_only_expired_day_dirs(tmp_path: Path) -> None:
     for d in (old, fresh):
         (d / "2024").mkdir(parents=True)
         (d / "2024" / "f.HEIC").write_bytes(b"x")
+        (d / trash.DAY_MARKER).touch()
     removed = purge_expired(photos, 30, today=date(2026, 10, 14))
     assert removed == [old]
     assert not old.exists() and fresh.exists()
@@ -77,3 +78,41 @@ def test_purge_zero_means_never(tmp_path: Path) -> None:
     old.mkdir(parents=True)
     assert purge_expired(photos, 0, today=date(2026, 10, 14)) == []
     assert old.exists()
+
+
+def test_purge_ignores_date_names_without_marker_and_never_descends(tmp_path: Path) -> None:
+    photos = tmp_path / "photos"
+    lib = photos / "2024-05-01"  # a library whose display name looks like a date
+    (lib / "x").mkdir(parents=True)
+    (lib / "x" / "f.HEIC").write_bytes(b"x")
+    fresh = move_to_trash(photos, "2024-05-01", lib, lib / "x" / "f.HEIC", date(2026, 10, 10))
+    # a date-named folder *inside* a fresh day dir (folder_structure "{:%Y-%m-%d}")
+    day = trash_day_dir(photos, "旭刚", date(2026, 10, 12))
+    nested = day / "2020-01-01"
+    nested.mkdir(parents=True)
+    (day / trash.DAY_MARKER).touch()
+    (nested / "old.HEIC").write_bytes(b"x")
+    assert purge_expired(photos, 30, today=date(2026, 10, 14)) == []
+    assert fresh.exists() and (nested / "old.HEIC").exists()
+
+
+def test_cross_device_copy_failure_leaves_source_and_no_partial(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    photos, lib = _library(tmp_path)
+    src = lib / "2024" / "05" / "IMG_1.HEIC"
+
+    def exdev(a: str | Path, b: str | Path) -> None:
+        raise OSError(errno.EXDEV, "cross-device")
+
+    def broken_copy(a: str | Path, b: str | Path) -> None:
+        Path(b).write_bytes(b"ab")
+        raise OSError(errno.ENOSPC, "disk full")
+
+    monkeypatch.setattr(trash.os, "rename", exdev)
+    monkeypatch.setattr(trash.shutil, "copy2", broken_copy)
+    with pytest.raises(OSError):
+        move_to_trash(photos, "旭刚", lib, src, date(2026, 10, 14))
+    assert src.read_bytes() == b"abc"
+    day = trash_day_dir(photos, "旭刚", date(2026, 10, 14))
+    assert not list(day.rglob("*.part")) and not list(day.rglob("IMG_1*"))

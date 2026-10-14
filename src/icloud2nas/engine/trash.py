@@ -10,6 +10,7 @@ from pathlib import Path
 
 TRASH_DIRNAME = ".trash"
 KEPT_DIRNAME = "kept"
+DAY_MARKER = ".i2n-day"
 
 
 def trash_root(photos_root: str | Path) -> Path:
@@ -31,6 +32,27 @@ def _unique(dest: Path) -> Path:
         n += 1
 
 
+def _is_day_dir(path: Path) -> bool:
+    """A trash day dir is ISO-date-named AND carries the marker move_to_trash writes."""
+    try:
+        date.fromisoformat(path.name)
+    except ValueError:
+        return False
+    return (path / DAY_MARKER).is_file()
+
+
+def _copy_then_unlink(src: Path, dest: Path) -> None:
+    """Cross-device fallback: copy to a temp name, move it into place, then drop the source."""
+    tmp = dest.with_name(dest.name + ".part")
+    try:
+        shutil.copy2(src, tmp)
+        os.replace(tmp, dest)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    os.unlink(src)
+
+
 def move_to_trash(
     photos_root: str | Path,
     library_rel: str,
@@ -41,15 +63,17 @@ def move_to_trash(
     """Move file to day's trash folder, preserving its relative path within the library."""
     src = Path(abs_path)
     rel = src.resolve().relative_to(Path(library_dir).resolve())  # ValueError if outside
-    dest = _unique(trash_day_dir(photos_root, library_rel, day or date.today()) / rel)
+    day_dir = trash_day_dir(photos_root, library_rel, day or date.today())
+    day_dir.mkdir(parents=True, exist_ok=True)
+    (day_dir / DAY_MARKER).touch(exist_ok=True)
+    dest = _unique(day_dir / rel)
     dest.parent.mkdir(parents=True, exist_ok=True)
     try:
         os.rename(src, dest)
     except OSError as exc:
         if exc.errno != errno.EXDEV:
             raise
-        shutil.copy2(src, dest)
-        os.unlink(src)
+        _copy_then_unlink(src, dest)
     return dest
 
 
@@ -64,14 +88,15 @@ def purge_expired(
     removed: list[Path] = []
     if not root.exists():
         return removed
-    for candidate in sorted(root.rglob("*")):
-        if not candidate.is_dir():
-            continue
-        try:
-            day = date.fromisoformat(candidate.name)
-        except ValueError:
-            continue
-        if day < cutoff:
-            shutil.rmtree(candidate)
-            removed.append(candidate)
+    for dirpath, dirnames, _filenames in os.walk(root):
+        keep: list[str] = []
+        for name in sorted(dirnames):
+            candidate = Path(dirpath) / name
+            if _is_day_dir(candidate):
+                if date.fromisoformat(name) < cutoff:
+                    shutil.rmtree(candidate)
+                    removed.append(candidate)
+                continue  # a day dir's contents are user paths: never descend
+            keep.append(name)
+        dirnames[:] = keep
     return removed
