@@ -26,9 +26,11 @@ class WorkerStatusExchange(StatusExchange):
         self.mfa_requested_at: float | None = None
 
     def replace_status(self, expected_status: Status, new_status: Status) -> bool:
+        if new_status is Status.NEED_MFA:
+            # stamp before the flip so the watchdog never sees NEED_MFA with a stale stamp
+            self.mfa_requested_at = time.monotonic()
         changed = super().replace_status(expected_status, new_status)
         if changed and new_status is Status.NEED_MFA:
-            self.mfa_requested_at = time.monotonic()
             self._emitter.emit("need_mfa")
         if (
             changed
@@ -41,13 +43,17 @@ class WorkerStatusExchange(StatusExchange):
 
     def set_error(self, error: str) -> bool:
         changed = super().set_error(error)
-        if changed:
+        if changed and self.get_status() is Status.NEED_MFA:
+            self.mfa_requested_at = time.monotonic()  # a wrong code restarts the wait window
             self._emitter.emit("mfa_result", ok=False, error=error)
         return changed
 
     def abandon_mfa_wait(self) -> bool:
         """Leave NEED_MFA so icloudpd's wait loop fails its next transition and raises (no hang)."""
-        return super().replace_status(Status.NEED_MFA, Status.NO_INPUT_NEEDED)
+        changed = super().replace_status(Status.NEED_MFA, Status.NO_INPUT_NEEDED)
+        if changed:
+            self.mfa_requested_at = None
+        return changed
 
 
 def parse_code_line(line: str) -> str | None:

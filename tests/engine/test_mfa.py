@@ -79,6 +79,7 @@ def test_abandon_mfa_wait_unblocks_only_when_waiting() -> None:
     assert ex.abandon_mfa_wait() is False
     ex.replace_status(Status.NO_INPUT_NEEDED, Status.NEED_MFA)
     assert ex.abandon_mfa_wait() is True
+    assert ex.mfa_requested_at is None
     assert ex.get_status() is Status.NO_INPUT_NEEDED
     assert ex.replace_status(Status.SUPPLIED_MFA, Status.CHECKING_MFA) is False  # icloudpd raises
     assert [e["ev"] for e in _events(buf)] == ["need_mfa"]
@@ -112,3 +113,27 @@ def test_watchdog_stops_quietly_when_code_arrives() -> None:
     dog.stop()
     dog.join(1.0)
     assert not fired.is_set()
+
+
+def test_wrong_code_restarts_the_wait_window() -> None:
+    buf = io.StringIO()
+    ex = WorkerStatusExchange(Emitter(buf))
+    ex.replace_status(Status.NO_INPUT_NEEDED, Status.NEED_MFA)
+    first = ex.mfa_requested_at
+    assert first is not None
+    time.sleep(0.02)
+    ex.set_payload("000000")
+    ex.replace_status(Status.SUPPLIED_MFA, Status.CHECKING_MFA)
+    assert ex.set_error("bad code")
+    assert ex.mfa_requested_at is not None and ex.mfa_requested_at > first
+
+
+def test_set_error_outside_mfa_emits_nothing() -> None:
+    buf = io.StringIO()
+    ex = WorkerStatusExchange(Emitter(buf))
+    ex.replace_status(Status.NO_INPUT_NEEDED, Status.NEED_PASSWORD)
+    ex.set_payload("pw")
+    ex.replace_status(Status.SUPPLIED_PASSWORD, Status.CHECKING_PASSWORD)
+    assert ex.set_error("bad password")
+    assert ex.get_status() is Status.NO_INPUT_NEEDED
+    assert [e["ev"] for e in _events(buf)] == []
