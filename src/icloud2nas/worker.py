@@ -10,6 +10,7 @@ import argparse
 import logging
 import os
 import sys
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from datetime import date
 from typing import TextIO
@@ -19,6 +20,9 @@ from icloud2nas.engine.errors import ExitCode, HardExit, classify
 from icloud2nas.engine.events import Emitter
 from icloud2nas.engine.job import MODES, PASSWORD_ENV, JobSpec
 from icloud2nas.engine.mfa import MfaWatchdog, StdinCodeFeeder, WorkerStatusExchange
+from icloud2nas.engine.paths import expected_paths, walk_library
+from icloud2nas.engine.reconcile import apply_paths, compute_plan, read_plan, write_plan
+from icloud2nas.engine.trash import move_to_trash
 
 PROGRESS_INTERVAL_S = 60.0
 ICLOUDPD_LOGGER = "icloudpd"
@@ -97,6 +101,8 @@ class Worker:
 
     def run(self) -> ExitCode:
         self.emitter.emit("started", mode=self.spec.mode, pid=os.getpid(), run_id=self.spec.run_id)
+        # icloudpd print()s on some error paths; keep the event stream clean
+        sys.stdout = sys.stderr
         os.environ["CLIENT_ID"] = self.spec.client_id
         watchdog: MfaWatchdog | None = None
         if self.spec.interactive:
@@ -126,7 +132,7 @@ class Worker:
         )
         self.exchange.abandon_mfa_wait()
 
-    def _login(self) -> adapter.PyiCloudService:  # type: ignore[name-defined]
+    def _login(self) -> adapter.PyiCloudService:
         return adapter.authenticate(
             self.spec, self.password, self.exchange, self.notificator, self.logger
         )
@@ -149,11 +155,122 @@ class Worker:
             return self._reconcile()
         raise ValueError(f"unknown mode {mode!r}")
 
+    # -- sync ---------------------------------------------------------------------------------
+
     def _sync(self) -> ExitCode:
-        raise NotImplementedError("Task 11")
+        icloud = self._login()  # classifies password/MFA trouble before icloudpd's own retry loop
+        library = adapter.get_library(icloud, self.spec.library_zone)
+        stop = threading.Event()
+        sampler = threading.Thread(target=self._sample_progress, args=(stop,), daemon=True)
+        sampler.start()
+        try:
+            result = adapter.run_sync(
+                self.spec, self.password, self.exchange, self.notificator, self.logger
+            )
+        finally:
+            stop.set()
+            sampler.join(timeout=5)
+        if result != 0:
+            self.emitter.emit(
+                "error", kind="icloudpd", message=f"icloudpd returned {result}, see run log"
+            )
+            return ExitCode.FAILED
+        trashed = self._recently_deleted_pass(library)
+        self.emitter.emit(
+            "done",
+            stats={
+                "downloaded": self.counter.downloaded,
+                "trashed": trashed,
+                "full": self.spec.full,
+            },
+        )
+        return ExitCode.OK
+
+    def _sample_progress(self, stop: threading.Event) -> None:
+        while not stop.wait(PROGRESS_INTERVAL_S):
+            progress = self.exchange.get_progress()
+            self.emitter.emit(
+                "progress",
+                downloaded=self.counter.downloaded,
+                scanned=progress.photos_counter,
+                total=progress.photos_count,
+                last=progress.photos_last_message,
+            )
+
+    def _recently_deleted_pass(self, library: adapter.PhotoLibrary) -> int:
+        """Trash local copies of assets Apple lists under Recently Deleted.
+
+        Replaces icloudpd's --auto-delete, whose path matching ignores the name-id7 policy.
+        """
+        spec = self.spec
+        assert spec.target_dir and spec.photos_root
+        moved = 0
+        for asset in adapter.iter_recently_deleted(library):
+            for path in expected_paths(asset, spec.target_dir, spec.policy):
+                if not os.path.isfile(path):
+                    continue
+                if spec.dry_run:
+                    self.logger.info("[DRY RUN] would trash %s", path)
+                else:
+                    move_to_trash(
+                        spec.photos_root, spec.library_rel, spec.target_dir, path, self.today()
+                    )
+                moved += 1
+        return moved
+
+    # -- reconcile ----------------------------------------------------------------------------
 
     def _reconcile(self) -> ExitCode:
-        raise NotImplementedError("Task 11")
+        spec = self.spec
+        assert spec.target_dir and spec.photos_root
+        if spec.apply_plan:
+            rel_paths = read_plan(spec.apply_plan)
+            moved = (
+                0
+                if spec.dry_run
+                else apply_paths(
+                    rel_paths, spec.target_dir, spec.photos_root, spec.library_rel, self.today()
+                )
+            )
+            self.emitter.emit("done", stats={"trashed": moved, "planned": len(rel_paths)})
+            return ExitCode.OK
+        assert spec.plan_dir
+        icloud = self._login()
+        library = adapter.get_library(icloud, spec.library_zone)
+        expected: set[str] = set()
+        remote_total = 0
+        for asset in adapter.iter_all(library):  # any exception here aborts before any delete
+            expected |= expected_paths(asset, spec.target_dir, spec.policy)
+            remote_total += 1
+            if remote_total % 1000 == 0:
+                self.emitter.emit("progress", scanned=remote_total)
+        local = walk_library(spec.target_dir)
+        plan = compute_plan(expected, local, spec.target_dir, remote_total)
+        plan_file = os.path.join(spec.plan_dir, f"{spec.run_id}.txt")
+        write_plan(plan, plan_file)
+        self.emitter.emit(
+            "reconcile_plan",
+            remote_total=plan.remote_total,
+            local_total=plan.local_total,
+            extraneous=len(plan.extraneous),
+            missing=len(expected - local),
+            plan_file=plan_file,
+            fused=plan.fused,
+        )
+        if plan.fused:
+            return ExitCode.FUSED
+        moved = (
+            0
+            if spec.dry_run
+            else apply_paths(
+                plan.extraneous, spec.target_dir, spec.photos_root, spec.library_rel, self.today()
+            )
+        )
+        self.emitter.emit(
+            "done",
+            stats={"trashed": moved, "remote_total": remote_total, "local_total": plan.local_total},
+        )
+        return ExitCode.OK
 
 
 # -- entry point ------------------------------------------------------------------------------

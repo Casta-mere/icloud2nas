@@ -34,6 +34,25 @@ from pyicloud_ipd.version_size import AssetVersionSize, LivePhotoVersionSize
 from icloud2nas.engine.job import JobSpec
 from icloud2nas.engine.paths import filename_builder, lp_filename_generator
 
+__all__ = [
+    "ICLOUDPD_VERSION",
+    "PRIMARY_ZONE",
+    "PhotoAsset",
+    "PhotoLibrary",
+    "PyiCloudService",
+    "authenticate",
+    "build_global_config",
+    "build_password_providers",
+    "build_user_config",
+    "check_touchpoints",
+    "count_all",
+    "get_library",
+    "iter_all",
+    "iter_recently_deleted",
+    "list_libraries",
+    "run_sync",
+]
+
 ICLOUDPD_VERSION = "1.32.3"
 PRIMARY_ZONE = "PrimarySync"
 
