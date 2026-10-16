@@ -7,8 +7,10 @@ import uuid
 from datetime import UTC, date, datetime
 from typing import Any
 
-from sqlalchemy import ForeignKey, LargeBinary, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, LargeBinary, String, Text, UniqueConstraint
+from sqlalchemy.engine import Dialect
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.types import TypeDecorator
 
 
 def new_id() -> str:
@@ -17,6 +19,26 @@ def new_id() -> str:
 
 def utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+class UTCDateTime(TypeDecorator[datetime]):
+    """Aware-UTC datetimes over SQLite's naive DateTime.
+
+    Strip tz on write, re-attach UTC on read.
+    """
+
+    impl = DateTime
+    cache_ok = True
+
+    def process_bind_param(self, value: datetime | None, dialect: Dialect) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            raise ValueError("naive datetime; store aware UTC values (use utcnow())")
+        return value.astimezone(UTC).replace(tzinfo=None)
+
+    def process_result_value(self, value: datetime | None, dialect: Dialect) -> datetime | None:
+        return None if value is None else value.replace(tzinfo=UTC)
 
 
 class Base(DeclarativeBase):
@@ -33,11 +55,11 @@ class Account(Base):
     password_enc: Mapped[bytes] = mapped_column(LargeBinary)
     client_id: Mapped[str] = mapped_column(String(36))
     status: Mapped[str] = mapped_column(String(20), default="new")
-    last_auth_ok_at: Mapped[datetime | None] = mapped_column(default=None)
+    last_auth_ok_at: Mapped[datetime | None] = mapped_column(UTCDateTime, default=None)
     last_error: Mapped[str | None] = mapped_column(Text, default=None)
     failures: Mapped[int] = mapped_column(default=0)
-    backoff_until: Mapped[datetime | None] = mapped_column(default=None)
-    created_at: Mapped[datetime] = mapped_column(default=utcnow)
+    backoff_until: Mapped[datetime | None] = mapped_column(UTCDateTime, default=None)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
     libraries: Mapped[list[Library]] = relationship(back_populates="account")
 
@@ -56,8 +78,8 @@ class Library(Base):
     status: Mapped[str] = mapped_column(String(20), default="ok")
     interval_min: Mapped[int] = mapped_column(default=30)
     nightly_at: Mapped[str] = mapped_column(String(5), default="03:00")
-    last_run_at: Mapped[datetime | None] = mapped_column(default=None)
-    last_success_at: Mapped[datetime | None] = mapped_column(default=None)
+    last_run_at: Mapped[datetime | None] = mapped_column(UTCDateTime, default=None)
+    last_success_at: Mapped[datetime | None] = mapped_column(UTCDateTime, default=None)
     last_nightly_on: Mapped[date | None] = mapped_column(default=None)
     stats_json: Mapped[str] = mapped_column(Text, default="{}")
 
@@ -78,8 +100,8 @@ class Run(Base):
     mode: Mapped[str] = mapped_column(String(10))
     trigger: Mapped[str] = mapped_column(String(12))
     status: Mapped[str] = mapped_column(String(12), default="queued")
-    started_at: Mapped[datetime] = mapped_column(default=utcnow)
-    ended_at: Mapped[datetime | None] = mapped_column(default=None)
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    ended_at: Mapped[datetime | None] = mapped_column(UTCDateTime, default=None)
     exit_code: Mapped[int | None] = mapped_column(default=None)
     stats_json: Mapped[str] = mapped_column(Text, default="{}")
     error_kind: Mapped[str | None] = mapped_column(String(20), default=None)
@@ -99,7 +121,7 @@ class ReconcilePlan(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     library_id: Mapped[str] = mapped_column(ForeignKey("libraries.id"))
     run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"))
-    created_at: Mapped[datetime] = mapped_column(default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     extraneous_count: Mapped[int] = mapped_column(default=0)
     plan_file: Mapped[str] = mapped_column(String(500))
     status: Mapped[str] = mapped_column(String(10), default="pending")

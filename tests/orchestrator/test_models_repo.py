@@ -133,3 +133,24 @@ def test_runs_plans_settings_and_sweep(store: Store) -> None:
             )
         assert repo.sweep_stale_runs(s, "again") == 0
         assert [r.mode for r in repo.list_runs(s, library_id=lib.id)] == ["sync"]
+
+
+def test_datetimes_are_aware_utc_after_reload(store: Store) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    with store.session() as s:
+        acc = _account(s)
+        acc.backoff_until = datetime.now(UTC) + timedelta(minutes=5)
+        account_id = acc.id
+    with store.session() as s:
+        again = repo.get_account(s, account_id)
+        assert again is not None
+        assert again.created_at.tzinfo is UTC and again.backoff_until is not None
+        assert again.backoff_until.tzinfo is UTC
+        assert again.backoff_until > datetime.now(UTC)  # comparison with aware now must work
+    # Test naive datetime rejection in a new session
+    with pytest.raises(Exception, match="naive"), store.session() as s:
+        acc2 = repo.get_account(s, account_id)
+        assert acc2 is not None
+        acc2.backoff_until = datetime(2026, 1, 1)
+        s.flush()
