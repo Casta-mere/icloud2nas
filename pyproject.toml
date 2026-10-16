@@ -13,7 +13,7 @@ dependencies = [
 
 [project.scripts]
 icloud2nas-worker = "icloud2nas.worker:cli"
-icloud2nas-ctl = "icloud2nas.ctl:main"
+icloud2nas-ctl = "icloud2nas.ctl:cli"
 
 [dependency-groups]
 dev = [

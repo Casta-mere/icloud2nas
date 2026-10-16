@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import io
 import json
-import sys
 from pathlib import Path
 
 import pytest
@@ -10,23 +9,6 @@ import pytest
 from icloud2nas import ctl
 from icloud2nas.orchestrator.config import Config
 from icloud2nas.orchestrator.store import repo
-
-FAKE_WORKER = Path(__file__).resolve().parent / "fake_worker.py"
-
-
-@pytest.fixture
-def config(tmp_path: Path) -> Config:
-    cfg = Config.from_env(
-        {
-            "I2N_DATA_DIR": str(tmp_path / "data"),
-            "I2N_PHOTOS_DIR": str(tmp_path / "photos"),
-            "I2N_WORKER_CMD": f"{sys.executable} {FAKE_WORKER}",
-            "TZ": "Asia/Shanghai",
-        }
-    )
-    cfg.ensure_layout()
-    (tmp_path / "photos").mkdir(exist_ok=True)
-    return cfg
 
 
 def _env(config: Config, **extra: str) -> dict[str, str]:
@@ -186,3 +168,27 @@ def test_unknown_id_and_bad_args(config: Config) -> None:
     assert rc == 1 and "not found" in out
     with pytest.raises(SystemExit):
         ctl.main(["bogus"], env=_env(config))
+
+
+def test_ambiguous_prefix_is_an_error(config: Config) -> None:
+    rc, _ = _run(
+        config, ["account", "add", "--name", "a", "--apple-id", "x1@icloud.com", "--region", "cn"]
+    )
+    assert rc == 0
+    rc, _ = _run(
+        config, ["account", "add", "--name", "b", "--apple-id", "x2@icloud.com", "--region", "cn"]
+    )
+    assert rc == 0
+    rc, out = _run(config, ["library", "set", "", "--enable"])
+    assert rc == 1 and "not found" in out
+    app = ctl.build_app(Config.from_env(_env(config)), _env(config))
+    with app.store.session() as s:
+        ids = sorted(lib.id for lib in repo.list_libraries(s))
+    common = ""
+    for a, b in zip(ids[0], ids[1], strict=False):
+        if a != b:
+            break
+        common += a
+    if common:  # two uuid4 hex ids share a prefix only by chance; skip the assertion otherwise
+        rc, out = _run(config, ["library", "set", common, "--enable"])
+        assert rc == 1 and "ambiguous" in out

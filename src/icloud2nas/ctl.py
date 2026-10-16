@@ -17,7 +17,7 @@ from typing import Any, TextIO
 
 from icloud2nas.orchestrator.bus import EventBus
 from icloud2nas.orchestrator.config import Config
-from icloud2nas.orchestrator.jobs import build_job, validate_job
+from icloud2nas.orchestrator.jobs import build_job, policy_from_settings, validate_job
 from icloud2nas.orchestrator.onboarding import Onboarding
 from icloud2nas.orchestrator.runs import RunManager
 from icloud2nas.orchestrator.scheduler import Scheduler
@@ -59,13 +59,15 @@ def build_app(config: Config, env: Mapping[str, str] | None = None) -> App:
 
 def resolve_id(candidates: Sequence[tuple[str, str]], text: str) -> str:
     """Match a full id, an unambiguous id prefix, or an alias (apple id / name)."""
+    if not text:
+        raise KeyError(text)
     exact = [i for i, alias in candidates if i == text or alias == text]
-    if len(exact) == 1:
-        return exact[0]
-    prefixed = [i for i, _ in candidates if i.startswith(text)]
-    if len(prefixed) == 1:
-        return prefixed[0]
-    raise KeyError(text)
+    matches = exact or [i for i, _ in candidates if i.startswith(text)]
+    if len(matches) > 1:
+        raise ValueError(f"ambiguous id {text!r}: {len(matches)} matches")
+    if not matches:
+        raise KeyError(text)
+    return matches[0]
 
 
 def _fmt(value: Any) -> str:
@@ -92,50 +94,49 @@ def _event_printer(out: TextIO) -> Callable[[dict[str, Any]], None]:
 # -- account ---------------------------------------------------------------------------------------
 
 
+async def _wait_any(*events: asyncio.Event) -> None:
+    waiters = [asyncio.create_task(e.wait()) for e in events]
+    try:
+        await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for w in waiters:
+            w.cancel()
+
+
 async def _interactive_auth(
     app: App, account_id: str, ask_code: Callable[[str], str], out: TextIO, trigger: str
 ) -> int:
     session = await app.onboarding.start_auth(account_id, trigger=trigger)
     printer = _event_printer(out)
+    wrong = asyncio.Event()
+
+    def on_bus(topic: str, payload: dict[str, Any]) -> None:
+        if topic != "run.event" or payload.get("run_id") != session.run_id:
+            return
+        event = payload["event"]
+        printer(event)
+        if event.get("ev") == "mfa_result" and event.get("ok") is False:
+            wrong.set()
+
     unsubscribe = app.bus.subscribe(
-        lambda topic, payload: printer(payload["event"]) if topic == "run.event" else None
-    )
+        on_bus
+    )  # subscribed for the whole session: nothing can be missed
     try:
-        waiter = asyncio.create_task(session.finished.wait())
-        prompt: asyncio.Task[Any] = asyncio.create_task(session.prompted.wait())
+        await _wait_any(session.prompted, session.finished)
         while not session.finished.is_set():
-            done, _ = await asyncio.wait({waiter, prompt}, return_when=asyncio.FIRST_COMPLETED)
-            if prompt in done and not session.finished.is_set():
-                code = await asyncio.to_thread(ask_code, "验证码 / 2FA code: ")
-                if not session.finished.is_set():
-                    await app.onboarding.submit_code(account_id, code.strip())
-                # a wrong code re-prompts: wait for the next mfa_result before asking again
-                prompt = asyncio.create_task(_next_mfa_result(app, session.run_id))
-        waiter.cancel()
-        prompt.cancel()
+            wrong.clear()
+            code = await asyncio.to_thread(ask_code, "验证码 / 2FA code: ")
+            if session.finished.is_set():
+                break
+            await app.onboarding.submit_code(account_id, code.strip())
+            await _wait_any(wrong, session.finished)
     finally:
         unsubscribe()
-    # the session unregisters itself when the worker ends, so read its result directly
+    await session.finished.wait()
     if session.result is None:
-        out.write(f"auth failed: {session.error}\n")
+        out.write(f"login failed: {session.error or 'no result'}\n")
         return 1
     return session.result.exit_code
-
-
-async def _next_mfa_result(app: App, run_id: str) -> None:
-    got = asyncio.Event()
-
-    def on_event(topic: str, payload: dict[str, Any]) -> None:
-        if topic == "run.event" and payload.get("run_id") == run_id:
-            ev = payload["event"]
-            if ev.get("ev") == "mfa_result" and ev.get("ok") is False:
-                got.set()
-
-    unsubscribe = app.bus.subscribe(on_event)
-    try:
-        await got.wait()
-    finally:
-        unsubscribe()
 
 
 def _password(env: Mapping[str, str], ask_password: Callable[[str], str], apple_id: str) -> str:
@@ -293,7 +294,9 @@ async def _apply_plan(app: App, plan_id: str, out: TextIO) -> int:
         assert library is not None
         account = repo.get_account(s, library.account_id)
         assert account is not None
-        job = build_job(app.config, account, library, interactive=False)
+        job = build_job(
+            app.config, account, library, interactive=False, policy=policy_from_settings(s)
+        )
         plan_file = plan.plan_file
     validate_job("reconcile", job)
     run_id = app.runs.start_run(
