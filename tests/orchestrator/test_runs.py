@@ -167,3 +167,61 @@ async def test_execute_runs_the_fake_worker_and_records_progress(
         assert run.stats["downloaded"] == 2 and run.stats["progress"]["scanned"] == 5
     topics = [t for t, _ in world["seen"]]
     assert topics.count("run.event") == 3 and topics[-1] == "run.finished"
+
+
+async def test_progress_db_failure_does_not_drop_events(
+    world: dict[str, Any], config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(
+        "FAKE_WORKER_SCENARIO",
+        json.dumps({"sync": {"events": [
+            {"ev": "started"},
+            {"ev": "progress", "downloaded": 1, "scanned": 1, "total": 2, "last": "x"},
+            {"ev": "done", "stats": {"downloaded": 1, "trashed": 0, "full": False}},
+        ], "exit": 0}}),
+    )
+
+    def boom(run_id: str, event: dict[str, Any]) -> None:
+        raise RuntimeError("db locked")
+
+    monkeypatch.setattr(world["manager"], "_record_progress", boom)
+    with world["store"].session() as s:
+        acc = repo.get_account(s, world["account"])
+        lib = repo.get_library(s, world["library"])
+        assert acc is not None and lib is not None
+        job = build_job(config, acc, lib, interactive=False)
+    run_id = world["manager"].start_run(
+        account_id=world["account"], library_id=world["library"], mode="sync", trigger="manual"
+    )
+    result = await world["manager"].execute(
+        run_id, mode="sync", job=job, password="pw", interactive=False
+    )
+    assert result.exit_code == 0
+    assert [t for t, _ in world["seen"]].count("run.event") == 3  # progress still published
+
+
+async def test_finish_run_crash_marks_run_internal_failure(
+    world: dict[str, Any], config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken_finish(run_id: str, result: Any) -> Any:
+        raise RuntimeError("bookkeeping bug")
+
+    monkeypatch.setattr(world["manager"], "finish_run", broken_finish)
+    with world["store"].session() as s:
+        acc = repo.get_account(s, world["account"])
+        lib = repo.get_library(s, world["library"])
+        assert acc is not None and lib is not None
+        job = build_job(config, acc, lib, interactive=False)
+    run_id = world["manager"].start_run(
+        account_id=world["account"], library_id=world["library"], mode="sync", trigger="manual"
+    )
+    with pytest.raises(RuntimeError, match="bookkeeping"):
+        await world["manager"].execute(
+            run_id, mode="sync", job=job, password="pw", interactive=False
+        )
+    with world["store"].session() as s:
+        run = repo.get_run(s, run_id)
+        assert run is not None and run.status == "failed" and run.error_kind == "internal"
+        assert run.ended_at is not None
+    finished = {"run_id": run_id, "status": "failed", "library_id": None}
+    assert ("run.finished", finished) in world["seen"]

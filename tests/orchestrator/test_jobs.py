@@ -70,3 +70,14 @@ def test_policy_from_settings_and_type_check(config: Config, store: Store) -> No
         with pytest.raises(ValueError):
             validate_job("auth", dict(job, policy={"threads_num": "4"}))
         assert json.dumps(job)  # serialisable
+
+
+def test_validate_job_rejects_bool_for_optional_int(config: Config, store: Store) -> None:
+    with store.session() as s:
+        acc = repo.create_account(
+            s, display_name="x", apple_id="c@icloud.com", region="cn",
+            password_enc=b"x", client_id="33333333-3333-3333-3333-333333333333",
+        )
+        job = build_job(config, acc, None, interactive=True)
+    with pytest.raises(ValueError, match="recent"):
+        validate_job("auth", dict(job, recent=True))

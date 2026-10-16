@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -14,6 +15,8 @@ from icloud2nas.orchestrator.store.db import Store
 from icloud2nas.orchestrator.store.models import Account, Run, utcnow
 from icloud2nas.orchestrator.store.secrets import Secrets
 from icloud2nas.orchestrator.supervisor import WorkerResult, run_worker
+
+log = logging.getLogger(__name__)
 
 BACKOFF_BASE_S = 60
 BACKOFF_MAX_S = 3600
@@ -60,14 +63,10 @@ class RunManager:
     ) -> WorkerResult:
         def relay(event: dict[str, Any]) -> None:
             if event.get("ev") == "progress":
-                with self.store.session() as s:
-                    run = repo.get_run(s, run_id)
-                    if run is not None:
-                        stats = run.stats
-                        stats["progress"] = {
-                            k: v for k, v in event.items() if k not in ("ev", "ts")
-                        }
-                        run.stats_json = json.dumps(stats, ensure_ascii=False)
+                try:
+                    self._record_progress(run_id, event)
+                except Exception:  # noqa: BLE001 - a DB hiccup must not drop the event
+                    log.exception("run %s: could not persist progress", run_id)
             self.bus.publish("run.event", run_id=run_id, event=event)
             if on_event is not None:
                 on_event(event)
@@ -84,8 +83,35 @@ class RunManager:
             on_event=relay,
             timeout_s=timeout_s,
         )
-        self.finish_run(run_id, result)
+        try:
+            self.finish_run(run_id, result)
+        except Exception as exc:
+            log.exception("run %s: finish_run failed", run_id)
+            self._mark_internal_failure(run_id, exc)
+            raise
         return result
+
+    def _record_progress(self, run_id: str, event: dict[str, Any]) -> None:
+        with self.store.session() as s:
+            run = repo.get_run(s, run_id)
+            if run is not None:
+                stats = run.stats
+                stats["progress"] = {k: v for k, v in event.items() if k not in ("ev", "ts")}
+                run.stats_json = json.dumps(stats, ensure_ascii=False)
+
+    def _mark_internal_failure(self, run_id: str, exc: BaseException) -> None:
+        """Best effort: never leave a run `running` because our own bookkeeping crashed."""
+        try:
+            with self.store.session() as s:
+                run = repo.get_run(s, run_id)
+                if run is not None and run.status == "running":
+                    run.status = "failed"
+                    run.error_kind = "internal"
+                    run.error_message = f"{type(exc).__name__}: {exc}"[:500]
+                    run.ended_at = utcnow()
+        except Exception:  # noqa: BLE001
+            log.exception("run %s: could not mark internal failure", run_id)
+        self.bus.publish("run.finished", run_id=run_id, status="failed", library_id=None)
 
     # -- state machine -------------------------------------------------------------------------
 

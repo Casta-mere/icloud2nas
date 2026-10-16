@@ -99,7 +99,8 @@ def _check_types(values: dict[str, Any], schema: dict[str, Any], where: str) -> 
         expected = schema.get(key)
         if expected is None:
             raise ValueError(f"{where}: unknown field {key!r}")
-        if isinstance(value, bool) and expected is int:
+        allows_int = expected is int or (isinstance(expected, tuple) and int in expected)
+        if isinstance(value, bool) and allows_int:
             raise ValueError(f"{where}: {key} must be int, got bool")
         if not isinstance(value, expected):
             raise ValueError(f"{where}: {key} must be {expected}, got {type(value).__name__}")
