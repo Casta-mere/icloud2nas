@@ -56,6 +56,7 @@ class WorkerProcess:
         self._terminal: dict[str, Any] | None = None
         self._log_file: Any = None
         self._killed = False
+        self._result: WorkerResult | None = None
 
     @property
     def pid(self) -> int | None:
@@ -73,13 +74,18 @@ class WorkerProcess:
             argv += ["--apply-plan", self._apply_plan]
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
         self._log_file = open(self._log_path, "ab")  # noqa: SIM115 - closed in wait()
-        self._proc = await asyncio.create_subprocess_exec(
-            *argv,
-            env=env,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=self._log_file,
-        )
+        try:
+            self._proc = await asyncio.create_subprocess_exec(
+                *argv,
+                env=env,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=self._log_file,
+            )
+        except BaseException:
+            self._log_file.close()
+            self._log_file = None
+            raise
         if not self._interactive and self._proc.stdin is not None:
             self._proc.stdin.close()  # non-interactive runs never read stdin (spec §3.3a)
         self._reader = asyncio.create_task(self._read_events())
@@ -109,7 +115,8 @@ class WorkerProcess:
                     log.exception("worker %s: on_event failed", self.run_id)
 
     async def send_code(self, code: str) -> None:
-        assert self._proc is not None and self._proc.stdin is not None
+        if self._proc is None or self._proc.stdin is None or self._proc.stdin.is_closing():
+            raise RuntimeError("worker stdin is closed (non-interactive run or process ended)")
         self._proc.stdin.write((json.dumps({"code": code}) + "\n").encode("utf-8"))
         await self._proc.stdin.drain()
 
@@ -125,6 +132,9 @@ class WorkerProcess:
             await self._proc.wait()
 
     async def wait(self, timeout_s: float | None = None) -> WorkerResult:
+        """Wait for exit (killing on timeout). Idempotent: later calls return the first result."""
+        if self._result is not None:
+            return self._result
         assert self._proc is not None and self._reader is not None
         try:
             await asyncio.wait_for(self._reader, timeout_s)
@@ -138,9 +148,10 @@ class WorkerProcess:
             if self._log_file is not None:
                 self._log_file.close()
         code = self._proc.returncode if self._proc.returncode is not None else -1
-        return WorkerResult(
+        self._result = WorkerResult(
             exit_code=code, events=list(self._events), terminal=self._terminal, killed=self._killed
         )
+        return self._result
 
 
 async def run_worker(

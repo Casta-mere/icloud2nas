@@ -134,3 +134,30 @@ async def test_reconcile_plan_then_done_terminal_is_done(config: Config) -> None
     )
     assert result.terminal is not None and result.terminal["ev"] == "done"
     assert any(e["ev"] == "reconcile_plan" for e in result.events)
+
+
+async def test_start_failure_closes_log_handle(config: Config) -> None:
+    broken = Config(
+        data_dir=config.data_dir, photos_dir=config.photos_dir,
+        worker_cmd=("/definitely/not/a/binary",), tz=config.tz,
+    )
+    proc = WorkerProcess(
+        broken, run_id="x1", mode="sync", job=JOB, password="pw", interactive=False,
+        log_path=config.logs_dir / "x1.log",
+    )
+    with pytest.raises(FileNotFoundError):
+        await proc.start()
+    assert proc._log_file is None  # noqa: SLF001 - lifecycle check
+
+
+async def test_wait_is_idempotent_and_send_code_after_close_raises(config: Config) -> None:
+    proc = WorkerProcess(
+        config, run_id="w1", mode="sync", job=JOB, password="pw", interactive=False,
+        log_path=config.logs_dir / "w1.log",
+    )
+    await proc.start()
+    with pytest.raises(RuntimeError, match="stdin is closed"):
+        await proc.send_code("123456")
+    first = await proc.wait(timeout_s=10)
+    second = await proc.wait(timeout_s=10)
+    assert first is second and first.exit_code == 0
