@@ -14,7 +14,7 @@ from icloud2nas.orchestrator.store import repo
 from icloud2nas.orchestrator.store.db import Store
 from icloud2nas.orchestrator.store.models import Account, Run, utcnow
 from icloud2nas.orchestrator.store.secrets import Secrets
-from icloud2nas.orchestrator.supervisor import WorkerResult, run_worker
+from icloud2nas.orchestrator.supervisor import WorkerProcess, WorkerResult
 
 log = logging.getLogger(__name__)
 
@@ -60,6 +60,7 @@ class RunManager:
         apply_plan: str | None = None,
         timeout_s: float | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
+        on_start: Callable[[WorkerProcess], None] | None = None,
     ) -> WorkerResult:
         def relay(event: dict[str, Any]) -> None:
             if event.get("ev") == "progress":
@@ -71,7 +72,7 @@ class RunManager:
             if on_event is not None:
                 on_event(event)
 
-        result = await run_worker(
+        process = WorkerProcess(
             self.config,
             run_id=run_id,
             mode=mode,
@@ -81,8 +82,11 @@ class RunManager:
             log_path=self.config.logs_dir / f"{run_id}.log",
             apply_plan=apply_plan,
             on_event=relay,
-            timeout_s=timeout_s,
         )
+        await process.start()
+        if on_start is not None:
+            on_start(process)
+        result = await process.wait(timeout_s)
         try:
             self.finish_run(run_id, result)
         except Exception as exc:
