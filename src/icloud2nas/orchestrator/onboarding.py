@@ -40,6 +40,8 @@ class AuthSession:
     prompted: asyncio.Event
     finished: asyncio.Event
     result: WorkerResult | None = None
+    task: asyncio.Task[None] | None = None
+    error: str | None = None
 
 
 class Onboarding:
@@ -123,27 +125,50 @@ class Onboarding:
             self.config, run_id=run_id, mode="auth", job=job, password=password, interactive=True,
             log_path=self.config.logs_dir / f"{run_id}.log", on_event=on_event,
         )
-        await process.start()
+        try:
+            await process.start()
+        except Exception as exc:
+            self.runs.finish_run(
+                run_id,
+                WorkerResult(
+                    exit_code=1,
+                    events=[],
+                    terminal={"ev": "error", "kind": "spawn", "message": str(exc)},
+                ),
+            )
+            raise
         session = AuthSession(account_id, run_id, process, prompted, asyncio.Event())
         self.sessions[account_id] = session
 
         async def finish() -> None:
-            result = await process.wait(timeout_s=MFA_TIMEOUT_S + 60)
-            self.runs.finish_run(run_id, result)
-            session.result = result
-            session.finished.set()
+            try:
+                result = await process.wait(timeout_s=MFA_TIMEOUT_S + 60)
+                self.runs.finish_run(run_id, result)
+                session.result = result
+            except Exception as exc:  # noqa: BLE001 - the session must never wedge
+                log.exception("auth session for %s failed", account_id)
+                session.error = f"{type(exc).__name__}: {exc}"
+            finally:
+                session.finished.set()
+                if self.sessions.get(account_id) is session:
+                    self.sessions.pop(account_id, None)
 
-        asyncio.create_task(finish())
+        session.task = asyncio.create_task(finish())
         return session
 
     async def submit_code(self, account_id: str, code: str) -> None:
-        await self.sessions[account_id].process.send_code(code)
+        session = self.sessions[account_id]
+        if session.finished.is_set():
+            raise RuntimeError("auth session already finished")
+        await session.process.send_code(code)
 
     async def wait_auth(self, account_id: str) -> WorkerResult:
-        session = self.sessions[account_id]
+        session = self.sessions.get(account_id)
+        if session is None:
+            raise KeyError(account_id)
         await session.finished.wait()
-        self.sessions.pop(account_id, None)
-        assert session.result is not None
+        if session.result is None:
+            raise RuntimeError(session.error or "auth session ended without a result")
         return session.result
 
     # -- library discovery ---------------------------------------------------------------------
@@ -173,10 +198,10 @@ class Onboarding:
         )
         if result.exit_code != 0 or "personal" not in found:
             terminal = result.terminal or {}
-            raise RuntimeError(
-                f"list failed (exit {result.exit_code}): "
-                f"{terminal.get('kind', 'no libraries event')}"
+            kind = terminal.get("kind") or (
+                "no terminal event" if result.exit_code != 0 else "no libraries event"
             )
+            raise RuntimeError(f"list failed (exit {result.exit_code}): {kind}")
         with self.store.session() as s:
             account = repo.get_account(s, account_id)
             assert account is not None
@@ -184,13 +209,15 @@ class Onboarding:
             for zone in found["personal"]:
                 if zone != PRIMARY_ZONE:
                     continue  # other private zones are not libraries we mirror
+                existing = repo.get_library_by_zone(s, account.id, zone)
                 library = repo.upsert_library(
                     s, account, kind="personal", zone_name=zone, display_name=account.display_name,
                     target_dir=safe_dir_name(account.display_name, fallback),
                     interval_min=self.config.default_interval_min,
                     nightly_at=self.config.default_nightly_at,
                 )
-                library.enabled = True
+                if existing is None:
+                    library.enabled = True  # first discovery only; never override a user's disable
             for zone in found["shared"]:
                 repo.upsert_library(
                     s, account, kind="shared", zone_name=zone, display_name=zone,

@@ -83,6 +83,12 @@ def validate_target_dir(
     return norm
 
 
+def get_library_by_zone(s: Session, account_id: str, zone_name: str) -> Library | None:
+    return s.scalars(
+        select(Library).where(Library.account_id == account_id, Library.zone_name == zone_name)
+    ).first()
+
+
 def upsert_library(
     s: Session,
     account: Account,
@@ -94,9 +100,7 @@ def upsert_library(
     interval_min: int,
     nightly_at: str,
 ) -> Library:
-    existing = s.scalars(
-        select(Library).where(Library.account_id == account.id, Library.zone_name == zone_name)
-    ).first()
+    existing = get_library_by_zone(s, account.id, zone_name)
     if existing is not None:
         return existing
     library = Library(

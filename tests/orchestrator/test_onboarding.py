@@ -143,3 +143,75 @@ async def test_refresh_libraries_failure_raises(
     )
     with pytest.raises(RuntimeError, match="not_activated"):
         await ob.refresh_libraries(account_id)
+
+
+async def test_refresh_keeps_a_user_disable_and_existing_dir(
+    onboarding: tuple[Onboarding, Store, list[Any]],
+) -> None:
+    ob, store, _ = onboarding
+    account_id = ob.create_account(
+        display_name="旭刚", apple_id="d@icloud.com", region="cn", password="pw"
+    )
+    await ob.refresh_libraries(account_id)  # default list scenario: PrimarySync only
+    with store.session() as s:
+        lib = repo.list_libraries(s)[0]
+        lib.enabled = False
+        lib.target_dir = "custom-dir"
+    await ob.refresh_libraries(account_id)
+    with store.session() as s:
+        lib = repo.list_libraries(s)[0]
+        assert lib.enabled is False and lib.target_dir == "custom-dir"
+
+
+async def test_auth_session_never_wedges_when_bookkeeping_fails(
+    onboarding: tuple[Onboarding, Store, list[Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ob, _, _ = onboarding
+    account_id = ob.create_account(
+        display_name="x", apple_id="e@icloud.com", region="cn", password="pw"
+    )
+
+    def broken(run_id: str, result: Any) -> Any:
+        raise RuntimeError("bookkeeping bug")
+
+    monkeypatch.setattr(ob.runs, "finish_run", broken)
+    await ob.start_auth(account_id)
+    with pytest.raises(RuntimeError, match="bookkeeping"):
+        await asyncio.wait_for(ob.wait_auth(account_id), 10)
+    assert account_id not in ob.sessions
+    monkeypatch.undo()
+    session = await ob.start_auth(account_id)  # not blocked any more
+    assert (await ob.wait_auth(account_id)).exit_code == 0 and session.task is not None
+
+
+async def test_start_auth_spawn_failure_fails_the_run(
+    onboarding: tuple[Onboarding, Store, list[Any]], config: Config
+) -> None:
+    ob, store, _ = onboarding
+    account_id = ob.create_account(
+        display_name="x", apple_id="f@icloud.com", region="cn", password="pw"
+    )
+    broken_config = Config(
+        data_dir=config.data_dir, photos_dir=config.photos_dir,
+        worker_cmd=("/definitely/not/a/binary",), tz=config.tz,
+    )
+    ob.config = broken_config
+    with pytest.raises(FileNotFoundError):
+        await ob.start_auth(account_id)
+    assert account_id not in ob.sessions
+    with store.session() as s:
+        run = repo.list_runs(s)[0]
+        assert run.status == "failed" and run.error_kind == "spawn"
+
+
+async def test_submit_code_after_finish_raises(
+    onboarding: tuple[Onboarding, Store, list[Any]],
+) -> None:
+    ob, _, _ = onboarding
+    account_id = ob.create_account(
+        display_name="x", apple_id="g@icloud.com", region="cn", password="pw"
+    )
+    session = await ob.start_auth(account_id)  # default scenario finishes without a prompt
+    await asyncio.wait_for(session.finished.wait(), 10)
+    with pytest.raises((RuntimeError, KeyError)):
+        await ob.submit_code(account_id, "123456")
