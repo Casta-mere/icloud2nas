@@ -21,9 +21,10 @@ from icloud2nas.orchestrator.store import repo
 from icloud2nas.orchestrator.store.db import Store
 from icloud2nas.orchestrator.store.models import Library, utcnow
 from icloud2nas.orchestrator.store.secrets import Secrets
-from icloud2nas.orchestrator.supervisor import WorkerProcess
+from icloud2nas.orchestrator.supervisor import WorkerProcess, WorkerResult
 
 log = logging.getLogger(__name__)
+RUN_TIMEOUT_S = 12 * 3600
 KIND_ORDER = {"nightly": 0, "reconcile": 1, "full": 2, "quick": 3}
 
 
@@ -92,13 +93,13 @@ class Scheduler:
         ok = self.free_space_ok()
         if ok == (not self._space_low):
             return ok
-        self._space_low = not ok
         with self.store.session() as s:
             for library in repo.list_libraries(s):
                 if not ok and library.status == "ok":
                     library.status = "space_paused"
                 elif ok and library.status == "space_paused":
                     library.status = "ok"
+        self._space_low = not ok
         self.bus.publish("space.low" if not ok else "space.ok", min_free_gb=self.config.min_free_gb)
         return ok
 
@@ -153,7 +154,7 @@ class Scheduler:
         return (
             job.library_id not in self.running_libraries
             and job.account_id not in self.running_accounts
-            and len(self.active) < self.config.max_workers
+            and len(self.running_libraries) < self.config.max_workers
         )
 
     async def launch(self, job: DueJob) -> str:
@@ -162,63 +163,93 @@ class Scheduler:
         self.running_libraries.add(job.library_id)
         self.running_accounts.add(job.account_id)
         first_mode = "reconcile" if job.kind == "reconcile" else "sync"
-        run_id = self.runs.start_run(
-            account_id=job.account_id,
-            library_id=job.library_id,
-            mode=first_mode,
-            trigger=job.trigger,
-        )
+        try:
+            run_id = self.runs.start_run(
+                account_id=job.account_id,
+                library_id=job.library_id,
+                mode=first_mode,
+                trigger=job.trigger,
+            )
+        except Exception:
+            self.running_libraries.discard(job.library_id)
+            self.running_accounts.discard(job.account_id)
+            raise
         task = asyncio.create_task(self._run_chain(job, run_id))
         self.tasks.add(task)
         task.add_done_callback(self.tasks.discard)
         return run_id
 
     async def _run_one(self, job: DueJob, run_id: str, mode: str, full: bool) -> int:
-        with self.store.session() as s:
-            account = repo.get_account(s, job.account_id)
-            library = repo.get_library(s, job.library_id)
-            assert account is not None and library is not None
-            spec = build_job(
-                self.config,
-                account,
-                library,
-                interactive=False,
-                full=full,
-                policy=policy_from_settings(s),
+        try:
+            with self.store.session() as s:
+                account = repo.get_account(s, job.account_id)
+                library = repo.get_library(s, job.library_id)
+                assert account is not None and library is not None
+                spec = build_job(
+                    self.config,
+                    account,
+                    library,
+                    interactive=False,
+                    full=full,
+                    policy=policy_from_settings(s),
+                )
+                password = self.onboarding.password_for(account)
+            validate_job(mode, spec)
+        except Exception as exc:
+            self.runs.finish_run(
+                run_id,
+                WorkerResult(
+                    exit_code=1,
+                    events=[],
+                    terminal={"ev": "error", "kind": "internal", "message": str(exc)},
+                ),
             )
-            password = self.onboarding.password_for(account)
-        validate_job(mode, spec)
+            raise
 
         def register(process: WorkerProcess) -> None:
             self.active[run_id] = process
 
         try:
             result = await self.runs.execute(
-                run_id, mode=mode, job=spec, password=password, interactive=False, on_start=register
+                run_id,
+                mode=mode,
+                job=spec,
+                password=password,
+                interactive=False,
+                timeout_s=RUN_TIMEOUT_S,
+                on_start=register,
             )
         finally:
             self.active.pop(run_id, None)
         return result.exit_code
 
     async def _run_chain(self, job: DueJob, run_id: str) -> None:
+        started_on = local_now(self.clock(), self.config.tz).date()  # the night this run belongs to
         try:
             if job.kind == "reconcile":
                 await self._run_one(job, run_id, "reconcile", full=False)
                 return
-            code = await self._run_one(job, run_id, "sync", full=job.kind in ("full", "nightly"))
-            if job.kind == "nightly":
-                with self.store.session() as s:
-                    library = repo.get_library(s, job.library_id)
-                    if library is not None:
-                        library.last_nightly_on = local_now(self.clock(), self.config.tz).date()
-                if code == 0:
-                    chained = self.runs.start_run(
-                        account_id=job.account_id,
-                        library_id=job.library_id,
-                        mode="reconcile",
-                        trigger="chain",
-                    )
-                    await self._run_one(job, chained, "reconcile", full=False)
+            code: int | None = None
+            try:
+                code = await self._run_one(
+                    job, run_id, "sync", full=job.kind in ("full", "nightly")
+                )
+            finally:
+                if job.kind == "nightly" or (job.kind == "full" and code == 0):
+                    # nightly: once per night whatever the outcome; first-ever full sync:
+                    # skip tonight's redundant nightly
+                    with self.store.session() as s:
+                        library = repo.get_library(s, job.library_id)
+                        if library is not None:
+                            library.last_nightly_on = started_on
+            if job.kind == "nightly" and code == 0:
+                chained = self.runs.start_run(
+                    account_id=job.account_id,
+                    library_id=job.library_id,
+                    mode="reconcile",
+                    trigger="chain",
+                )
+                await self._run_one(job, chained, "reconcile", full=False)
         except Exception:  # noqa: BLE001 - a launch bug must release the locks and be logged
             log.exception("job %s on library %s crashed", job.kind, job.library_id)
         finally:
@@ -238,9 +269,11 @@ class Scheduler:
     async def run_forever(self, stop: asyncio.Event) -> None:
         with self.store.session() as s:
             swept = repo.sweep_stale_runs(s, "daemon restarted")
+            self._space_low = any(lib.status == "space_paused" for lib in repo.list_libraries(s))
         if swept:
             log.warning("marked %d stale runs as killed", swept)
-        await asyncio.sleep(random.uniform(*self.jitter_s))  # noqa: S311 - not security related
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(stop.wait(), random.uniform(*self.jitter_s))
         try:
             while not stop.is_set():
                 try:
