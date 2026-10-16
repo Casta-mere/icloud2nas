@@ -15,7 +15,7 @@ from icloud2nas.orchestrator.store.models import Base
 
 def make_engine(db_path: Path) -> Engine:
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    engine = create_engine(f"sqlite+pysqlite:///{db_path}")
+    engine = create_engine(f"sqlite+pysqlite:///{db_path}", connect_args={"timeout": 30})
 
     @event.listens_for(engine, "connect")
     def _pragmas(dbapi_connection: Any, _record: Any) -> None:

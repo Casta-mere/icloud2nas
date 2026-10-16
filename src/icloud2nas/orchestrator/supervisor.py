@@ -17,6 +17,7 @@ from icloud2nas.orchestrator.config import Config
 log = logging.getLogger(__name__)
 TERMINAL_EVENTS = ("done", "error", "reconcile_plan")
 KILL_GRACE_S = 5.0
+STDOUT_LINE_LIMIT = 16 * 1024 * 1024  # one event line; longer is a protocol violation
 
 
 @dataclass
@@ -25,6 +26,7 @@ class WorkerResult:
     events: list[dict[str, Any]] = field(default_factory=list)
     terminal: dict[str, Any] | None = None
     killed: bool = False
+    killed_by: str | None = None  # "timeout" | "shutdown" | "protocol" when killed
 
 
 class WorkerProcess:
@@ -56,6 +58,7 @@ class WorkerProcess:
         self._terminal: dict[str, Any] | None = None
         self._log_file: Any = None
         self._killed = False
+        self._killed_by: str | None = None
         self._result: WorkerResult | None = None
 
     @property
@@ -81,6 +84,7 @@ class WorkerProcess:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=self._log_file,
+                limit=STDOUT_LINE_LIMIT,
             )
         except BaseException:
             self._log_file.close()
@@ -93,7 +97,13 @@ class WorkerProcess:
     async def _read_events(self) -> None:
         assert self._proc is not None and self._proc.stdout is not None
         while True:
-            line = await self._proc.stdout.readline()
+            try:
+                line = await self._proc.stdout.readline()
+            except ValueError:  # line longer than STDOUT_LINE_LIMIT
+                log.error("worker %s: stdout line over %d bytes; killing", self.run_id,
+                          STDOUT_LINE_LIMIT)
+                await self.kill(reason="protocol")
+                return
             if not line:
                 return
             try:
@@ -120,10 +130,11 @@ class WorkerProcess:
         self._proc.stdin.write((json.dumps({"code": code}) + "\n").encode("utf-8"))
         await self._proc.stdin.drain()
 
-    async def kill(self) -> None:
+    async def kill(self, reason: str = "shutdown") -> None:
         if self._proc is None or self._proc.returncode is not None:
             return
         self._killed = True
+        self._killed_by = reason
         self._proc.send_signal(signal.SIGTERM)
         try:
             await asyncio.wait_for(self._proc.wait(), KILL_GRACE_S)
@@ -140,7 +151,7 @@ class WorkerProcess:
             await asyncio.wait_for(self._reader, timeout_s)
             await self._proc.wait()
         except TimeoutError:
-            await self.kill()
+            await self.kill(reason="timeout")
             self._reader.cancel()
         finally:
             if self._proc.stdin is not None and not self._proc.stdin.is_closing():
@@ -149,7 +160,11 @@ class WorkerProcess:
                 self._log_file.close()
         code = self._proc.returncode if self._proc.returncode is not None else -1
         self._result = WorkerResult(
-            exit_code=code, events=list(self._events), terminal=self._terminal, killed=self._killed
+            exit_code=code,
+            events=list(self._events),
+            terminal=self._terminal,
+            killed=self._killed,
+            killed_by=self._killed_by,
         )
         return self._result
 

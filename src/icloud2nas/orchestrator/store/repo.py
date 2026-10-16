@@ -18,6 +18,7 @@ from icloud2nas.orchestrator.store.models import (
 )
 
 RESERVED_TOP_DIRS = {".trash", "kept"}
+SHARED_TOP_DIR = "shared"
 
 
 def create_account(
@@ -58,7 +59,11 @@ def _components(target_dir: str) -> tuple[str, ...]:
 
 
 def validate_target_dir(
-    s: Session, target_dir: str, *, exclude_library_id: str | None = None
+    s: Session,
+    target_dir: str,
+    *,
+    exclude_library_id: str | None = None,
+    kind: str = "personal",
 ) -> str:
     """Normalise a photos-relative dir and refuse nesting with any other library (spec §3.3a)."""
     if not target_dir or target_dir.startswith("/"):
@@ -69,6 +74,8 @@ def validate_target_dir(
         raise ValueError("target_dir must not be empty or escape the photos root")
     if parts[0] in RESERVED_TOP_DIRS or parts[0].startswith("."):
         raise ValueError(f"target_dir must not start with {parts[0]!r} (reserved)")
+    if kind == "personal" and parts[0] == SHARED_TOP_DIR:
+        raise ValueError(f"target_dir must not start with {SHARED_TOP_DIR!r} (shared libraries)")
     for other in list_libraries(s):
         if other.id == exclude_library_id:
             continue
@@ -87,6 +94,11 @@ def get_library_by_zone(s: Session, account_id: str, zone_name: str) -> Library 
     return s.scalars(
         select(Library).where(Library.account_id == account_id, Library.zone_name == zone_name)
     ).first()
+
+
+def find_library_by_zone(s: Session, zone_name: str) -> Library | None:
+    """Any account's library for this zone (shared zones are seen by every participant)."""
+    return s.scalars(select(Library).where(Library.zone_name == zone_name)).first()
 
 
 def upsert_library(
@@ -108,7 +120,7 @@ def upsert_library(
         kind=kind,
         zone_name=zone_name,
         display_name=display_name,
-        target_dir=validate_target_dir(s, target_dir),
+        target_dir=validate_target_dir(s, target_dir, kind=kind),
         interval_min=interval_min,
         nightly_at=nightly_at,
     )
@@ -159,9 +171,26 @@ def create_plan(
     return plan
 
 
-def list_plans(s: Session, status: str = "pending") -> list[ReconcilePlan]:
-    stmt = select(ReconcilePlan).where(ReconcilePlan.status == status)
+def list_plans(s: Session, status: str | None = "pending") -> list[ReconcilePlan]:
+    """Plans with this status (None: all)."""
+    stmt = select(ReconcilePlan)
+    if status is not None:
+        stmt = stmt.where(ReconcilePlan.status == status)
     return list(s.scalars(stmt.order_by(ReconcilePlan.created_at)))
+
+
+def supersede_pending_plans(s: Session, library_id: str) -> int:
+    """A newer fused reconcile replaces every older pending plan of the library."""
+    pending = list(
+        s.scalars(
+            select(ReconcilePlan).where(
+                ReconcilePlan.library_id == library_id, ReconcilePlan.status == "pending"
+            )
+        )
+    )
+    for plan in pending:
+        plan.status = "superseded"
+    return len(pending)
 
 
 def get_setting(s: Session, key: str, default: str) -> str:

@@ -57,8 +57,9 @@ def test_apple_id_is_unique(store: Store) -> None:
 def test_target_dir_nesting_rule(store: Store, existing: str, candidate: str, ok: bool) -> None:
     with store.session() as s:
         acc = _account(s)
+        kind = "shared" if existing.startswith("shared/") else "personal"
         repo.upsert_library(
-            s, acc, kind="personal", zone_name="PrimarySync", display_name="x",
+            s, acc, kind=kind, zone_name="PrimarySync", display_name="x",
             target_dir=existing, interval_min=30, nightly_at="03:00",
         )
         if ok:

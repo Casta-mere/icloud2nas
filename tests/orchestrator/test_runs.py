@@ -203,7 +203,7 @@ async def test_progress_db_failure_does_not_drop_events(
 async def test_finish_run_crash_marks_run_internal_failure(
     world: dict[str, Any], config: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def broken_finish(run_id: str, result: Any) -> Any:
+    def broken_finish(run_id: str, result: Any, **_: Any) -> Any:
         raise RuntimeError("bookkeeping bug")
 
     monkeypatch.setattr(world["manager"], "finish_run", broken_finish)
@@ -225,3 +225,88 @@ async def test_finish_run_crash_marks_run_internal_failure(
         assert run.ended_at is not None
     finished = {"run_id": run_id, "status": "failed", "library_id": None}
     assert ("run.finished", finished) in world["seen"]
+
+
+async def test_execute_spawn_failure_marks_run_internal_and_backs_off(
+    world: dict[str, Any], config: Config
+) -> None:
+    broken = Config(
+        data_dir=config.data_dir, photos_dir=config.photos_dir,
+        worker_cmd=("/definitely/not/a/binary",), tz=config.tz,
+    )
+    manager = RunManager(broken, world["store"], Secrets.from_config(config), world["bus"])
+    with world["store"].session() as s:
+        acc = repo.get_account(s, world["account"])
+        lib = repo.get_library(s, world["library"])
+        assert acc is not None and lib is not None
+        job = build_job(config, acc, lib, interactive=False)
+    run_id = manager.start_run(
+        account_id=world["account"], library_id=world["library"], mode="sync", trigger="manual"
+    )
+    with pytest.raises(FileNotFoundError):
+        await manager.execute(run_id, mode="sync", job=job, password="pw", interactive=False)
+    with world["store"].session() as s:
+        run = repo.get_run(s, run_id)
+        acc = repo.get_account(s, world["account"])
+        assert run is not None and run.status == "failed" and run.error_kind == "internal"
+        assert acc is not None and acc.failures == 1
+
+
+async def test_apply_plan_success_leaves_account_state_alone(
+    world: dict[str, Any], config: Config
+) -> None:
+    with world["store"].session() as s:
+        acc = repo.get_account(s, world["account"])
+        lib = repo.get_library(s, world["library"])
+        assert acc is not None and lib is not None
+        acc.status = "password_rejected"
+        acc.last_error = "bad password"
+        job = build_job(config, acc, lib, interactive=False)
+    run_id = world["manager"].start_run(
+        account_id=world["account"], library_id=world["library"], mode="reconcile",
+        trigger="manual",
+    )
+    result = await world["manager"].execute(
+        run_id, mode="reconcile", job=job, password=None, interactive=False,
+        apply_plan=str(config.plans_dir / "p.txt"),
+    )
+    assert result.exit_code == 0
+    with world["store"].session() as s:
+        run = repo.get_run(s, run_id)
+        acc = repo.get_account(s, world["account"])
+        assert run is not None and run.status == "ok"
+        assert acc is not None and acc.status == "password_rejected"
+        assert acc.last_error == "bad password" and acc.last_auth_ok_at is None
+
+
+def test_shutdown_kill_does_not_back_off_but_timeout_does(world: dict[str, Any]) -> None:
+    _finish(world, "sync", WorkerResult(-15, [], None, killed=True, killed_by="shutdown"))
+    with world["store"].session() as s:
+        acc = repo.get_account(s, world["account"])
+        assert acc is not None and acc.failures == 0 and acc.backoff_until is None
+    run = _finish(world, "sync", WorkerResult(-15, [], None, killed=True, killed_by="timeout"))
+    assert run.error_kind == "killed" and "timeout" in (run.error_message or "")
+    with world["store"].session() as s:
+        acc = repo.get_account(s, world["account"])
+        assert acc is not None and acc.failures == 1
+
+
+def test_new_fused_plan_supersedes_pending_and_missing_plan_file_fails(
+    world: dict[str, Any], config: Config
+) -> None:
+    plan_ev = {
+        "ev": "reconcile_plan", "remote_total": 100, "local_total": 120, "extraneous": 30,
+        "missing": 0, "plan_file": str(config.plans_dir / "r.txt"), "fused": True,
+    }
+    first = _finish(world, "reconcile", WorkerResult(6, [plan_ev], plan_ev))
+    second = _finish(world, "reconcile", WorkerResult(6, [plan_ev], plan_ev))
+    with world["store"].session() as s:
+        pending = repo.list_plans(s)
+        superseded = repo.list_plans(s, "superseded")
+        assert [p.run_id for p in pending] == [second.id]
+        assert [p.run_id for p in superseded] == [first.id]
+    no_file = {k: v for k, v in plan_ev.items() if k != "plan_file"}
+    run = _finish(world, "reconcile", WorkerResult(6, [no_file], no_file))
+    assert run.status == "failed" and run.error_kind == "internal" and run.plan_file is None
+    with world["store"].session() as s:
+        assert len(repo.list_plans(s)) == 1

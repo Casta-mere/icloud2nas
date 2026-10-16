@@ -7,7 +7,16 @@ import shlex
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
+
+
+def normalize_hhmm(value: str) -> str:
+    """'3:00' -> '03:00' so string comparison with strftime('%H:%M') works; ValueError if bad."""
+    try:
+        return datetime.strptime(value.strip(), "%H:%M").strftime("%H:%M")
+    except ValueError:
+        raise ValueError(f"invalid HH:MM time {value!r}") from None
 
 
 @dataclass(frozen=True)
@@ -24,6 +33,10 @@ class Config:
     @property
     def db_path(self) -> Path:
         return self.data_dir / "icloud2nas.db"
+
+    @property
+    def lock_path(self) -> Path:
+        return self.data_dir / "daemon.lock"
 
     @property
     def secret_path(self) -> Path:
@@ -63,5 +76,5 @@ class Config:
             max_workers=int(source.get("I2N_MAX_WORKERS", "2")),
             min_free_gb=float(source.get("I2N_MIN_FREE_GB", "5")),
             default_interval_min=int(source.get("I2N_DEFAULT_INTERVAL_MIN", "30")),
-            default_nightly_at=source.get("I2N_DEFAULT_NIGHTLY_AT", "03:00"),
+            default_nightly_at=normalize_hhmm(source.get("I2N_DEFAULT_NIGHTLY_AT", "03:00")),
         )

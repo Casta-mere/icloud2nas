@@ -1,6 +1,8 @@
 from pathlib import Path
 
-from icloud2nas.orchestrator.config import Config
+import pytest
+
+from icloud2nas.orchestrator.config import Config, normalize_hhmm
 
 
 def test_defaults_and_env_overrides(tmp_path: Path) -> None:
@@ -35,3 +37,12 @@ def test_ensure_layout_creates_dirs(tmp_path: Path) -> None:
     cfg.ensure_layout()
     for p in (cfg.logs_dir, cfg.plans_dir, cfg.accounts_dir):
         assert p.is_dir()
+
+
+def test_nightly_at_is_normalised_and_validated(tmp_path: Path) -> None:
+    cfg = Config.from_env({"I2N_DATA_DIR": str(tmp_path), "I2N_DEFAULT_NIGHTLY_AT": "4:5"})
+    assert cfg.default_nightly_at == "04:05"
+    assert cfg.lock_path == tmp_path / "daemon.lock"
+    assert normalize_hhmm("3:00") == "03:00"
+    with pytest.raises(ValueError, match="25:00"):
+        normalize_hhmm("25:00")

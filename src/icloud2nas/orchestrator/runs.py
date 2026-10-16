@@ -83,12 +83,31 @@ class RunManager:
             apply_plan=apply_plan,
             on_event=relay,
         )
-        await process.start()
-        if on_start is not None:
-            on_start(process)
-        result = await process.wait(timeout_s)
         try:
-            self.finish_run(run_id, result)
+            await process.start()
+            if on_start is not None:
+                on_start(process)
+            result = await process.wait(timeout_s)
+        except Exception as exc:
+            log.exception("run %s: worker could not be driven", run_id)
+            await process.kill()  # no-op when it never started
+            try:
+                self.finish_run(
+                    run_id,
+                    WorkerResult(
+                        exit_code=1,
+                        events=[],
+                        terminal={"ev": "error", "kind": "internal", "message": str(exc)},
+                    ),
+                    account_state=True,
+                )
+            except Exception:  # noqa: BLE001
+                log.exception("run %s: finish_run failed", run_id)
+                self._mark_internal_failure(run_id, exc)
+            raise
+        try:
+            # an --apply-plan run never authenticates: its outcome says nothing about the account
+            self.finish_run(run_id, result, account_state=apply_plan is None)
         except Exception as exc:
             log.exception("run %s: finish_run failed", run_id)
             self._mark_internal_failure(run_id, exc)
@@ -119,7 +138,10 @@ class RunManager:
 
     # -- state machine -------------------------------------------------------------------------
 
-    def finish_run(self, run_id: str, result: WorkerResult) -> Run:
+    def finish_run(
+        self, run_id: str, result: WorkerResult, *, account_state: bool = True
+    ) -> Run:
+        """Record the outcome; with account_state=False the account row is left untouched."""
         now = utcnow()
         terminal = result.terminal or {}
         error = terminal if terminal.get("ev") == "error" else {}
@@ -136,9 +158,11 @@ class RunManager:
             if library is not None:
                 library.last_run_at = now
             code = result.exit_code
+            acct = account_state
             if result.killed:
-                self._fail(run, "killed", "worker killed (timeout or shutdown)")
-                self._backoff(account)
+                self._fail(run, "killed", f"worker killed ({result.killed_by or 'unknown'})")
+                if acct and result.killed_by != "shutdown":
+                    self._backoff(account)  # a shutdown is ours, not the account's fault
             elif code == EXIT_OK:
                 run.status = "ok"
                 stats = run.stats
@@ -146,33 +170,44 @@ class RunManager:
                 run.stats_json = json.dumps(stats, ensure_ascii=False)
                 if library is not None:
                     library.last_success_at = now
-                account.failures = 0
-                account.backoff_until = None
-                account.last_auth_ok_at = now
-                account.last_error = None
-                if account.status != "ok":
-                    account.status = "ok"
-                    account_status = "ok"
+                if acct:
+                    account.failures = 0
+                    account.backoff_until = None
+                    account.last_auth_ok_at = now
+                    account.last_error = None
+                    if account.status != "ok":
+                        account.status = "ok"
+                        account_status = "ok"
             elif code == EXIT_NEED_MFA:
                 run.status = "needs_mfa"
-                account.status = "needs_reauth"
-                account_status = "needs_reauth"
+                if acct:
+                    account.status = "needs_reauth"
+                    account_status = "needs_reauth"
             elif code == EXIT_PASSWORD:
                 self._fail(
                     run, error.get("kind", "password"), error.get("message", "password rejected")
                 )
-                account.status = "password_rejected"
-                account.last_error = run.error_message
-                account_status = "password_rejected"
+                if acct:
+                    account.status = "password_rejected"
+                    account.last_error = run.error_message
+                    account_status = "password_rejected"
             elif code == EXIT_FUSED and terminal.get("ev") == "reconcile_plan":
                 if int(terminal.get("remote_total", 0)) == 0:
                     self._fail(
                         run, "empty_listing", "remote listing returned zero assets; retry later"
                     )
-                    self._backoff(account)
+                    if acct:
+                        self._backoff(account)
+                elif not terminal.get("plan_file"):
+                    self._fail(run, "internal", "reconcile_plan without plan_file")
+                    if acct:
+                        account.last_error = run.error_message
+                        self._backoff(account)
                 else:
                     run.status = "fused"
-                    run.plan_file = str(terminal.get("plan_file"))
+                    run.plan_file = str(terminal["plan_file"])
+                    if run.library_id:
+                        repo.supersede_pending_plans(s, run.library_id)
                     plan = repo.create_plan(
                         s,
                         library_id=run.library_id or "",
@@ -185,8 +220,9 @@ class RunManager:
                 kind = error.get("kind") or ("no terminal event" if not error else "unknown")
                 message = error.get("message") or f"worker exited with code {code}"
                 self._fail(run, kind, message)
-                account.last_error = message
-                self._backoff(account)
+                if acct:
+                    account.last_error = message
+                    self._backoff(account)
             status = run.status
             library_id = run.library_id
         self.bus.publish("run.finished", run_id=run_id, status=status, library_id=library_id)

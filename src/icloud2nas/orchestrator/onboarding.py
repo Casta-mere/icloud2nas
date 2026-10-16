@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from icloud2nas.orchestrator.bus import EventBus
-from icloud2nas.orchestrator.config import Config
+from icloud2nas.orchestrator.config import Config, normalize_hhmm
 from icloud2nas.orchestrator.jobs import (
     MFA_TIMEOUT_S,
     PRIMARY_ZONE,
@@ -202,7 +202,8 @@ class Onboarding:
                 "no terminal event" if result.exit_code != 0 else "no libraries event"
             )
             raise RuntimeError(f"list failed (exit {result.exit_code}): {kind}")
-        with self.store.session() as s:
+        nightly_at = normalize_hhmm(self.config.default_nightly_at)
+        with self.store.session() as s:  # personal first, in its own transaction
             account = repo.get_account(s, account_id)
             assert account is not None
             fallback = account.id[:8]
@@ -214,15 +215,26 @@ class Onboarding:
                     s, account, kind="personal", zone_name=zone, display_name=account.display_name,
                     target_dir=safe_dir_name(account.display_name, fallback),
                     interval_min=self.config.default_interval_min,
-                    nightly_at=self.config.default_nightly_at,
+                    nightly_at=nightly_at,
                 )
                 if existing is None:
                     library.enabled = True  # first discovery only; never override a user's disable
-            for zone in found["shared"]:
-                repo.upsert_library(
-                    s, account, kind="shared", zone_name=zone, display_name=zone,
-                    target_dir=f"shared/{safe_dir_name(zone, zone)}",
-                    interval_min=self.config.default_interval_min,
-                    nightly_at=self.config.default_nightly_at,
-                )
+        for zone in found["shared"]:  # each shared zone on its own: one bad zone strands nothing
+            with self.store.session() as s:
+                other = repo.find_library_by_zone(s, zone)
+                if other is not None and other.account_id != account_id:
+                    log.info("shared zone %s already recorded by account %s", zone,
+                             other.account_id)
+                    continue
+                account = repo.get_account(s, account_id)
+                assert account is not None
+                try:
+                    repo.upsert_library(
+                        s, account, kind="shared", zone_name=zone, display_name=zone,
+                        target_dir=f"shared/{safe_dir_name(zone, 'zone')}",
+                        interval_min=self.config.default_interval_min,
+                        nightly_at=nightly_at,
+                    )
+                except ValueError as exc:
+                    log.warning("shared zone %s not recorded: %s", zone, exc)
         return found["personal"], found["shared"]

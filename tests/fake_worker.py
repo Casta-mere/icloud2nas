@@ -2,6 +2,11 @@
 """Scripted stand-in for `python -m icloud2nas.worker` used by orchestrator tests.
 
 Speaks docs/worker-protocol.md: JSON events on stdout, stderr free-form, exit code last word.
+
+FAKE_WORKER_SCENARIO maps a mode to {"events": [step, ...], "exit": N}. A step is an event dict
+or one of: {"wait_code": C} (read stdin until code C), {"sleep": S}, {"stderr": TEXT},
+{"raw": TEXT} (verbatim stdout line), {"raw_len": N} (one stdout line of N "x" characters,
+for lines too long to pass through the environment).
 """
 
 from __future__ import annotations
@@ -118,6 +123,9 @@ def main() -> int:
         elif "stderr" in step:
             sys.stderr.write(str(step["stderr"]) + "\n")
             sys.stderr.flush()
+        elif "raw_len" in step:
+            sys.stdout.write("x" * int(step["raw_len"]) + "\n")
+            sys.stdout.flush()
         elif "raw" in step:
             sys.stdout.write(str(step["raw"]) + "\n")
             sys.stdout.flush()

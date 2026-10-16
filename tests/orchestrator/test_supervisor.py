@@ -124,6 +124,23 @@ async def test_timeout_kills_the_worker(config: Config, monkeypatch: pytest.Monk
     await proc.start()
     result = await proc.wait(timeout_s=0.5)
     assert result.killed and result.exit_code != 0 and result.terminal is None
+    assert result.killed_by == "timeout"
+    assert [e["ev"] for e in result.events] == ["started"]
+
+
+async def test_oversized_stdout_line_kills_worker(
+    config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _scenario(
+        monkeypatch,
+        sync={"events": [{"ev": "started"}, {"raw_len": 17 * 1024 * 1024}, {"sleep": 30}],
+              "exit": 0},
+    )
+    result = await run_worker(
+        config, run_id="o1", mode="sync", job=JOB, password="pw", interactive=False,
+        log_path=config.logs_dir / "o1.log", timeout_s=20,
+    )
+    assert result.killed and result.exit_code != 0 and result.killed_by == "protocol"
     assert [e["ev"] for e in result.events] == ["started"]
 
 

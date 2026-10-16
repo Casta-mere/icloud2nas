@@ -136,7 +136,7 @@ async def test_household_two_accounts_scheduled_and_fused_plan(
     last = json.loads(calls.read_text(encoding="utf-8").splitlines()[-1])
     assert last["argv"][-2:] == ["--apply-plan", str(plan_file)] and last["has_password"] is False
 
-    # an expired session on a scheduled run parks the account, the other account keeps going
+    # an expired session on scheduled runs parks both accounts; parked accounts are not retried
     monkeypatch.setenv(
         "FAKE_WORKER_SCENARIO",
         json.dumps({"sync": {"events": [{"ev": "started"}, {"ev": "need_mfa"}], "exit": 3}}),

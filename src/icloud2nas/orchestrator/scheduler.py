@@ -235,9 +235,11 @@ class Scheduler:
                     job, run_id, "sync", full=job.kind in ("full", "nightly")
                 )
             finally:
-                if job.kind == "nightly" or (job.kind == "full" and code == 0):
-                    # nightly: once per night whatever the outcome; first-ever full sync:
-                    # skip tonight's redundant nightly
+                if job.kind == "nightly" or (
+                    job.kind == "full" and job.trigger == "schedule" and code == 0
+                ):
+                    # nightly: once per night whatever the outcome; first-ever (scheduled) full
+                    # sync: skip tonight's redundant nightly; a manual full never stamps
                     with self.store.session() as s:
                         library = repo.get_library(s, job.library_id)
                         if library is not None:

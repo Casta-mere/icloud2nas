@@ -234,6 +234,8 @@ async def test_shutdown_kills_running_worker_and_marks_it_killed(
     with store.session() as s:
         run = repo.list_runs(s, library_id=world["旭刚"])[0]
         assert run.status == "failed" and run.error_kind == "killed"
+        acc = repo.get_account(s, world["旭刚_acc"])
+        assert acc is not None and acc.failures == 0 and acc.backoff_until is None
     assert sched.active == {} and sched.running_libraries == set()
 
 
@@ -357,3 +359,13 @@ async def test_space_paused_libraries_recover_after_restart(
     await asyncio.wait_for(daemon, 10)
     with store.session() as s:
         assert all(lib.status == "ok" for lib in repo.list_libraries(s))
+
+
+async def test_manual_full_sync_does_not_stamp_nightly(world: dict[str, Any]) -> None:
+    store, sched = world["store"], world["sched"]
+    await sched.launch(sched.request_manual(world["旭刚"], "sync"))
+    await asyncio.gather(*sched.tasks)
+    with store.session() as s:
+        lib = repo.get_library(s, world["旭刚"])
+        assert lib is not None and lib.last_success_at is not None
+        assert lib.last_nightly_on is None

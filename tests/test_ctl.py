@@ -8,6 +8,7 @@ import pytest
 
 from icloud2nas import ctl
 from icloud2nas.orchestrator.config import Config
+from icloud2nas.orchestrator.lock import DaemonLock
 from icloud2nas.orchestrator.store import repo
 
 
@@ -192,3 +193,116 @@ def test_ambiguous_prefix_is_an_error(config: Config) -> None:
     if common:  # two uuid4 hex ids share a prefix only by chance; skip the assertion otherwise
         rc, out = _run(config, ["library", "set", common, "--enable"])
         assert rc == 1 and "ambiguous" in out
+
+
+def _add(config: Config, apple_id: str, name: str = "x") -> str:
+    rc, out = _run(
+        config, ["account", "add", "--name", name, "--apple-id", apple_id, "--region", "cn"]
+    )
+    assert rc == 0, out
+    app = ctl.build_app(Config.from_env(_env(config)), _env(config))
+    with app.store.session() as s:
+        account = repo.get_account_by_apple_id(s, apple_id)
+        assert account is not None
+        return account.id
+
+
+def test_cli_refuses_to_run_while_daemon_lock_held(config: Config) -> None:
+    _add(config, "l@icloud.com")
+    app = ctl.build_app(Config.from_env(_env(config)), _env(config))
+    with app.store.session() as s:
+        library_id = repo.list_libraries(s)[0].id
+    lock = DaemonLock(config.lock_path)
+    lock.acquire("daemon")
+    try:
+        rc, out = _run(config, ["run", "sync", library_id])
+        assert rc == 1 and "holds the worker lock" in out and "daemon" in out
+        rc, out = _run(config, ["daemon"])
+        assert rc == 1 and "holds the worker lock" in out
+        rc, out = _run(config, ["library", "list"])
+        assert rc == 0 and library_id in out
+    finally:
+        lock.release()
+    rc, out = _run(config, ["run", "sync", library_id])
+    assert rc == 0, out
+
+
+def test_account_refresh_command(config: Config) -> None:
+    account_id = _add(config, "r@icloud.com")
+    app = ctl.build_app(Config.from_env(_env(config)), _env(config))
+    with app.store.session() as s:
+        for lib in repo.list_libraries(s):
+            s.delete(lib)
+    rc, out = _run(config, ["account", "refresh", account_id[:8]])
+    assert rc == 0 and "PrimarySync" in out
+    with app.store.session() as s:
+        assert [lib.zone_name for lib in repo.list_libraries(s)] == ["PrimarySync"]
+
+
+def test_account_add_reports_discovery_failure_with_recovery_hint(
+    config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(
+        "FAKE_WORKER_SCENARIO",
+        json.dumps({"list": {"events": [{"ev": "started"},
+                                        {"ev": "error", "kind": "not_activated",
+                                         "message": "indexing"}], "exit": 1}}),
+    )
+    rc, out = _run(
+        config, ["account", "add", "--name", "x", "--apple-id", "f@icloud.com", "--region", "cn"]
+    )
+    assert rc == 1 and "logged in; library discovery failed" in out
+    assert "icloud2nas-ctl account refresh" in out
+
+
+def test_nightly_is_normalised(config: Config) -> None:
+    _add(config, "n@icloud.com")
+    app = ctl.build_app(Config.from_env(_env(config)), _env(config))
+    with app.store.session() as s:
+        library_id = repo.list_libraries(s)[0].id
+    rc, out = _run(config, ["library", "set", library_id, "--nightly", "3:00"])
+    assert rc == 0, out
+    with app.store.session() as s:
+        lib = repo.get_library(s, library_id)
+        assert lib is not None and lib.nightly_at == "03:00"
+    rc, out = _run(config, ["library", "set", library_id, "--nightly", "25:00"])
+    assert rc == 1 and "25:00" in out
+
+
+def test_duplicate_apple_id_is_reported(config: Config) -> None:
+    _add(config, "d@icloud.com")
+    rc, out = _run(
+        config, ["account", "add", "--name", "y", "--apple-id", "d@icloud.com", "--region", "cn"]
+    )
+    assert rc == 1 and "already exists" in out
+    rc, out = _run(config, ["account", "list"])
+    assert out.count("d@icloud.com") == 1
+
+
+def test_superseded_plan_cannot_be_approved(
+    config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _add(config, "s@icloud.com")
+    app = ctl.build_app(Config.from_env(_env(config)), _env(config))
+    with app.store.session() as s:
+        library_id = repo.list_libraries(s)[0].id
+    plan_file = config.plans_dir / "fused.txt"
+    plan_file.write_text("2024/05/a.HEIC\n", encoding="utf-8")
+    fused = {
+        "ev": "reconcile_plan", "remote_total": 100, "local_total": 130, "extraneous": 30,
+        "missing": 0, "plan_file": str(plan_file), "fused": True,
+    }
+    monkeypatch.setenv(
+        "FAKE_WORKER_SCENARIO",
+        json.dumps({"reconcile": {"events": [{"ev": "started"}, fused], "exit": 6}}),
+    )
+    assert _run(config, ["run", "reconcile", library_id])[0] == 6
+    assert _run(config, ["run", "reconcile", library_id])[0] == 6
+    rc, out = _run(config, ["plan", "list"])
+    assert rc == 0 and len(out.strip().splitlines()) == 1
+    rc, out = _run(config, ["plan", "list", "--status", "superseded"])
+    lines = out.strip().splitlines()
+    assert rc == 0 and len(lines) == 1
+    old_id = lines[0].split("\t")[0]
+    rc, out = _run(config, ["plan", "approve", old_id])
+    assert rc == 1 and "plan is superseded" in out

@@ -215,3 +215,40 @@ async def test_submit_code_after_finish_raises(
     await asyncio.wait_for(session.finished.wait(), 10)
     with pytest.raises((RuntimeError, KeyError)):
         await ob.submit_code(account_id, "123456")
+
+
+async def test_second_account_with_same_shared_zone_keeps_personal_library(
+    onboarding: tuple[Onboarding, Store, list[Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ob, store, _ = onboarding
+    monkeypatch.setenv(
+        "FAKE_WORKER_SCENARIO",
+        json.dumps({"list": {"events": [{"ev": "started"},
+                                        {"ev": "libraries", "personal": ["PrimarySync"],
+                                         "shared": ["SharedSync-9"]},
+                                        {"ev": "done", "stats": {}}], "exit": 0}}),
+    )
+    first = ob.create_account(display_name="旭刚", apple_id="h@icloud.com", region="cn",
+                              password="pw")
+    second = ob.create_account(display_name="幻伊镜", apple_id="i@icloud.com", region="cn",
+                               password="pw")
+    await ob.refresh_libraries(first)
+    personal, shared = await ob.refresh_libraries(second)
+    assert personal == ["PrimarySync"] and shared == ["SharedSync-9"]
+    await ob.refresh_libraries(second)  # idempotent, never raises
+    with store.session() as s:
+        libs = repo.list_libraries(s)
+        mine = {lib.account_id for lib in libs if lib.kind == "personal" and lib.enabled}
+        assert mine == {first, second}
+        shared_rows = [lib for lib in libs if lib.kind == "shared"]
+        assert len(shared_rows) == 1 and shared_rows[0].account_id == first
+
+
+def test_personal_dir_named_shared_is_rejected(
+    onboarding: tuple[Onboarding, Store, list[Any]],
+) -> None:
+    _, store, _ = onboarding
+    with store.session() as s:
+        with pytest.raises(ValueError, match="shared"):
+            repo.validate_target_dir(s, "shared/x")
+        assert repo.validate_target_dir(s, "shared/x", kind="shared") == "shared/x"

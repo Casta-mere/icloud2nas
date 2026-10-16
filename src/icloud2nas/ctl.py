@@ -15,9 +15,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, TextIO
 
+from cryptography.fernet import InvalidToken
+from sqlalchemy.exc import IntegrityError
+
 from icloud2nas.orchestrator.bus import EventBus
-from icloud2nas.orchestrator.config import Config
+from icloud2nas.orchestrator.config import Config, normalize_hhmm
 from icloud2nas.orchestrator.jobs import build_job, policy_from_settings, validate_job
+from icloud2nas.orchestrator.lock import DaemonLock, LockHeld
 from icloud2nas.orchestrator.onboarding import Onboarding
 from icloud2nas.orchestrator.runs import RunManager
 from icloud2nas.orchestrator.scheduler import Scheduler
@@ -27,6 +31,7 @@ from icloud2nas.orchestrator.store.models import ReconcilePlan
 from icloud2nas.orchestrator.store.secrets import Secrets
 
 PASSWORD_ENV = "I2N_CTL_PASSWORD"
+PLAN_STATUSES = ("pending", "approved", "executed", "rejected", "superseded")
 
 
 @dataclass
@@ -168,7 +173,14 @@ def cmd_account(
         if code != 0:
             out.write(f"login failed with exit code {code}\n")
             return code
-        personal, shared = asyncio.run(app.onboarding.refresh_libraries(account_id))
+        try:
+            personal, shared = asyncio.run(app.onboarding.refresh_libraries(account_id))
+        except (RuntimeError, ValueError) as exc:
+            out.write(
+                f"logged in; library discovery failed ({exc}); fix the cause and run: "
+                f"icloud2nas-ctl account refresh {account_id}\n"
+            )
+            return 1
         out.write(f"libraries: personal={personal} shared={shared}\n")
         return 0
     if args.action == "list":
@@ -183,9 +195,14 @@ def cmd_account(
                     a.status,
                     a.failures,
                     a.backoff_until,
+                    a.last_error[:60] if a.last_error else None,
                 )
         return 0
     account_id = resolve_id(_account_ids(app), args.id)
+    if args.action == "refresh":
+        personal, shared = asyncio.run(app.onboarding.refresh_libraries(account_id))
+        out.write(f"libraries: personal={personal} shared={shared}\n")
+        return 0
     if args.action == "set-password":
         with app.store.session() as s:
             account = repo.get_account(s, account_id)
@@ -233,12 +250,13 @@ def cmd_library(app: App, args: argparse.Namespace, out: TextIO) -> int:
         if args.interval is not None:
             lib.interval_min = args.interval
         if args.nightly is not None:
-            datetime.strptime(args.nightly, "%H:%M")
-            lib.nightly_at = args.nightly
+            lib.nightly_at = normalize_hhmm(args.nightly)
         if args.name is not None:
             lib.display_name = args.name
         if args.dir is not None:
-            lib.target_dir = repo.validate_target_dir(s, args.dir, exclude_library_id=lib.id)
+            lib.target_dir = repo.validate_target_dir(
+                s, args.dir, exclude_library_id=lib.id, kind=lib.kind
+            )
     return 0
 
 
@@ -290,6 +308,8 @@ async def _apply_plan(app: App, plan_id: str, out: TextIO) -> int:
         plan = s.get(ReconcilePlan, plan_id)
         if plan is None:
             raise KeyError(plan_id)
+        if plan.status != "pending":
+            raise ValueError(f"plan is {plan.status}")
         library = repo.get_library(s, plan.library_id)
         assert library is not None
         account = repo.get_account(s, library.account_id)
@@ -298,24 +318,29 @@ async def _apply_plan(app: App, plan_id: str, out: TextIO) -> int:
             app.config, account, library, interactive=False, policy=policy_from_settings(s)
         )
         plan_file = plan.plan_file
-    validate_job("reconcile", job)
-    run_id = app.runs.start_run(
-        account_id=account.id, library_id=library.id, mode="reconcile", trigger="manual"
-    )
-    result = await app.runs.execute(
-        run_id,
-        mode="reconcile",
-        job=job,
-        password=None,
-        interactive=False,
-        apply_plan=plan_file,
-        on_event=_event_printer(out),
-    )
-    with app.store.session() as s:
-        plan = s.get(ReconcilePlan, plan_id)
-        assert plan is not None
-        plan.status = "executed" if result.exit_code == 0 else "pending"
-    return result.exit_code
+        validate_job("reconcile", job)
+        plan.status = "approved"
+    exit_code = 1
+    try:
+        run_id = app.runs.start_run(
+            account_id=account.id, library_id=library.id, mode="reconcile", trigger="manual"
+        )
+        result = await app.runs.execute(
+            run_id,
+            mode="reconcile",
+            job=job,
+            password=None,
+            interactive=False,
+            apply_plan=plan_file,
+            on_event=_event_printer(out),
+        )
+        exit_code = result.exit_code
+    finally:
+        with app.store.session() as s:
+            plan = s.get(ReconcilePlan, plan_id)
+            assert plan is not None
+            plan.status = "executed" if exit_code == 0 else "pending"
+    return exit_code
 
 
 def cmd_plan(app: App, args: argparse.Namespace, out: TextIO) -> int:
@@ -327,12 +352,14 @@ def cmd_plan(app: App, args: argparse.Namespace, out: TextIO) -> int:
                 )
         return 0
     with app.store.session() as s:
-        plan_ids = [(p.id, p.id) for p in repo.list_plans(s, "pending")]
+        plan_ids = [(p.id, p.id) for p in repo.list_plans(s, None)]
     plan_id = resolve_id(plan_ids, args.id)
     if args.action == "reject":
         with app.store.session() as s:
             plan = s.get(ReconcilePlan, plan_id)
             assert plan is not None
+            if plan.status != "pending":
+                raise ValueError(f"plan is {plan.status}")
             plan.status = "rejected"
         return 0
     return asyncio.run(_apply_plan(app, plan_id, out))
@@ -350,6 +377,28 @@ async def _daemon(app: App) -> int:
     return 0
 
 
+def cmd_daemon(app: App, out: TextIO) -> int:
+    lock = DaemonLock(app.config.lock_path)
+    try:
+        lock.acquire("daemon")
+    except LockHeld as exc:
+        out.write(f"error: {exc}\n")
+        return 1
+    try:  # the startup sweep inside run_forever only happens once we own the lock
+        return asyncio.run(_daemon(app))
+    finally:
+        lock.release()
+
+
+def _lock_owner(args: argparse.Namespace) -> str | None:
+    """The lock owner name for commands that spawn workers; None for DB-only commands."""
+    if args.cmd == "run" or (args.cmd == "plan" and args.action == "approve"):
+        return f"icloud2nas-ctl {args.cmd} {getattr(args, 'mode', None) or args.action}"
+    if args.cmd == "account" and args.action in ("add", "reauth", "set-password", "refresh"):
+        return f"icloud2nas-ctl account {args.action}"
+    return None
+
+
 # -- entry -----------------------------------------------------------------------------------------
 
 
@@ -365,6 +414,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     acc.add_parser("list")
     acc.add_parser("reauth").add_argument("id")
     acc.add_parser("set-password").add_argument("id")
+    acc.add_parser("refresh").add_argument("id")
 
     lib = sub.add_parser("library").add_subparsers(dest="action", required=True)
     lib.add_parser("list")
@@ -387,7 +437,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
 
     plan = sub.add_parser("plan").add_subparsers(dest="action", required=True)
     pl = plan.add_parser("list")
-    pl.add_argument("--status", default="pending")
+    pl.add_argument("--status", default="pending", choices=PLAN_STATUSES)
     plan.add_parser("approve").add_argument("id")
     plan.add_parser("reject").add_argument("id")
 
@@ -410,25 +460,46 @@ def main(
         stream=sys.stderr,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    app = build_app(Config.from_env(source), source)
     try:
-        if args.cmd == "account":
-            return cmd_account(app, args, source, ask_password, ask_code, out)
-        if args.cmd == "library":
-            return cmd_library(app, args, out)
-        if args.cmd == "run":
-            return cmd_run(app, args, out)
-        if args.cmd == "runs":
-            return cmd_runs(app, args, out)
-        if args.cmd == "plan":
-            return cmd_plan(app, args, out)
-        return asyncio.run(_daemon(app))
+        app = build_app(Config.from_env(source), source)
+        if args.cmd == "daemon":
+            return cmd_daemon(app, out)
+        owner = _lock_owner(args)
+        if owner is None:
+            return _dispatch(app, args, source, ask_password, ask_code, out)
+        with DaemonLock(app.config.lock_path).held(owner):
+            return _dispatch(app, args, source, ask_password, ask_code, out)
     except KeyError as exc:
         out.write(f"not found: {exc}\n")
         return 1
-    except ValueError as exc:
+    except (ValueError, LockHeld, FileNotFoundError) as exc:
         out.write(f"error: {exc}\n")
         return 1
+    except IntegrityError as exc:
+        out.write(f"error: already exists ({exc.orig})\n")
+        return 1
+    except InvalidToken:
+        out.write("error: cannot decrypt stored passwords — I2N_SECRET_KEY changed?\n")
+        return 1
+
+
+def _dispatch(
+    app: App,
+    args: argparse.Namespace,
+    env: Mapping[str, str],
+    ask_password: Callable[[str], str],
+    ask_code: Callable[[str], str],
+    out: TextIO,
+) -> int:
+    if args.cmd == "account":
+        return cmd_account(app, args, env, ask_password, ask_code, out)
+    if args.cmd == "library":
+        return cmd_library(app, args, out)
+    if args.cmd == "run":
+        return cmd_run(app, args, out)
+    if args.cmd == "runs":
+        return cmd_runs(app, args, out)
+    return cmd_plan(app, args, out)
 
 
 def cli() -> None:
