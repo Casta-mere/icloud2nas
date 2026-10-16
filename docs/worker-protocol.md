@@ -141,3 +141,4 @@ The exit code is authoritative; events are explanatory. If they disagree, trust 
 - The worker creates `cookie_dir` (parents included); the orchestrator need not.
 - A fuse with `remote_total == 0` means an empty remote listing, almost certainly an API hiccup:
   treat it as "retry later", never "approve".
+- Implemented by `icloud2nas.orchestrator` (Plan 2a): per-library and per-account locks in `scheduler.py`, nesting rule in `store/repo.validate_target_dir`, type checks in `jobs.validate_job`.

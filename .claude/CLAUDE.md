@@ -13,3 +13,4 @@ All AI knowledge files are centralized in [`.agent/`](../.agent/) at the project
   icloudpd is pinned; bump it only together with `check_touchpoints()` and a probe run.
 - Library files are never unlinked. Deletes go through `engine/trash.py`.
 - Never `git push` from an agent session; commit only after the owner confirms.
+- The orchestrator talks to the worker only through docs/worker-protocol.md; never import worker/adapter modules from icloud2nas.orchestrator.

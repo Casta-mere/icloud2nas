@@ -3,7 +3,7 @@
 Mirror a household's iCloud Photos libraries to a NAS. Multiple Apple IDs, one
 copy of each shared library, trash-first deletes, nightly reconcile.
 
-**Status:** engine/worker only (Plan 1). No orchestrator or web UI yet.
+**Status:** worker + headless orchestrator (Plans 1–2a). Web UI and packaging follow.
 
 Apple offers no third-party authorization: this tool needs each Apple ID's
 password and a one-time 2FA code. Credentials never leave your NAS.
@@ -41,3 +41,8 @@ Events arrive on stdout as JSON lines; icloudpd's log goes to stderr. Exit codes
 0 ok · 1 failed · 3 needs 2FA (non-interactive) · 4 password rejected · 5 Apple unavailable ·
 6 reconcile fused (plan written, nothing deleted — re-run with `--apply-plan FILE` to execute).
 The full orchestrator contract is in [docs/worker-protocol.md](docs/worker-protocol.md).
+
+## Headless usage
+
+See `docs/orchestrator.md`. In short: `icloud2nas-ctl account add …` once per Apple ID, then
+run `icloud2nas-ctl daemon`; `icloud2nas-ctl runs` shows what happened.
