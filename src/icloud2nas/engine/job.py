@@ -68,6 +68,7 @@ class JobSpec:
     recent: int | None = None
     dry_run: bool = False
     mfa_timeout_s: int = 600
+    index_wait_s: int = 300
     apply_plan: str | None = None
     policy: FilePolicy = field(default_factory=FilePolicy)
 

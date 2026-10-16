@@ -162,6 +162,7 @@ class Worker:
             return ExitCode.OK
         if mode == "list":
             icloud = self._login()
+            adapter.wait_for_photos_index(icloud, self.logger, self.spec.index_wait_s)
             personal, shared = adapter.list_libraries(icloud)
             self.emitter.emit("libraries", personal=personal, shared=shared)
             self.emitter.emit("done", stats={"personal": len(personal), "shared": len(shared)})
@@ -176,13 +177,19 @@ class Worker:
 
     def _sync(self) -> ExitCode:
         icloud = self._login()  # classifies password/MFA trouble before icloudpd's own retry loop
+        adapter.wait_for_photos_index(icloud, self.logger, self.spec.index_wait_s)
         library = adapter.get_library(icloud, self.spec.library_zone)
         stop = threading.Event()
         sampler = threading.Thread(target=self._sample_progress, args=(stop,), daemon=True)
         sampler.start()
         try:
             result = adapter.run_sync(
-                self.spec, self.password, self.exchange, self.notificator, self.logger
+                self.spec,
+                self.password,
+                self.exchange,
+                self.notificator,
+                self.logger,
+                icloud=icloud,
             )
         finally:
             stop.set()
@@ -266,6 +273,7 @@ class Worker:
             return ExitCode.OK
         assert spec.plan_dir
         icloud = self._login()
+        adapter.wait_for_photos_index(icloud, self.logger, spec.index_wait_s)
         library = adapter.get_library(icloud, spec.library_zone)
         expected: set[str] = set()
         remote_total = 0

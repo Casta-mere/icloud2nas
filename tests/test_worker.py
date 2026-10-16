@@ -198,7 +198,7 @@ def test_sync_downloads_then_trashes_recently_deleted(
     monkeypatch.setattr(worker_mod.adapter, "authenticate", lambda *a: icloud)
 
     def fake_run_sync(
-        spec: Any, password: str, exchange: Any, notificator: Any, logger: Any
+        spec: Any, password: str, exchange: Any, notificator: Any, logger: Any, **kwargs: Any
     ) -> int:
         logger.info("Downloaded %s", "IMG_9.HEIC")
         logger.info("Downloaded %s", "IMG_9.MOV")
@@ -222,7 +222,7 @@ def test_sync_dry_run_trashes_nothing(
     icloud = FakeICloud()
     icloud.photos.recently_deleted = [deleted]
     monkeypatch.setattr(worker_mod.adapter, "authenticate", lambda *a: icloud)
-    monkeypatch.setattr(worker_mod.adapter, "run_sync", lambda *a: 0)
+    monkeypatch.setattr(worker_mod.adapter, "run_sync", lambda *a, **k: 0)
     rc, events = run_main("sync", _sync_job(photos, lib, dry_run=True))
     assert rc == 0 and events[-1]["stats"]["trashed"] == 1  # counted, not moved
     assert deleted_path.exists()
@@ -233,7 +233,7 @@ def test_sync_icloudpd_failure_is_error(
 ) -> None:
     photos, lib = photos_tree
     monkeypatch.setattr(worker_mod.adapter, "authenticate", lambda *a: FakeICloud())
-    monkeypatch.setattr(worker_mod.adapter, "run_sync", lambda *a: 1)
+    monkeypatch.setattr(worker_mod.adapter, "run_sync", lambda *a, **k: 1)
     rc, events = run_main("sync", _sync_job(photos, lib))
     assert rc == 1 and events[-1]["ev"] == "error" and events[-1]["kind"] == "icloudpd"
 
@@ -249,7 +249,7 @@ def test_sync_uses_requested_shared_library(
     icloud = FakeICloud()
     icloud.photos.shared_libraries = {"SharedSync-Z": FakeLibrary(recently_deleted=[deleted])}
     monkeypatch.setattr(worker_mod.adapter, "authenticate", lambda *a: icloud)
-    monkeypatch.setattr(worker_mod.adapter, "run_sync", lambda *a: 0)
+    monkeypatch.setattr(worker_mod.adapter, "run_sync", lambda *a, **k: 0)
     rc, _ = run_main(
         "sync", _sync_job(photos, shared_lib, library_zone="SharedSync-Z")
     )
@@ -347,7 +347,9 @@ def test_sync_progress_sampler_reports_counts(
     monkeypatch.setattr(worker_mod, "PROGRESS_INTERVAL_S", 0.01)
     monkeypatch.setattr(worker_mod.adapter, "authenticate", lambda *a: FakeICloud())
 
-    def slow_sync(spec: Any, password: str, exchange: Any, notificator: Any, logger: Any) -> int:
+    def slow_sync(
+        spec: Any, password: str, exchange: Any, notificator: Any, logger: Any, **kwargs: Any
+    ) -> int:
         exchange.get_progress().photos_count = 10
         exchange.get_progress().photos_counter = 3
         logger.info("Downloaded %s", "a.HEIC")
@@ -370,7 +372,9 @@ def test_stray_stdout_from_icloudpd_does_not_corrupt_events(
     photos, lib = photos_tree
     monkeypatch.setattr(worker_mod.adapter, "authenticate", lambda *a: FakeICloud())
 
-    def chatty_sync(spec: Any, password: str, exchange: Any, notificator: Any, logger: Any) -> int:
+    def chatty_sync(
+        spec: Any, password: str, exchange: Any, notificator: Any, logger: Any, **kwargs: Any
+    ) -> int:
         print("icloudpd has saved the photo record to: ./icloudpd-photo-error.json")
         return 0
 
@@ -387,7 +391,7 @@ def test_sync_download_phase_unavailable_exits_5(
     monkeypatch.setattr(worker_mod.adapter, "authenticate", lambda *a: FakeICloud())
 
     def fake_run_sync(
-        spec: Any, password: str, exchange: Any, notificator: Any, logger: Any
+        spec: Any, password: str, exchange: Any, notificator: Any, logger: Any, **kwargs: Any
     ) -> int:
         logger.info(
             PyiCloudServiceUnavailableException(
@@ -437,8 +441,24 @@ def test_recently_deleted_pass_skips_malformed_asset(
     icloud = FakeICloud()
     icloud.photos.recently_deleted = [object()]
     monkeypatch.setattr(worker_mod.adapter, "authenticate", lambda *a: icloud)
-    monkeypatch.setattr(worker_mod.adapter, "run_sync", lambda *a: 0)
+    monkeypatch.setattr(worker_mod.adapter, "run_sync", lambda *a, **k: 0)
     rc, events = run_main("sync", _sync_job(photos, lib))
     assert rc == 0
     assert any(e["ev"] == "warning" for e in events)
     assert events[-1]["ev"] == "done" and events[-1]["stats"]["trashed"] == 0
+
+
+def test_index_still_running_after_wait_is_not_activated(
+    photos_tree: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from pyicloud_ipd.exceptions import PyiCloudServiceNotActivatedException
+
+    photos, lib = photos_tree
+    monkeypatch.setattr(worker_mod.adapter, "authenticate", lambda *a: FakeICloud())
+
+    def still_running(*args: Any, **kwargs: Any) -> None:
+        raise PyiCloudServiceNotActivatedException("not finished indexing yet", None)
+
+    monkeypatch.setattr(worker_mod.adapter, "wait_for_photos_index", still_running)
+    rc, events = run_main("sync", _sync_job(photos, lib))
+    assert rc == 1 and events[-1]["ev"] == "error" and events[-1]["kind"] == "not_activated"

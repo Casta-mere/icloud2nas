@@ -137,3 +137,18 @@ def test_set_error_outside_mfa_emits_nothing() -> None:
     assert ex.set_error("bad password")
     assert ex.get_status() is Status.NO_INPUT_NEEDED
     assert [e["ev"] for e in _events(buf)] == []
+
+
+def test_mfa_succeeded_flag_set_only_on_accepted_code() -> None:
+    buf = io.StringIO()
+    ex = WorkerStatusExchange(Emitter(buf))
+    assert ex.mfa_succeeded is False
+    ex.replace_status(Status.NO_INPUT_NEEDED, Status.NEED_MFA)
+    ex.set_payload("000000")
+    ex.replace_status(Status.SUPPLIED_MFA, Status.CHECKING_MFA)
+    ex.set_error("bad code")
+    assert ex.mfa_succeeded is False
+    ex.set_payload("123456")
+    ex.replace_status(Status.SUPPLIED_MFA, Status.CHECKING_MFA)
+    ex.replace_status(Status.CHECKING_MFA, Status.NO_INPUT_NEEDED)
+    assert ex.mfa_succeeded is True

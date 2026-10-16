@@ -43,6 +43,7 @@ Unknown keys are rejected (`config` error).
 | `recent` | int | null | sync: only the N most recent assets |
 | `dry_run` | bool | false | nothing is written or moved |
 | `mfa_timeout_s` | int | 600 | interactive only: give up waiting for a code after this long |
+| `index_wait_s` | int | 300 | list/sync/reconcile: how long to wait for Apple's photo-library web index (`CheckIndexingState`) to report FINISHED before failing with `error kind=not_activated`; Apple starts an index job on each new session and it takes 30 s to a few minutes |
 | `policy` | object | see below | |
 
 `policy` (`FilePolicy`; unknown keys rejected):

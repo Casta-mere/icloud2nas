@@ -13,10 +13,12 @@ from __future__ import annotations
 import inspect
 import logging
 import os
+import time
 from collections.abc import Callable, Iterator
 from functools import partial
 from importlib.metadata import version as installed_version
 
+import icloudpd.base as icloudpd_base
 from icloudpd.authentication import authenticator
 from icloudpd.base import core_single_run, download_builder, where_builder
 from icloudpd.config import GlobalConfig, UserConfig
@@ -25,6 +27,10 @@ from icloudpd.mfa_provider import MFAProvider
 from icloudpd.password_provider import PasswordProvider
 from icloudpd.status import StatusExchange
 from pyicloud_ipd.base import PyiCloudService
+from pyicloud_ipd.exceptions import (
+    PyiCloudFailedMFAException,
+    PyiCloudServiceNotActivatedException,
+)
 from pyicloud_ipd.file_match import FileMatchPolicy
 from pyicloud_ipd.live_photo_mov_filename_policy import LivePhotoMovFilenamePolicy
 from pyicloud_ipd.raw_policy import RawTreatmentPolicy
@@ -50,6 +56,7 @@ __all__ = [
     "iter_all",
     "iter_recently_deleted",
     "list_libraries",
+    "wait_for_photos_index",
     "run_sync",
 ]
 
@@ -87,6 +94,8 @@ def check_touchpoints() -> None:
     found = installed_version("icloudpd")
     if found != ICLOUDPD_VERSION:
         raise RuntimeError(f"icloudpd {found} installed, adapter written for {ICLOUDPD_VERSION}")
+    if not callable(getattr(icloudpd_base, "authenticator", None)):
+        raise RuntimeError("icloudpd.base.authenticator missing (session reuse hook)")
     for fn, names in _EXPECTED_SIGNATURES.items():
         actual = list(inspect.signature(fn).parameters)
         if actual != names:
@@ -186,22 +195,66 @@ def authenticate(
     """Log in: saved session first, password + 2FA if needed. pyicloud exceptions propagate."""
     providers = {p.value: fns for p, fns in build_password_providers(password).items()}
     os.makedirs(spec.cookie_dir, exist_ok=True)  # pyicloud_ipd only mkdir()s the last level
-    return authenticator(
-        logger,
-        spec.region,
-        providers,
-        MFAProvider.WEBUI,
-        status_exchange,
-        spec.apple_id,
-        notificator,
-        None,
-        spec.cookie_dir,
-        spec.client_id,
-    )
+
+    def login_once() -> PyiCloudService:
+        return authenticator(
+            logger,
+            spec.region,
+            providers,
+            MFAProvider.WEBUI,
+            status_exchange,
+            spec.apple_id,
+            notificator,
+            None,
+            spec.cookie_dir,
+            spec.client_id,
+        )
+
+    try:
+        return login_once()
+    except PyiCloudFailedMFAException as exc:
+        # icloudpd 1.32.3 quirk: request_2fa_web never leaves its wait loop after Apple accepts
+        # the code; the next iteration raises "Failed to change status" although the session is
+        # already trusted and saved (validate_2fa_code -> trust_session). Open it once more.
+        mfa_succeeded = bool(getattr(status_exchange, "mfa_succeeded", False))
+        if mfa_succeeded and "Failed to change status" in str(exc):
+            logger.info("2FA accepted; re-opening the trusted session")
+            return login_once()
+        raise
+
+
+def wait_for_photos_index(
+    icloud: PyiCloudService,
+    logger: logging.Logger,
+    timeout_s: float,
+    poll_s: float = 10.0,
+) -> None:
+    """Block until Apple's web index for the photo library reports FINISHED.
+
+    Apple starts an index job when a session opens; it takes 30 s to a few minutes and
+    PhotosService() raises PyiCloudServiceNotActivatedException while it runs (spec §2.1a).
+    The property is not cached on failure, so each attempt re-queries CheckIndexingState.
+    """
+    deadline = time.monotonic() + timeout_s
+    while True:
+        try:
+            _ = icloud.photos
+            return
+        except PyiCloudServiceNotActivatedException as exc:
+            if time.monotonic() >= deadline:
+                raise
+            logger.info("waiting for Apple to finish indexing the photo library: %s", exc)
+            time.sleep(poll_s)
 
 
 def list_libraries(icloud: PyiCloudService) -> tuple[list[str], list[str]]:
-    return sorted(icloud.photos.private_libraries), sorted(icloud.photos.shared_libraries)
+    personal = sorted(icloud.photos.private_libraries)
+    if PRIMARY_ZONE not in personal:
+        # pyicloud swallows the zones/list error and returns {}; an account always has PrimarySync
+        raise PyiCloudServiceNotActivatedException(
+            "photo library zones unavailable (no PrimarySync); indexing or access not ready", None
+        )
+    return personal, sorted(icloud.photos.shared_libraries)
 
 
 def get_library(icloud: PyiCloudService, zone: str | None) -> PhotoLibrary:
@@ -234,8 +287,14 @@ def run_sync(
     status_exchange: StatusExchange,
     notificator: Callable[[], None],
     logger: logging.Logger,
+    icloud: PyiCloudService | None = None,
 ) -> int:
-    """One icloudpd download pass: no watch loop, no deletes. Returns icloudpd's code."""
+    """One icloudpd download pass: no watch loop, no deletes. Returns icloudpd's code.
+
+    When `icloud` is given, core_single_run reuses that already-authenticated session instead of
+    logging in again: a fresh login makes Apple start a new photo-library index job, which would
+    fail the run with "has not finished indexing yet" right after wait_for_photos_index succeeded.
+    """
     os.environ["CLIENT_ID"] = spec.client_id  # core_single_run reads the device id from the env
     global_config = build_global_config(spec)
     user_config = build_user_config(spec)
@@ -263,14 +322,24 @@ def run_sync(
     status_exchange.set_global_config(global_config)
     status_exchange.set_user_configs([user_config])
     status_exchange.set_current_user(user_config.username)
-    return core_single_run(
-        logger,
-        status_exchange,
-        global_config,
-        user_config,
-        build_password_providers(password),
-        passer,
-        downloader,
-        notificator,
-        lp_gen,
-    )
+    original_authenticator = icloudpd_base.authenticator  # type: ignore[attr-defined]
+    if icloud is not None:
+
+        def reuse_session(*_args: object, **_kwargs: object) -> PyiCloudService:
+            return icloud
+
+        icloudpd_base.authenticator = reuse_session  # type: ignore[attr-defined]
+    try:
+        return core_single_run(
+            logger,
+            status_exchange,
+            global_config,
+            user_config,
+            build_password_providers(password),
+            passer,
+            downloader,
+            notificator,
+            lp_gen,
+        )
+    finally:
+        icloudpd_base.authenticator = original_authenticator  # type: ignore[attr-defined]

@@ -24,6 +24,7 @@ class WorkerStatusExchange(StatusExchange):
         super().__init__()
         self._emitter = emitter
         self.mfa_requested_at: float | None = None
+        self.mfa_succeeded = False  # a code was accepted by Apple during this exchange's lifetime
 
     def replace_status(self, expected_status: Status, new_status: Status) -> bool:
         if new_status is Status.NEED_MFA:
@@ -38,6 +39,7 @@ class WorkerStatusExchange(StatusExchange):
             and new_status is Status.NO_INPUT_NEEDED
         ):
             self.mfa_requested_at = None
+            self.mfa_succeeded = True
             self._emitter.emit("mfa_result", ok=True)
         return changed
 

@@ -151,3 +151,132 @@ def test_authenticate_creates_cookie_dir(
         spec, "pw", StatusExchange(), lambda: None, logging.getLogger("t")
     )
     assert cookie_dir.is_dir()
+
+
+def test_authenticate_retries_once_after_icloudpd_mfa_loop_quirk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """icloudpd 1.32.3 raises 'Failed to change status' right after a successful code."""
+    import io
+
+    from icloudpd.status import Status
+    from pyicloud_ipd.exceptions import PyiCloudFailedMFAException
+
+    from icloud2nas.engine.events import Emitter
+    from icloud2nas.engine.mfa import WorkerStatusExchange
+
+    exchange = WorkerStatusExchange(Emitter(io.StringIO()))
+    calls: list[int] = []
+
+    def fake_authenticator(*args: Any) -> str:
+        calls.append(1)
+        if len(calls) == 1:
+            assert exchange.replace_status(Status.NO_INPUT_NEEDED, Status.NEED_MFA)
+            assert exchange.set_payload("123456")
+            assert exchange.replace_status(Status.SUPPLIED_MFA, Status.CHECKING_MFA)
+            assert exchange.replace_status(Status.CHECKING_MFA, Status.NO_INPUT_NEEDED)
+            raise PyiCloudFailedMFAException("Failed to change status")
+        return "icloud"
+
+    monkeypatch.setattr(adapter, "authenticator", fake_authenticator)
+    result = adapter.authenticate(
+        _spec("auth"), "pw", exchange, lambda: None, logging.getLogger("t")
+    )
+    assert result == "icloud" and len(calls) == 2
+
+
+def test_authenticate_does_not_retry_without_accepted_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    import io
+
+    from pyicloud_ipd.exceptions import PyiCloudFailedMFAException
+
+    from icloud2nas.engine.events import Emitter
+    from icloud2nas.engine.mfa import WorkerStatusExchange
+
+    exchange = WorkerStatusExchange(Emitter(io.StringIO()))
+    calls: list[int] = []
+
+    def fake_authenticator(*args: Any) -> str:
+        calls.append(1)
+        raise PyiCloudFailedMFAException("Failed to change status")
+
+    monkeypatch.setattr(adapter, "authenticator", fake_authenticator)
+    with pytest.raises(PyiCloudFailedMFAException):
+        adapter.authenticate(_spec("auth"), "pw", exchange, lambda: None, logging.getLogger("t"))
+    assert len(calls) == 1
+
+
+def test_wait_for_photos_index_polls_until_finished() -> None:
+    from pyicloud_ipd.exceptions import PyiCloudServiceNotActivatedException
+
+    class Flaky:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        @property
+        def photos(self) -> str:
+            self.calls += 1
+            if self.calls < 3:
+                raise PyiCloudServiceNotActivatedException("not finished indexing yet", None)
+            return "photos"
+
+    icloud = Flaky()
+    adapter.wait_for_photos_index(icloud, logging.getLogger("t"), timeout_s=5, poll_s=0)  # type: ignore[arg-type]
+    assert icloud.calls == 3
+
+
+def test_wait_for_photos_index_gives_up_after_timeout() -> None:
+    from pyicloud_ipd.exceptions import PyiCloudServiceNotActivatedException
+
+    class Never:
+        @property
+        def photos(self) -> str:
+            raise PyiCloudServiceNotActivatedException("not finished indexing yet", None)
+
+    with pytest.raises(PyiCloudServiceNotActivatedException):
+        adapter.wait_for_photos_index(Never(), logging.getLogger("t"), timeout_s=0, poll_s=0)  # type: ignore[arg-type]
+
+
+def test_list_libraries_without_primary_zone_is_not_activated() -> None:
+    from pyicloud_ipd.exceptions import PyiCloudServiceNotActivatedException
+
+    icloud = FakeICloud()  # private_libraries is {} -> pyicloud swallowed the zones error
+    with pytest.raises(PyiCloudServiceNotActivatedException):
+        adapter.list_libraries(icloud)  # type: ignore[arg-type]
+
+
+def test_run_sync_reuses_the_given_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, Any] = {}
+    original = adapter.icloudpd_base.authenticator
+
+    def fake_core(*args: Any) -> int:
+        # what core_single_run does internally: it calls the module-level authenticator
+        seen["icloud"] = adapter.icloudpd_base.authenticator("logger", "cn")
+        return 0
+
+    monkeypatch.setattr(adapter, "core_single_run", fake_core)
+    session = FakeICloud()
+    rc = adapter.run_sync(
+        _spec(),
+        "pw",
+        StatusExchange(),
+        lambda: None,
+        logging.getLogger("t"),
+        icloud=session,  # type: ignore[arg-type]
+    )
+    assert rc == 0 and seen["icloud"] is session
+    assert adapter.icloudpd_base.authenticator is original  # restored afterwards
+
+
+def test_run_sync_without_session_leaves_authenticator_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = adapter.icloudpd_base.authenticator
+
+    def fake_core(*args: Any) -> int:
+        assert adapter.icloudpd_base.authenticator is original
+        return 0
+
+    monkeypatch.setattr(adapter, "core_single_run", fake_core)
+    rc = adapter.run_sync(_spec(), "pw", StatusExchange(), lambda: None, logging.getLogger("t"))
+    assert rc == 0
