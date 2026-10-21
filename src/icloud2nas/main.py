@@ -14,8 +14,9 @@ from datetime import UTC, datetime
 
 from fastapi import FastAPI, Request, Response
 
-from icloud2nas.api import accounts, auth, libraries, plans, runs, system
+from icloud2nas.api import accounts, auth, events, libraries, plans, runs, system
 from icloud2nas.api.errors import install_error_handlers
+from icloud2nas.api.events import SseHub
 from icloud2nas.api.state import AppState, build_state
 from icloud2nas.orchestrator.config import Config
 from icloud2nas.orchestrator.lock import DaemonLock, LockHeld
@@ -52,11 +53,14 @@ def create_app(
     config: Config, env: Mapping[str, str] | None = None, *, state: AppState | None = None
 ) -> FastAPI:
     app_state = state if state is not None else build_state(config, env)
+    app_state.sse = SseHub(app_state.bus)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         stop = asyncio.Event()
         app_state.notifier.start()
+        assert app_state.sse is not None
+        app_state.sse.start()
         app_state.housekeeping.start()
         scheduler_task = asyncio.create_task(app_state.scheduler.run_forever(stop))
         housekeeping_task = asyncio.create_task(app_state.housekeeping.run_forever(stop))
@@ -71,6 +75,7 @@ def create_app(
                     SHUTDOWN_CEILING_S,
                 )
             await app_state.ops.shutdown()
+            app_state.sse.stop()
             app_state.housekeeping.stop()
             await app_state.notifier.stop()
 
@@ -91,7 +96,7 @@ def create_app(
     app.include_router(system.open_router)
     app.include_router(system.router)
     app.include_router(auth.router)
-    for router in (accounts.router, libraries.router, runs.router, plans.router):
+    for router in (accounts.router, libraries.router, runs.router, plans.router, events.router):
         app.include_router(router)
     return app
 

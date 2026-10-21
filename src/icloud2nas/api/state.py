@@ -6,7 +6,7 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING
 
 from icloud2nas.orchestrator.bus import EventBus
 from icloud2nas.orchestrator.config import Config
@@ -20,6 +20,9 @@ from icloud2nas.orchestrator.settings import Settings
 from icloud2nas.orchestrator.store.db import Store, make_engine, upgrade_db
 from icloud2nas.orchestrator.store.models import utcnow
 from icloud2nas.orchestrator.store.secrets import Secrets
+
+if TYPE_CHECKING:
+    from icloud2nas.api.events import SseHub
 
 
 @dataclass
@@ -35,7 +38,7 @@ class AppState:
     ops: Ops
     notifier: Notifier
     housekeeping: Housekeeping
-    sse: Any | None  # SseHub, created with the events router
+    sse: SseHub | None  # installed by create_app
     started_at: datetime
     last_origin: str | None
 
