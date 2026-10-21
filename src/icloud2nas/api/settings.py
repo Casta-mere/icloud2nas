@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, Request
 
 from icloud2nas.api.auth import hash_password, require_session
 from icloud2nas.api.state import AppState
+from icloud2nas.orchestrator.settings import INTERNAL_KEYS
 
 router = APIRouter(prefix="/api", dependencies=[Depends(require_session)])
 
@@ -41,9 +42,16 @@ async def get_settings(request: Request) -> dict[str, Any]:
 @router.put("/settings")
 async def put_settings(body: dict[str, Any], request: Request) -> dict[str, Any]:
     state = _state(request)
+    for key, value in body.items():
+        if key in INTERNAL_KEYS:
+            raise ValueError(f"{key} cannot be set directly")
+        if value is None:
+            raise ValueError(f"{key}: null is not allowed")
     values = {k: _raw(v) for k, v in body.items() if k != "admin_password"}
     if "admin_password" in body:
-        password = _raw(body["admin_password"])
+        password = body["admin_password"]
+        if not isinstance(password, str):
+            raise ValueError("admin_password must be a string")
         if password:
             values["admin_password_hash"] = hash_password(password)
             values["admin_password_set_at"] = str(int(time.time()))

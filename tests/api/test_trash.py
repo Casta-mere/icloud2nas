@@ -61,3 +61,17 @@ def test_trash_day_delete_and_keep(api: API) -> None:
     assert deleted.json() == {"deleted": 1}
     assert not (state.config.photos_dir / ".trash/旭刚/2026-10-01").exists()
     assert client.get("/api/trash/2026-10-01", params={"rel": "旭刚"}).status_code == 400
+
+
+def test_trash_rel_validated_at_route(api: API) -> None:
+    client, state = api
+    _seed(state, "旭刚", "2026-10-01", {"y.jpg": b"1"})
+    _seed(state, ".hidden", "2026-10-01", {"y.jpg": b"1"})
+    for rel in (".", ".hidden", "a/.b", "旭刚/", "/abs", " "):
+        params = {"rel": rel}
+        assert client.get("/api/trash/2026-10-01", params=params).status_code == 400, rel
+        assert client.delete("/api/trash/2026-10-01", params=params).status_code == 400, rel
+        keep = client.post("/api/trash/2026-10-01/keep", params=params, json={"paths": []})
+        assert keep.status_code == 400, rel
+    assert (state.config.photos_dir / ".trash/.hidden/2026-10-01/y.jpg").exists()
+    assert (state.config.photos_dir / ".trash/旭刚/2026-10-01/y.jpg").exists()

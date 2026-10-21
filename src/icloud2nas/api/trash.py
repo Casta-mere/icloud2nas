@@ -26,6 +26,16 @@ def _state(request: Request) -> AppState:
     return state
 
 
+def _rel(value: str) -> str:
+    """Library rel: relative, no empty/'.'/'..'/dot-leading components, no trailing slash."""
+    rel = value.strip()
+    if not rel or rel.startswith("/"):
+        raise ValueError(f"invalid library path: {value!r}")
+    if any(not part or part.startswith(".") for part in rel.split("/")):
+        raise ValueError(f"invalid library path: {value!r}")
+    return rel
+
+
 def _day(value: str) -> date:
     return date.fromisoformat(value)  # ValueError -> 400
 
@@ -59,19 +69,20 @@ async def list_trash(request: Request) -> list[dict[str, Any]]:
 @router.get("/{day}")
 async def list_day(day: str, rel: str, request: Request) -> list[dict[str, Any]]:
     photos = _state(request).config.photos_dir
-    files = await asyncio.to_thread(trash.list_day, photos, rel, _day(day))
+    files = await asyncio.to_thread(trash.list_day, photos, _rel(rel), _day(day))
     return [{"rel": f.rel, "size": f.size} for f in files]
 
 
 @router.delete("/{day}")
 async def delete_day(day: str, rel: str, request: Request) -> dict[str, int]:
     photos = _state(request).config.photos_dir
-    return {"deleted": await asyncio.to_thread(trash.delete_day, photos, rel, _day(day))}
+    return {"deleted": await asyncio.to_thread(trash.delete_day, photos, _rel(rel), _day(day))}
 
 
 @router.post("/{day}/keep")
 async def keep(day: str, rel: str, body: KeepBody, request: Request) -> dict[str, list[str]]:
     photos = _state(request).config.photos_dir
+    rel = _rel(rel)
     moved = await asyncio.to_thread(trash.keep_files, photos, rel, _day(day), body.paths)
     base = photos / trash.KEPT_DIRNAME / rel
     return {"kept": [p.relative_to(base).as_posix() for p in moved]}

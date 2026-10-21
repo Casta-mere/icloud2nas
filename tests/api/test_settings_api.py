@@ -68,3 +68,28 @@ def test_notify_test_endpoint(api: API, sent: list[tuple[list[str], str, str]]) 
     assert urls == ["json://localhost"]
     assert title == "icloud2nas 测试通知 / test notification"
     assert body.startswith("通知渠道工作正常。/ Notifications are working.")
+
+
+def test_put_rejects_internal_keys(api: API) -> None:
+    client, state = api
+    client.put("/api/settings", json={"admin_password": PASSWORD})
+    login(client)
+    stored = {
+        k: state.settings.get_raw(k) for k in ("admin_password_hash", "admin_password_set_at")
+    }
+    for key, value in (("admin_password_hash", "junk"), ("admin_password_set_at", "0")):
+        response = client.put("/api/settings", json={key: value, "max_workers": "3"})
+        assert response.status_code == 400, key
+        assert state.settings.get("max_workers") == 2
+    assert stored == {
+        k: state.settings.get_raw(k) for k in ("admin_password_hash", "admin_password_set_at")
+    }
+
+
+def test_put_rejects_null_values(api: API) -> None:
+    client, state = api
+    assert client.put("/api/settings", json={"admin_password": None}).status_code == 400
+    assert state.settings.get("admin_password_hash") == ""
+    assert client.put("/api/settings", json={"admin_password": 5}).status_code == 400
+    assert client.put("/api/settings", json={"max_workers": None}).status_code == 400
+    assert state.settings.get("max_workers") == 2
