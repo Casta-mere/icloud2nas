@@ -79,10 +79,11 @@ class Housekeeping:
             try:
                 today = local_now(self.clock(), self.config.tz).date()
                 if today != self._last_purge:
-                    self.purge_trash()
+                    # rmtree / rglob over the trash: off the event loop
+                    await asyncio.to_thread(self.purge_trash)
                     self._last_purge = today
-                self.prune_runs()
-                self.refresh_trash_bytes()
+                self.prune_runs()  # DB rows plus a few log files
+                await asyncio.to_thread(self.refresh_trash_bytes)
             except Exception:  # noqa: BLE001 - housekeeping must never stop the loop
                 log.exception("housekeeping iteration failed")
             with contextlib.suppress(TimeoutError):

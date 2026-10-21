@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -164,3 +165,27 @@ async def test_run_finished_triggers_prune(hk: Env, config: Config) -> None:
     more = hk.make_runs(config, 1)
     hk.bus.publish("run.finished", run_id=more[0][0], status="ok", library_id=hk.library_id)
     assert runs[2][1].exists()
+
+
+async def test_trash_scans_run_off_the_event_loop(hk: Env) -> None:
+    def slow_purge() -> list[Path]:
+        time.sleep(0.3)
+        return []
+
+    def slow_bytes() -> int:
+        time.sleep(0.3)
+        return 0
+
+    hk.hk.purge_trash = slow_purge  # type: ignore[method-assign]
+    hk.hk.refresh_trash_bytes = slow_bytes  # type: ignore[method-assign]
+    loop = asyncio.get_running_loop()
+    stop = asyncio.Event()
+    task = asyncio.create_task(hk.hk.run_forever(stop))
+    lags: list[float] = []
+    for _ in range(8):  # spans both slow calls
+        began = loop.time()
+        await asyncio.sleep(0.05)
+        lags.append(loop.time() - began - 0.05)
+    stop.set()
+    await task
+    assert max(lags) < 0.1, lags

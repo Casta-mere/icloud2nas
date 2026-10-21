@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import secrets as _secrets
@@ -99,7 +100,7 @@ async def get_session(request: Request) -> dict[str, bool]:
 async def login(body: LoginBody, request: Request) -> Response:
     state = _state(request)
     stored = state.settings.get("admin_password_hash")
-    if stored and not verify_password(body.password, stored):
+    if stored and not await asyncio.to_thread(verify_password, body.password, stored):
         raise HTTPException(401, {"error": "unauthorized"})
     response = Response(status_code=204)
     response.set_cookie(

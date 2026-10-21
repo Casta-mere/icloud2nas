@@ -53,7 +53,7 @@ async def put_settings(body: dict[str, Any], request: Request) -> dict[str, Any]
         if not isinstance(password, str):
             raise ValueError("admin_password must be a string")
         if password:
-            values["admin_password_hash"] = hash_password(password)
+            values["admin_password_hash"] = await asyncio.to_thread(hash_password, password)
             values["admin_password_set_at"] = str(int(time.time()))
         else:
             values["admin_password_hash"] = ""
