@@ -3,6 +3,20 @@ revision = 5
 requires-python = ">=3.12, <3.14"
 
 [[package]]
+name = "alembic"
+version = "1.20.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "mako" },
+    { name = "sqlalchemy" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ed/aa/02910bdb8e2f1444f6654d5b296cd827d126f82209050ee7b1000f92ac4b/alembic-1.20.0.tar.gz", hash = "sha256:db505480647bc60386c5369402f4a57a506b7539c9e9ef5e270d45cbbe4939bf", size = 2093272, upload-time = "2026-09-11T19:09:11.126Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3f/27/78a89b55b0904d222183164e079b4ca56208e94eff1d35ad1f1ad5be9b06/alembic-1.20.0-py3-none-any.whl", hash = "sha256:77eb101048d95f982c0353e9233404889dcd7a6fc244c107836c0e2fc9cf7d9d", size = 268719, upload-time = "2026-09-11T19:09:12.88Z" },
+]
+
+[[package]]
 name = "ast-serialize"
 version = "0.13.0"
 source = { registry = "https://pypi.org/simple" }
@@ -253,6 +267,7 @@ name = "icloud2nas"
 version = "0.0.1"
 source = { editable = "." }
 dependencies = [
+    { name = "alembic" },
     { name = "cryptography" },
     { name = "icloudpd" },
     { name = "sqlalchemy" },
@@ -269,6 +284,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "alembic", specifier = ">=1.13" },
     { name = "cryptography", specifier = ">=43.0" },
     { name = "icloudpd", url = "https://files.pythonhosted.org/packages/b9/73/20544e68569fce262d596ebe42730aac235b8e69a36edefebdf8cfa85508/icloudpd-1.32.3-py3-none-any.whl" },
     { name = "sqlalchemy", specifier = ">=2.0.36" },
@@ -473,6 +489,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/93/93/303b8592909bd583f83f02818ffbea3f7647ca1e22b1cd5465d04b8145fe/librt-0.16.0-cp313-cp313-win32.whl", hash = "sha256:02d89c813d5ff74b17df72d3a34819d132cd168e56b81bf755b809bd9e46b8c4", size = 106236, upload-time = "2026-09-29T00:53:27.43Z" },
     { url = "https://files.pythonhosted.org/packages/cf/24/80bbb463c60ed18e29cb26aba386ddb76609580e4e7160710e550587018c/librt-0.16.0-cp313-cp313-win_amd64.whl", hash = "sha256:14ed6ebe3e4f85f326d7920011ad30ff49ed9334e62cf88caef9ba973d9e3a92", size = 126180, upload-time = "2026-09-29T00:53:28.7Z" },
     { url = "https://files.pythonhosted.org/packages/43/80/b1a6fbdd7da825cdd55c71aa81eb6cfa82c513c360774152eacb50b4a771/librt-0.16.0-cp313-cp313-win_arm64.whl", hash = "sha256:83d4041a3d9b2fd053a8a4e1f22878b3e5833e2712956382d5c048d791454e91", size = 116557, upload-time = "2026-09-29T00:53:30.012Z" },
+]
+
+[[package]]
+name = "mako"
+version = "1.4.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "markupsafe" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/5a/09/e07c4b5579a79f4b16f8d4f29f6c54514ac787c4ad506b8c4f28a0e6b0bf/mako-1.4.3.tar.gz", hash = "sha256:cd6537fe88d5fec315c55c2f8529bc4ce7a9a352ad7db3eeaa6a66e2dd4ec37a", size = 412799, upload-time = "2026-09-22T20:54:31.509Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6d/a0/053d6af3e8f871e0073b4a36732d9e65be77a72e5434c31b94f6af78a6bb/mako-1.4.3-py3-none-any.whl", hash = "sha256:723296007c870bfd6b3f0c3230dba7198096e5269297ebf5e4eff9e7ffa39d4f", size = 80164, upload-time = "2026-09-22T20:54:33.128Z" },
 ]
 
 [[package]]

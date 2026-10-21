@@ -7,7 +7,7 @@ import uuid
 from datetime import UTC, date, datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, LargeBinary, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Index, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.engine import Dialect
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.types import TypeDecorator
@@ -60,6 +60,7 @@ class Account(Base):
     failures: Mapped[int] = mapped_column(default=0)
     backoff_until: Mapped[datetime | None] = mapped_column(UTCDateTime, default=None)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    primary_dir: Mapped[str | None] = mapped_column(String(500), default=None)
 
     libraries: Mapped[list[Library]] = relationship(back_populates="account")
 
@@ -82,6 +83,7 @@ class Library(Base):
     last_success_at: Mapped[datetime | None] = mapped_column(UTCDateTime, default=None)
     last_nightly_on: Mapped[date | None] = mapped_column(default=None)
     stats_json: Mapped[str] = mapped_column(Text, default="{}")
+    first_full_at: Mapped[datetime | None] = mapped_column(UTCDateTime, default=None)
 
     account: Mapped[Account] = relationship(back_populates="libraries")
 
@@ -132,3 +134,13 @@ class Setting(Base):
 
     key: Mapped[str] = mapped_column(String(100), primary_key=True)
     value: Mapped[str] = mapped_column(Text)
+
+
+class Notification(Base):
+    __tablename__ = "notifications"
+    __table_args__ = (Index("ix_notifications_event_subject_key", "event", "subject_key"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    event: Mapped[str] = mapped_column(String(40))
+    subject_key: Mapped[str] = mapped_column(String(100))
+    sent_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)

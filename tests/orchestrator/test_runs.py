@@ -11,7 +11,7 @@ from icloud2nas.orchestrator.config import Config
 from icloud2nas.orchestrator.jobs import build_job
 from icloud2nas.orchestrator.runs import RunManager
 from icloud2nas.orchestrator.store import repo
-from icloud2nas.orchestrator.store.db import Store, init_db, make_engine
+from icloud2nas.orchestrator.store.db import Store, make_engine, upgrade_db
 from icloud2nas.orchestrator.store.secrets import Secrets
 from icloud2nas.orchestrator.supervisor import WorkerResult
 
@@ -19,7 +19,7 @@ from icloud2nas.orchestrator.supervisor import WorkerResult
 @pytest.fixture
 def world(config: Config) -> dict[str, Any]:
     engine = make_engine(config.db_path)
-    init_db(engine)
+    upgrade_db(engine)
     store = Store(engine)
     bus = EventBus()
     seen: list[tuple[str, dict[str, Any]]] = []

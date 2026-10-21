@@ -26,7 +26,7 @@ from icloud2nas.orchestrator.onboarding import Onboarding
 from icloud2nas.orchestrator.runs import RunManager
 from icloud2nas.orchestrator.scheduler import Scheduler
 from icloud2nas.orchestrator.store import repo
-from icloud2nas.orchestrator.store.db import Store, init_db, make_engine
+from icloud2nas.orchestrator.store.db import Store, make_engine, upgrade_db
 from icloud2nas.orchestrator.store.models import ReconcilePlan
 from icloud2nas.orchestrator.store.secrets import Secrets
 
@@ -49,7 +49,7 @@ def build_app(config: Config, env: Mapping[str, str] | None = None) -> App:
     source = os.environ if env is None else env
     config.ensure_layout()
     engine = make_engine(config.db_path)
-    init_db(engine)
+    upgrade_db(engine)
     store = Store(engine)
     secrets = Secrets.from_config(config, source)
     bus = EventBus()

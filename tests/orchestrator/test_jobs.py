@@ -5,13 +5,13 @@ import pytest
 from icloud2nas.orchestrator.config import Config
 from icloud2nas.orchestrator.jobs import build_job, policy_from_settings, validate_job
 from icloud2nas.orchestrator.store import repo
-from icloud2nas.orchestrator.store.db import Store, init_db, make_engine
+from icloud2nas.orchestrator.store.db import Store, make_engine, upgrade_db
 
 
 @pytest.fixture
 def store(config: Config) -> Store:
     engine = make_engine(config.db_path)
-    init_db(engine)
+    upgrade_db(engine)
     return Store(engine)
 
 

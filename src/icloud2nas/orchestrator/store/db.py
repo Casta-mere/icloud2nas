@@ -7,10 +7,13 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import Engine, create_engine, event
+from alembic import command
+from alembic.config import Config
+from alembic.script import ScriptDirectory
+from sqlalchemy import Engine, create_engine, event, inspect
 from sqlalchemy.orm import Session, sessionmaker
 
-from icloud2nas.orchestrator.store.models import Base
+MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 
 def make_engine(db_path: Path) -> Engine:
@@ -27,8 +30,25 @@ def make_engine(db_path: Path) -> Engine:
     return engine
 
 
-def init_db(engine: Engine) -> None:
-    Base.metadata.create_all(engine)
+def upgrade_db(engine: Engine) -> str:
+    """Bring the database to the head revision and return its id.
+
+    A Plan 2a database (tables, no ``alembic_version``) is stamped at the baseline first.
+    """
+    cfg = Config()
+    cfg.set_main_option("script_location", str(MIGRATIONS_DIR))
+    with engine.begin() as connection:
+        cfg.attributes["connection"] = connection
+        tables = set(inspect(connection).get_table_names())
+        if "accounts" in tables and "alembic_version" not in tables:
+            command.stamp(cfg, "0001")
+        command.upgrade(cfg, "head")
+    head = ScriptDirectory.from_config(cfg).get_current_head()
+    assert head is not None
+    return head
+
+
+init_db = upgrade_db  # kept for one plan; prefer upgrade_db
 
 
 class Store:
