@@ -59,4 +59,7 @@ terminal on Docker Desktop:
     docker compose run --rm -e I2N_URL dev uv run icloud2nas-ctl account add --name 旭刚 --apple-id you@icloud.com --region cn
     docker compose run --rm -e I2N_URL dev uv run icloud2nas-ctl runs
 
+Forgot the admin password? Stop the service and run `icloud2nas-serve --reset-admin-password`
+(same data directory); then set a new one in Settings.
+
 The API is documented in `docs/api.md`, the CLI and scheduling rules in `docs/orchestrator.md`.

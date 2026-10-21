@@ -23,14 +23,31 @@ holds an exclusive `flock` on `<data>/daemon.lock` for as long as it lives (rele
 process dies, so a second `icloud2nas-serve` on the same data refuses to start). The CLI is an
 HTTP client of that process and takes no lock: stop nothing before a manual run or onboarding.
 On SIGTERM uvicorn waits at most 5 s for open connections, so a browser tab holding
-`/api/events` cannot block shutdown. A manual request (`run`, `plan approve`) wakes the scheduler
-loop and starts on its next iteration instead of waiting up to `tick` (15 s).
+`/api/events` cannot block shutdown; running workers (syncs and interactive logins alike) are then
+sent SIGTERM together and killed after one shared 5 s grace, so the whole stop stays within
+Docker's default 10 s. A manual request (`run`, `plan approve`) wakes the scheduler loop and
+launches at once instead of waiting up to `tick` (15 s); this includes the startup jitter, which
+only holds back scheduled jobs. A queued manual request is dropped (with a log line) when its
+library or account is deleted, the library is disabled, or the account stops being `ok`.
 
-Environment: `I2N_DATA_DIR` (/data), `I2N_PHOTOS_DIR` (/photos), `I2N_MAX_WORKERS`,
+Changing `folder_structure` or `file_match_policy` on libraries that already hold photos is not
+a migration: the next syncs download everything again under the new paths/names, and the next
+reconcile finds the old files extraneous and proposes trashing them. The reconcile fuse and the
+plan approval stand between that proposal and your files, but expect a full re-download and a
+large pending plan; reject it if you did not mean to switch.
+
+Environment: `I2N_HOST` (listen address, `0.0.0.0`), `I2N_PORT` (8080),
+`I2N_DATA_DIR` (/data), `I2N_PHOTOS_DIR` (/photos), `I2N_MAX_WORKERS`,
 `I2N_MIN_FREE_GB` (5), `I2N_DEFAULT_INTERVAL_MIN`, `I2N_DEFAULT_NIGHTLY_AT` (HH:MM, `3:00` is
 normalised to `03:00`), `I2N_JITTER_S` (`lo,hi` seconds of random delay before the scheduler's first
-tick, default `0,300`), `I2N_SECRET_KEY` (optional; else `/data/secret.key` is generated), `TZ`,
+tick, default `0,300`; manual requests are not delayed), `I2N_SECRET_KEY` (optional; else `/data/secret.key` is generated), `TZ`,
 `I2N_WORKER_CMD` (tests only).
+
+Forgot the web UI admin password: stop the service, then run
+`icloud2nas-serve --reset-admin-password` against the same data directory. It takes the daemon
+lock (and refuses while the service runs), clears the password, invalidates every earlier
+session cookie, prints `admin password cleared; set a new one in Settings` and exits 0; the API
+is open until a new password is set.
 
 Each run's worker stderr goes to `<data>/logs/runs/<run_id>.log` (also `runs` → `log_path`).
 

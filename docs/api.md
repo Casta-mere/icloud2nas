@@ -4,13 +4,20 @@
 and `/metrics`. Bodies are JSON unless noted. The web UI and `icloud2nas-ctl` are clients of
 this API; nothing else touches the database or the workers.
 
+Every mutating request under `/api` (`POST`, `PUT`, `PATCH`, `DELETE`, the session routes
+included) must carry `Content-Type: application/json` (any `charset`), even when it has no
+body: send `{}`. Anything else is answered `415 {"error": "unsupported media type", "detail":
+"send application/json"}` before authentication or routing. A cross-site HTML form or a
+`no-cors` fetch cannot send that header, so this doubles as the CSRF guard.
+
 ## Auth
 
 By default the API is open. Set an admin password (`PUT /api/settings {"admin_password": "..."}`,
 or the settings page) and every route except `/healthz`, `/metrics` and `/api/session` requires
 the `i2n_session` cookie (signed, HTTP-only, 30 days). Changing or clearing the password
 invalidates earlier sessions. Without a valid cookie protected routes answer `401`.
-TLS is the reverse proxy's job.
+TLS is the reverse proxy's job. A forgotten password is cleared offline with
+`icloud2nas-serve --reset-admin-password` (see `docs/orchestrator.md`).
 
 `icloud2nas-ctl` reads the base URL from `I2N_URL` (default `http://127.0.0.1:8080`). On a 401
 (or before opening the event stream) it logs in with `I2N_ADMIN_PASSWORD`, or asks for the
@@ -25,8 +32,9 @@ password, then retries once.
 ## Errors
 
 Failures are `{"error": "<kind>", "detail": "<text>"}`: `400` invalid input (`ValueError`),
-`401` unauthorized, `404` unknown id, `409` busy / already exists, `422` malformed body
-(FastAPI validation), `500` cannot decrypt stored passwords, `502` the worker failed.
+`401` unauthorized, `404` unknown id, `409` busy / already exists, `415` a mutating request
+without `Content-Type: application/json`, `422` malformed body (FastAPI validation), `500` cannot
+decrypt stored passwords, `502` the worker failed.
 
 ## Ids
 
@@ -39,7 +47,7 @@ ambiguous prefix is a `400`, no match a `404`.
 | Method | Path | Body | Response | Errors |
 |---|---|---|---|---|
 | GET | `/healthz` | | `{ok: true}` (open) | 503 `{ok: false, detail}` database or scheduler down |
-| GET | `/metrics` | | Prometheus text (open) | |
+| GET | `/metrics` | | Prometheus text (open); library series are labelled `library_id` and `library` (display name) | |
 | GET | `/api/status` | | `{paused, space_low, workers_running, version, started_at}` | |
 | POST | `/api/pause` | | `{paused: true}`; stops scheduled runs, manual requests still run | |
 | POST | `/api/resume` | | `{paused: false}` | |
@@ -56,7 +64,7 @@ last_auth_ok_at, last_error, created_at, primary_dir, library_ids`. `status` is 
 | POST | `/api/accounts` | `{display_name, apple_id, region: cn\|com, password, target_dir?}` | 201 `{id, run_id}`; the interactive login starts at once and libraries are discovered after a successful login | 400 invalid, 409 Apple ID exists |
 | GET | `/api/accounts/{id}` | | account | 404 |
 | PATCH | `/api/accounts/{id}` | `{display_name?, password?}` | account; with `password` it re-authenticates and adds `run_id` | 400, 404, 409 busy |
-| DELETE | `/api/accounts/{id}?keep_dir=true\|false` | | 204; `keep_dir=false` moves the photo folders to the trash | 404, 409 busy |
+| DELETE | `/api/accounts/{id}?keep_dir=true\|false` | | 204; `keep_dir=false` moves the photo folders to the trash, by rename only and all or none | 400 a folder is on another filesystem / a mount point / cannot be renamed (nothing moved, account kept), 404, 409 busy |
 | POST | `/api/accounts/{id}/auth` | | 202 `{run_id}` (re-login, 2FA again) | 404, 409 busy |
 | POST | `/api/accounts/{id}/code` | `{code}` | 204 | 409 no login is waiting for a code |
 | POST | `/api/accounts/{id}/refresh` | | `{personal: [zone], shared: [zone]}`; re-discovers libraries without a login | 404, 409 busy, 502 worker failed |
@@ -108,14 +116,14 @@ Keyed by the library's relative directory (`rel`), so trash of deleted libraries
 |---|---|---|---|---|
 | GET | `/api/trash` | | `[{rel, library_id, display_name, days: [{day, files, bytes}]}]` | |
 | GET | `/api/trash/{day}?rel=` | | `[{rel, size}]` | 400 bad day / rel, 404 |
-| DELETE | `/api/trash/{day}?rel=` | | `{deleted}` files removed for good | 400, 404 |
-| POST | `/api/trash/{day}/keep?rel=` | `{paths}` | `{kept: [path]}`; moved to `kept/<rel>/` | 400 (path escapes the day), 404 |
+| DELETE | `/api/trash/{day}?rel=` | | `{deleted}` files removed for good | 400, 404, 409 the library owning `rel` is running |
+| POST | `/api/trash/{day}/keep?rel=` | `{paths}` | `{kept: [path]}`; moved to `kept/<rel>/` | 400 (path escapes the day), 404, 409 the library owning `rel` is running |
 
 ## Settings and notifications
 
 | Method | Path | Body | Response | Errors |
 |---|---|---|---|---|
-| GET | `/api/settings` | | `{values, admin_password_set, public_url_fallback}` | |
+| GET | `/api/settings` | | `{values, admin_password_set, public_url_fallback}`; the fallback is the origin of the last authorised browser page load from a non-loopback host, used for notification links while `public_url` is empty | |
 | PUT | `/api/settings` | `{<key>: <value>, ..., admin_password?}`; values are strings (booleans `1`/`0`); `admin_password: ""` clears it | same as GET | 400 unknown key, bad value, internal key, null |
 | POST | `/api/notify/test` | | `{sent}` | 400 `apprise_urls` empty |
 
@@ -145,5 +153,5 @@ treat events as hints and re-read the resource when in doubt.
 | `settings.updated` | `keys` |
 
 `mode` is `auth`, `list`, `sync`, `reconcile`; `trigger` is `onboarding`, `reauth`, `schedule`,
-`nightly` or `manual`. The CLI relies on `account.status` (`awaiting_code`), `run.event`
+`nightly`, `chain` (the reconcile that follows a successful nightly sync) or `manual`. The CLI relies on `account.status` (`awaiting_code`), `run.event`
 (`mfa_result`), `run.finished` and `plan.resolved`.
