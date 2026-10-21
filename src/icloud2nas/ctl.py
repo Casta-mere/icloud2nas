@@ -1,47 +1,40 @@
-"""icloud2nas-ctl: headless control of the orchestrator core (accounts, libraries, runs, daemon)."""
+"""icloud2nas-ctl: command line client for the icloud2nas HTTP API (`icloud2nas-serve`)."""
 
 from __future__ import annotations
 
 import argparse
-import asyncio
 import getpass
-import json
-import logging
 import os
-import signal
 import sys
 from collections.abc import Callable, Mapping, Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, TextIO
+from urllib.parse import quote
 
-from cryptography.fernet import InvalidToken
-from sqlalchemy.exc import IntegrityError
+import httpx
 
-from icloud2nas.api.serializers import resolve as resolve_id
-from icloud2nas.api.state import AppState, build_state
-from icloud2nas.orchestrator.config import Config, normalize_hhmm
-from icloud2nas.orchestrator.jobs import build_job, validate_job
-from icloud2nas.orchestrator.lock import DaemonLock, LockHeld
-from icloud2nas.orchestrator.scheduler import DueJob
-from icloud2nas.orchestrator.store import repo
-from icloud2nas.orchestrator.store.models import ReconcilePlan
+from icloud2nas.ctl_follow import (
+    Api,
+    CtlError,
+    follow_auth,
+    follow_run,
+    print_libraries,
+)
+from icloud2nas.ctl_follow import parse_sse as parse_sse  # re-exported for tests
 
-PASSWORD_ENV = "I2N_CTL_PASSWORD"
-PLAN_STATUSES = ("pending", "approved", "executed", "rejected", "superseded")
-
-
-App = AppState
+DEFAULT_URL = "http://127.0.0.1:8080"
+PASSWORD_ENV = "I2N_CTL_PASSWORD"  # the Apple ID password for `account add|set-password`
+PLAN_STATUSES = ("pending", "approved", "executed", "rejected", "superseded", "all")
 
 
-def build_app(config: Config, env: Mapping[str, str] | None = None) -> App:
-    return build_state(config, env)
+# -- output ----------------------------------------------------------------------------------------
 
 
 def _fmt(value: Any) -> str:
     if value is None:
         return "-"
     if isinstance(value, datetime):
-        return value.astimezone().strftime("%Y-%m-%d %H:%M")  # stored UTC, shown in TZ
+        return value.astimezone().strftime("%Y-%m-%d %H:%M")  # API times are UTC, shown local
     return str(value)
 
 
@@ -49,309 +42,255 @@ def _row(out: TextIO, *cols: Any) -> None:
     out.write("\t".join(_fmt(c) for c in cols) + "\n")
 
 
-def _event_printer(out: TextIO) -> Callable[[dict[str, Any]], None]:
-    def show(event: dict[str, Any]) -> None:
-        fields = {k: v for k, v in event.items() if k not in ("ev", "ts")}
-        out.write(f"[{event.get('ev')}] {json.dumps(fields, ensure_ascii=False)}\n")
-        out.flush()
-
-    return show
+def _ts(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    parsed = datetime.fromisoformat(value)
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
-# -- account ---------------------------------------------------------------------------------------
+# -- commands --------------------------------------------------------------------------------------
 
 
-async def _wait_any(*events: asyncio.Event) -> None:
-    waiters = [asyncio.create_task(e.wait()) for e in events]
-    try:
-        await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
-    finally:
-        for w in waiters:
-            w.cancel()
+def _segment(text: str) -> str:
+    if not text.strip():
+        raise CtlError("id must not be empty")
+    return quote(text, safe="")
 
 
-async def _interactive_auth(
-    app: App, account_id: str, ask_code: Callable[[str], str], out: TextIO, trigger: str
-) -> int:
-    session = await app.onboarding.start_auth(account_id, trigger=trigger)
-    printer = _event_printer(out)
-    wrong = asyncio.Event()
-
-    def on_bus(topic: str, payload: dict[str, Any]) -> None:
-        if topic != "run.event" or payload.get("run_id") != session.run_id:
-            return
-        event = payload["event"]
-        printer(event)
-        if event.get("ev") == "mfa_result" and event.get("ok") is False:
-            wrong.set()
-
-    unsubscribe = app.bus.subscribe(
-        on_bus
-    )  # subscribed for the whole session: nothing can be missed
-    try:
-        await _wait_any(session.prompted, session.finished)
-        while not session.finished.is_set():
-            wrong.clear()
-            code = await asyncio.to_thread(ask_code, "验证码 / 2FA code: ")
-            if session.finished.is_set():
-                break
-            await app.onboarding.submit_code(account_id, code.strip())
-            await _wait_any(wrong, session.finished)
-    finally:
-        unsubscribe()
-    await session.finished.wait()
-    if session.result is None:
-        out.write(f"login failed: {session.error or 'no result'}\n")
-        return 1
-    return session.result.exit_code
+def _account(api: Api, text: str) -> dict[str, Any]:
+    account: dict[str, Any] = api.get(f"/api/accounts/{_segment(text)}")
+    return account
 
 
-def _password(env: Mapping[str, str], ask_password: Callable[[str], str], apple_id: str) -> str:
-    return env.get(PASSWORD_ENV) or ask_password(f"Password for {apple_id}: ")
+def _library(api: Api, text: str) -> dict[str, Any]:
+    library: dict[str, Any] = api.get(f"/api/libraries/{_segment(text)}")
+    return library
 
 
-def _account_ids(app: App) -> list[tuple[str, str]]:
-    with app.store.session() as s:
-        return [(a.id, a.apple_id) for a in repo.list_accounts(s)]
+def _apple_password(env: Mapping[str, str], ask_password: Callable[[str], str], who: str) -> str:
+    return env.get(PASSWORD_ENV) or ask_password(f"Password for {who}: ")
 
 
 def cmd_account(
-    app: App,
+    api: Api,
     args: argparse.Namespace,
     env: Mapping[str, str],
-    ask_password: Any,
-    ask_code: Any,
+    ask_password: Callable[[str], str],
+    ask_code: Callable[[str], str],
     out: TextIO,
 ) -> int:
     if args.action == "add":
-        account_id = app.onboarding.create_account(
-            display_name=args.name,
-            apple_id=args.apple_id,
-            region=args.region,
-            password=_password(env, ask_password, args.apple_id),
-        )
-        out.write(f"account {account_id} created; logging in…\n")
-        code = asyncio.run(_interactive_auth(app, account_id, ask_code, out, "onboarding"))
-        if code != 0:
-            out.write(f"login failed with exit code {code}\n")
-            return code
-        try:
-            personal, shared = asyncio.run(app.onboarding.refresh_libraries(account_id))
-        except (RuntimeError, ValueError) as exc:
-            out.write(
-                f"logged in; library discovery failed ({exc}); fix the cause and run: "
-                f"icloud2nas-ctl account refresh {account_id}\n"
-            )
-            return 1
-        out.write(f"libraries: personal={personal} shared={shared}\n")
-        return 0
+        body: dict[str, Any] = {
+            "display_name": args.name,
+            "apple_id": args.apple_id,
+            "region": args.region,
+            "password": _apple_password(env, ask_password, args.apple_id),
+        }
+        if args.dir:
+            body["target_dir"] = args.dir
+
+        def start() -> str:
+            created = api.send("POST", "/api/accounts", body)
+            out.write(f"account {created['id']} created; logging in…\n")
+            return str(created["run_id"])
+
+        return follow_auth(api, start, ask_code, out)
     if args.action == "list":
-        with app.store.session() as s:
-            for a in repo.list_accounts(s):
-                _row(
-                    out,
-                    a.id,
-                    a.display_name,
-                    a.apple_id,
-                    a.region,
-                    a.status,
-                    a.failures,
-                    a.backoff_until,
-                    a.last_error[:60] if a.last_error else None,
-                )
-        return 0
-    account_id = resolve_id(_account_ids(app), args.id)
-    if args.action == "refresh":
-        personal, shared = asyncio.run(app.onboarding.refresh_libraries(account_id))
-        out.write(f"libraries: personal={personal} shared={shared}\n")
-        return 0
-    if args.action == "set-password":
-        with app.store.session() as s:
-            account = repo.get_account(s, account_id)
-            assert account is not None
-            apple_id = account.apple_id
-        app.onboarding.set_password(account_id, _password(env, ask_password, apple_id))
-    return asyncio.run(_interactive_auth(app, account_id, ask_code, out, "reauth"))
-
-
-# -- library ---------------------------------------------------------------------------------------
-
-
-def _library_ids(app: App) -> list[tuple[str, str]]:
-    with app.store.session() as s:
-        return [(lib.id, lib.display_name) for lib in repo.list_libraries(s)]
-
-
-def cmd_library(app: App, args: argparse.Namespace, out: TextIO) -> int:
-    if args.action == "list":
-        with app.store.session() as s:
-            accounts = {a.id: a.display_name for a in repo.list_accounts(s)}
-            for row in repo.list_libraries(s):
-                _row(
-                    out,
-                    row.id,
-                    accounts.get(row.account_id),
-                    row.display_name,
-                    row.zone_name,
-                    row.target_dir,
-                    row.enabled,
-                    row.status,
-                    row.interval_min,
-                    row.nightly_at,
-                    row.last_success_at,
-                )
-        return 0
-    library_id = resolve_id(_library_ids(app), args.id)
-    with app.store.session() as s:
-        lib = repo.get_library(s, library_id)
-        assert lib is not None
-        if args.enable:
-            lib.enabled = True
-        if args.disable:
-            lib.enabled = False
-        if args.interval is not None:
-            lib.interval_min = args.interval
-        if args.nightly is not None:
-            lib.nightly_at = normalize_hhmm(args.nightly)
-        if args.name is not None:
-            lib.display_name = args.name
-        if args.dir is not None:
-            lib.target_dir = repo.validate_target_dir(
-                s, args.dir, exclude_library_id=lib.id, kind=lib.kind
-            )
-    return 0
-
-
-# -- runs / plans ----------------------------------------------------------------------------------
-
-
-async def _run_now(app: App, library_id: str, mode: str, out: TextIO) -> int:
-    job = app.scheduler.request_manual(library_id, mode)
-    printer = _event_printer(out)
-    unsubscribe = app.bus.subscribe(
-        lambda topic, payload: printer(payload["event"]) if topic == "run.event" else None
-    )
-    try:
-        app.scheduler.enqueue(job)
-        await app.scheduler.tick()
-        await asyncio.gather(*app.scheduler.tasks)
-    finally:
-        unsubscribe()
-    with app.store.session() as s:
-        run = repo.list_runs(s, library_id=library_id, limit=1)[0]
-        return run.exit_code if run.exit_code is not None else 1
-
-
-def cmd_run(app: App, args: argparse.Namespace, out: TextIO) -> int:
-    library_id = resolve_id(_library_ids(app), args.id)
-    return asyncio.run(_run_now(app, library_id, args.mode, out))
-
-
-def cmd_runs(app: App, args: argparse.Namespace, out: TextIO) -> int:
-    library_id = resolve_id(_library_ids(app), args.library) if args.library else None
-    with app.store.session() as s:
-        for r in repo.list_runs(s, library_id=library_id, limit=args.limit):
+        for a in api.get("/api/accounts"):
             _row(
                 out,
-                r.id,
-                r.mode,
-                r.trigger,
-                r.status,
-                r.started_at,
-                r.ended_at,
-                r.exit_code,
-                r.error_kind,
-                r.error_message,
+                a["id"],
+                a["display_name"],
+                a["apple_id"],
+                a["region"],
+                a["status"],
+                a["failures"],
+                _ts(a["backoff_until"]),
+                a["last_error"][:60] if a["last_error"] else None,
             )
-    return 0
-
-
-async def _apply_plan(app: App, plan_id: str, out: TextIO) -> int:
-    with app.store.session() as s:
-        plan = s.get(ReconcilePlan, plan_id)
-        if plan is None:
-            raise KeyError(plan_id)
-        if plan.status != "pending":
-            raise ValueError(f"plan is {plan.status}")
-        library = repo.get_library(s, plan.library_id)
-        assert library is not None
-        account = repo.get_account(s, library.account_id)
-        assert account is not None
-        job = build_job(
-            app.config, account, library, interactive=False, policy=app.settings.policy()
+        return 0
+    account = _account(api, args.id)
+    account_id = account["id"]
+    if args.action == "refresh":
+        result = api.send("POST", f"/api/accounts/{account_id}/refresh")
+        print_libraries(out, result["personal"], result["shared"])
+        return 0
+    if args.action == "delete":
+        api.call(
+            "DELETE",
+            f"/api/accounts/{account_id}",
+            params={"keep_dir": "false" if args.delete_dir else "true"},
         )
-        validate_job("reconcile", job)
-        plan.status = "approved"
-        due = DueJob(library.id, account.id, "apply_plan", "manual", plan_id=plan.id)
-    printer = _event_printer(out)
-    unsubscribe = app.bus.subscribe(
-        lambda topic, payload: printer(payload["event"]) if topic == "run.event" else None
+        out.write(f"account {account_id} deleted\n")
+        return 0
+    if args.action == "set-password":
+        password = _apple_password(env, ask_password, account["apple_id"])
+
+        def start_password() -> str:
+            patched = api.send("PATCH", f"/api/accounts/{account_id}", {"password": password})
+            return str(patched["run_id"])
+
+        return follow_auth(api, start_password, ask_code, out)
+    return follow_auth(
+        api,
+        lambda: str(api.send("POST", f"/api/accounts/{account_id}/auth")["run_id"]),
+        ask_code,
+        out,
     )
-    try:
-        app.scheduler.enqueue(due)
-        await app.scheduler.tick()
-        await asyncio.gather(*app.scheduler.tasks)
-    finally:
-        unsubscribe()
-    with app.store.session() as s:
-        plan = s.get(ReconcilePlan, plan_id)
-        return 0 if plan is not None and plan.status == "executed" else 1
 
 
-def cmd_plan(app: App, args: argparse.Namespace, out: TextIO) -> int:
+def cmd_library(api: Api, args: argparse.Namespace, out: TextIO) -> int:
     if args.action == "list":
-        with app.store.session() as s:
-            for p in repo.list_plans(s, args.status):
-                _row(
-                    out, p.id, p.library_id, p.status, p.extraneous_count, p.plan_file, p.created_at
-                )
+        accounts = {a["id"]: a["display_name"] for a in api.get("/api/accounts")}
+        for lib in api.get("/api/libraries"):
+            _row(
+                out,
+                lib["id"],
+                accounts.get(lib["account_id"]),
+                lib["display_name"],
+                lib["zone_name"],
+                lib["target_dir"],
+                lib["enabled"],
+                lib["status"],
+                lib["interval_min"],
+                lib["nightly_at"],
+                _ts(lib["last_success_at"]),
+            )
         return 0
-    with app.store.session() as s:
-        plan_ids = [(p.id, p.id) for p in repo.list_plans(s, None)]
-    plan_id = resolve_id(plan_ids, args.id)
-    if args.action == "reject":
-        with app.store.session() as s:
-            plan = s.get(ReconcilePlan, plan_id)
-            assert plan is not None
-            if plan.status != "pending":
-                raise ValueError(f"plan is {plan.status}")
-            plan.status = "rejected"
+    library_id = _library(api, args.id)["id"]
+    if args.action in ("pause", "resume"):
+        api.send("POST", f"/api/libraries/{library_id}/{args.action}")
         return 0
-    return asyncio.run(_apply_plan(app, plan_id, out))
-
-
-# -- daemon ----------------------------------------------------------------------------------------
-
-
-async def _daemon(app: App) -> int:
-    stop = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, stop.set)
-    await app.scheduler.run_forever(stop)
+    patch: dict[str, Any] = {}
+    if args.enable:
+        patch["enabled"] = True
+    if args.disable:
+        patch["enabled"] = False
+    if args.interval is not None:
+        patch["interval_min"] = args.interval
+    if args.nightly is not None:
+        patch["nightly_at"] = args.nightly
+    if args.name is not None:
+        patch["display_name"] = args.name
+    if args.dir is not None:
+        patch["target_dir"] = args.dir
+    if not patch:
+        raise CtlError("nothing to set; pass --enable/--disable/--interval/--nightly/--dir/--name")
+    api.send("PATCH", f"/api/libraries/{library_id}", patch)
     return 0
 
 
-def cmd_daemon(app: App, out: TextIO) -> int:
-    lock = DaemonLock(app.config.lock_path)
-    try:
-        lock.acquire("daemon")
-    except LockHeld as exc:
-        out.write(f"error: {exc}\n")
-        return 1
-    try:  # the startup sweep inside run_forever only happens once we own the lock
-        return asyncio.run(_daemon(app))
-    finally:
-        lock.release()
+def cmd_run(api: Api, args: argparse.Namespace, out: TextIO) -> int:
+    library_id = _library(api, args.id)["id"]
+    return follow_run(
+        api,
+        library_id,
+        lambda: api.call("POST", f"/api/libraries/{library_id}/{args.mode}").json(),
+        out,
+    )
 
 
-def _lock_owner(args: argparse.Namespace) -> str | None:
-    """The lock owner name for commands that spawn workers; None for DB-only commands."""
-    if args.cmd == "run" or (args.cmd == "plan" and args.action == "approve"):
-        return f"icloud2nas-ctl {args.cmd} {getattr(args, 'mode', None) or args.action}"
-    if args.cmd == "account" and args.action in ("add", "reauth", "set-password", "refresh"):
-        return f"icloud2nas-ctl account {args.action}"
-    return None
+def cmd_runs(api: Api, args: argparse.Namespace, out: TextIO) -> int:
+    params: dict[str, Any] = {"limit": args.limit}
+    if args.library:
+        params["library_id"] = _library(api, args.library)["id"]
+    for r in api.get("/api/runs", **params):
+        _row(
+            out,
+            r["id"],
+            r["mode"],
+            r["trigger"],
+            r["status"],
+            _ts(r["started_at"]),
+            _ts(r["ended_at"]),
+            r["exit_code"],
+            r["error_kind"],
+            r["error_message"],
+        )
+    return 0
+
+
+def cmd_plan(api: Api, args: argparse.Namespace, out: TextIO) -> int:
+    if args.action == "list":
+        for p in api.get("/api/plans", status=args.status):
+            _row(
+                out,
+                p["id"],
+                p["library_id"],
+                p["status"],
+                p["extraneous_count"],
+                p["plan_file"],
+                _ts(p["created_at"]),
+            )
+        return 0
+    plan = api.get(f"/api/plans/{_segment(args.id)}")
+    plan_id = plan["id"]
+    if args.action == "show":
+        out.write(f"plan {plan_id} {plan['status']} library={plan['library_id']}\n")
+        out.write(f"{plan['total']} paths ({plan['extraneous_count']} extraneous)\n")
+        for path in plan["paths"]:
+            out.write(f"{path}\n")
+        if plan["total"] > len(plan["paths"]):
+            out.write(f"… {plan['total'] - len(plan['paths'])} more in {plan['plan_file']}\n")
+        return 0
+    if args.action == "reject":
+        api.send("POST", f"/api/plans/{plan_id}/reject")
+        out.write(f"plan {plan_id} rejected\n")
+        return 0
+    final: dict[str, str] = {}
+
+    def resolved(topic: str, data: dict[str, Any]) -> int | None:
+        if topic == "plan.resolved" and data.get("plan_id") == plan_id:
+            final["status"] = data["status"]
+            return 0 if data["status"] == "executed" else 1
+        return None
+
+    code = follow_run(
+        api,
+        plan["library_id"],
+        lambda: api.call("POST", f"/api/plans/{plan_id}/approve").json(),
+        out,
+        until=resolved,
+    )
+    out.write(f"plan {plan_id} {final.get('status', 'unresolved')}\n")
+    return code
+
+
+def cmd_settings(api: Api, args: argparse.Namespace, out: TextIO) -> int:
+    if args.action == "get":
+        for key, value in sorted(api.get("/api/settings")["values"].items()):
+            out.write(f"{key}\t{value}\n")
+        return 0
+    api.send("PUT", "/api/settings", {args.key: args.value})
+    return 0
+
+
+def cmd_trash(api: Api, args: argparse.Namespace, out: TextIO) -> int:
+    if args.action == "list":
+        for entry in api.get("/api/trash"):
+            for day in entry["days"]:
+                _row(out, entry["rel"], day["day"], day["files"], day["bytes"])
+        return 0
+    path = f"/api/trash/{quote(args.day, safe='')}"
+    if args.action == "day":
+        for f in api.get(path, rel=args.rel):
+            _row(out, f["rel"], f["size"])
+    elif args.action == "delete":
+        deleted = api.call("DELETE", path, params={"rel": args.rel}).json()["deleted"]
+        out.write(f"deleted {deleted}\n")
+    else:
+        body = {"paths": args.paths}
+        kept = api.call("POST", path + "/keep", params={"rel": args.rel}, json=body)
+        for rel in kept.json()["kept"]:
+            out.write(f"kept {rel}\n")
+    return 0
+
+
+def cmd_status(api: Api, out: TextIO) -> int:
+    for key, value in api.get("/api/status").items():
+        out.write(f"{key}\t{value}\n")
+    return 0
 
 
 # -- entry -----------------------------------------------------------------------------------------
@@ -366,10 +305,13 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     add.add_argument("--name", required=True)
     add.add_argument("--apple-id", required=True)
     add.add_argument("--region", choices=["cn", "com"], required=True)
+    add.add_argument("--dir", help="target directory under the photos root (default: the name)")
     acc.add_parser("list")
-    acc.add_parser("reauth").add_argument("id")
-    acc.add_parser("set-password").add_argument("id")
-    acc.add_parser("refresh").add_argument("id")
+    for name in ("reauth", "set-password", "refresh"):
+        acc.add_parser(name).add_argument("id")
+    delete = acc.add_parser("delete")
+    delete.add_argument("id")
+    delete.add_argument("--delete-dir", action="store_true", help="also remove the photo folder")
 
     lib = sub.add_parser("library").add_subparsers(dest="action", required=True)
     lib.add_parser("list")
@@ -381,6 +323,8 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     st.add_argument("--nightly")
     st.add_argument("--dir")
     st.add_argument("--name")
+    for name in ("pause", "resume"):
+        lib.add_parser(name).add_argument("id")
 
     run = sub.add_parser("run")
     run.add_argument("mode", choices=["sync", "reconcile"])
@@ -393,10 +337,26 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     plan = sub.add_parser("plan").add_subparsers(dest="action", required=True)
     pl = plan.add_parser("list")
     pl.add_argument("--status", default="pending", choices=PLAN_STATUSES)
-    plan.add_parser("approve").add_argument("id")
-    plan.add_parser("reject").add_argument("id")
+    for name in ("show", "approve", "reject"):
+        plan.add_parser(name).add_argument("id")
 
-    sub.add_parser("daemon")
+    for name in ("pause", "resume", "status"):
+        sub.add_parser(name)
+
+    settings = sub.add_parser("settings").add_subparsers(dest="action", required=True)
+    settings.add_parser("get")
+    sset = settings.add_parser("set")
+    sset.add_argument("key")
+    sset.add_argument("value")
+
+    trash = sub.add_parser("trash").add_subparsers(dest="action", required=True)
+    trash.add_parser("list")
+    for name in ("day", "delete", "keep"):
+        t = trash.add_parser(name)
+        t.add_argument("rel")
+        t.add_argument("day")
+        if name == "keep":
+            t.add_argument("paths", nargs="+", metavar="PATH")
     return p.parse_args(argv)
 
 
@@ -407,54 +367,53 @@ def main(
     ask_password: Callable[[str], str] = getpass.getpass,
     ask_code: Callable[[str], str] = input,
     out: TextIO = sys.stdout,
+    client: httpx.Client | None = None,
 ) -> int:
     source = os.environ if env is None else env
     args = parse_args(argv)
-    logging.basicConfig(
-        level=logging.INFO,
-        stream=sys.stderr,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    owned = client is None
+    http = client or httpx.Client(timeout=httpx.Timeout(30.0, read=None))
+    api = Api(http, source.get("I2N_URL") or DEFAULT_URL, source, ask_password)
     try:
-        app = build_app(Config.from_env(source), source)
-        if args.cmd == "daemon":
-            return cmd_daemon(app, out)
-        owner = _lock_owner(args)
-        if owner is None:
-            return _dispatch(app, args, source, ask_password, ask_code, out)
-        with DaemonLock(app.config.lock_path).held(owner):
-            return _dispatch(app, args, source, ask_password, ask_code, out)
-    except KeyError as exc:
-        out.write(f"not found: {exc}\n")
-        return 1
-    except (ValueError, LockHeld, FileNotFoundError) as exc:
+        return _dispatch(api, args, source, ask_password, ask_code, out)
+    except CtlError as exc:
         out.write(f"error: {exc}\n")
         return 1
-    except IntegrityError as exc:
-        out.write(f"error: already exists ({exc.orig})\n")
-        return 1
-    except InvalidToken:
-        out.write("error: cannot decrypt stored passwords — I2N_SECRET_KEY changed?\n")
-        return 1
+    finally:
+        if owned:
+            http.close()
 
 
 def _dispatch(
-    app: App,
+    api: Api,
     args: argparse.Namespace,
     env: Mapping[str, str],
     ask_password: Callable[[str], str],
     ask_code: Callable[[str], str],
     out: TextIO,
 ) -> int:
-    if args.cmd == "account":
-        return cmd_account(app, args, env, ask_password, ask_code, out)
-    if args.cmd == "library":
-        return cmd_library(app, args, out)
-    if args.cmd == "run":
-        return cmd_run(app, args, out)
-    if args.cmd == "runs":
-        return cmd_runs(app, args, out)
-    return cmd_plan(app, args, out)
+    match args.cmd:
+        case "account":
+            return cmd_account(api, args, env, ask_password, ask_code, out)
+        case "library":
+            return cmd_library(api, args, out)
+        case "run":
+            return cmd_run(api, args, out)
+        case "runs":
+            return cmd_runs(api, args, out)
+        case "plan":
+            return cmd_plan(api, args, out)
+        case "settings":
+            return cmd_settings(api, args, out)
+        case "trash":
+            return cmd_trash(api, args, out)
+        case "status":
+            return cmd_status(api, out)
+        case "pause" | "resume":
+            paused = api.send("POST", f"/api/{args.cmd}")["paused"]
+            out.write(f"paused: {str(paused).lower()}\n")
+            return 0
+    raise CtlError(f"unknown command {args.cmd}")  # pragma: no cover - argparse guards this
 
 
 def cli() -> None:

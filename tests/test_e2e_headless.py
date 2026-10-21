@@ -1,91 +1,77 @@
-"""Whole-core walkthrough: add account, libraries, scheduled runs, fuse, approve (fake worker)."""
+"""Whole walkthrough over HTTP: icloud2nas-ctl -> API -> scheduler -> fake worker."""
 
 from __future__ import annotations
 
-import asyncio
-import io
 import json
+import threading
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
-from icloud2nas import ctl
-from icloud2nas.orchestrator.config import Config
+from icloud2nas.api.state import AppState
+from icloud2nas.engine.trash import DAY_MARKER
 from icloud2nas.orchestrator.store import repo
+from tests.api.conftest import set_scenario, wait_for
+from tests.conftest import ctl_run
+
+API = tuple[TestClient, AppState]
 
 
-def _env(config: Config) -> dict[str, str]:
-    return {
-        "I2N_DATA_DIR": str(config.data_dir),
-        "I2N_PHOTOS_DIR": str(config.photos_dir),
-        "I2N_WORKER_CMD": " ".join(config.worker_cmd),
-        "TZ": "Asia/Shanghai",
-        "I2N_JITTER_S": "0,0",
-        "I2N_CTL_PASSWORD": "pw",
-    }
+def _tick(client: TestClient, state: AppState) -> int:
+    launched: int = client.portal.call(state.scheduler.tick)  # type: ignore[union-attr]
+    return launched
 
 
-async def _ctl(config: Config, argv: list[str], codes: list[str] | None = None) -> tuple[int, str]:
-    # ctl.main drives its own asyncio.run, so it must run off the test's event loop
-    out = io.StringIO()
-    queue = list(codes or [])
-    rc = await asyncio.to_thread(
-        ctl.main, argv, env=_env(config), ask_code=lambda prompt: queue.pop(0), out=out
-    )
-    return rc, out.getvalue()
+def _idle(client: TestClient, state: AppState) -> None:
+    wait_for(client, lambda c: not state.scheduler.running_libraries and not state.scheduler.tasks)
 
 
-async def test_household_two_accounts_scheduled_and_fused_plan(
-    config: Config, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_household_two_accounts_scheduled_fused_plan_trash_and_pause(
+    api: API, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    client, state = api
     calls = tmp_path / "calls.jsonl"
     monkeypatch.setenv("FAKE_WORKER_CALLS", str(calls))
-    monkeypatch.setenv(
-        "FAKE_WORKER_SCENARIO",
-        json.dumps(
-            {
-                "auth": {
-                    "events": [
-                        {"ev": "started"},
-                        {"ev": "need_mfa"},
-                        {"wait_code": "111111"},
-                        {"ev": "done", "stats": {}},
-                    ],
-                    "exit": 0,
-                }
+    set_scenario(
+        monkeypatch,
+        {
+            "auth": {
+                "events": [
+                    {"ev": "started"},
+                    {"ev": "need_mfa"},
+                    {"wait_code": "111111"},
+                    {"ev": "done", "stats": {}},
+                ],
+                "exit": 0,
             }
-        ),
+        },
     )
-    assert (
-        await _ctl(
-            config,
-            ["account", "add", "--name", "旭刚", "--apple-id", "a@icloud.com", "--region", "cn"],
-            ["111111"],
+    for name, apple_id in (("旭刚", "a@icloud.com"), ("幻伊镜", "b@icloud.com")):
+        rc, out = ctl_run(
+            client,
+            ["account", "add", "--name", name, "--apple-id", apple_id, "--region", "cn"],
+            codes=["111111"],
         )
-    )[0] == 0
-    assert (
-        await _ctl(
-            config,
-            ["account", "add", "--name", "幻伊镜", "--apple-id", "b@icloud.com", "--region", "cn"],
-            ["111111"],
-        )
-    )[0] == 0
+        assert rc == 0, out
+        assert "libraries: personal=['PrimarySync']" in out
     monkeypatch.delenv("FAKE_WORKER_SCENARIO")
 
-    app = ctl.build_app(Config.from_env(_env(config)), _env(config))
-    with app.store.session() as s:
-        libs = {lib.display_name: lib for lib in repo.list_libraries(s)}
-        assert set(libs) == {"旭刚", "幻伊镜"} and all(lib.enabled for lib in libs.values())
-        assert {lib.target_dir for lib in libs.values()} == {"旭刚", "幻伊镜"}
+    rc, out = ctl_run(client, ["library", "list"])
+    rows = [line.split("\t") for line in out.strip().splitlines()]
+    assert {r[2] for r in rows} == {"旭刚", "幻伊镜"} and {r[4] for r in rows} == {"旭刚", "幻伊镜"}
 
-    # first tick: both never-synced libraries get a full sync, in parallel (max_workers=2)
-    launched = await app.scheduler.tick()
-    assert launched == 2
-    await asyncio.gather(*app.scheduler.tasks)
-    with app.store.session() as s:
-        for lib in repo.list_libraries(s):
-            assert lib.last_success_at is not None
-        assert all(r.status == "ok" and r.mode == "sync" for r in repo.list_runs(s) if r.library_id)
+    # both never-synced libraries are due: the tick starts a full sync for each
+    assert _tick(client, state) == 2
+    wait_for(
+        client,
+        lambda c: len([r for r in c.get("/api/runs").json() if r["mode"] == "sync"]) == 2
+        and all(r["status"] == "ok" for r in c.get("/api/runs").json() if r["mode"] == "sync"),
+    )
+    _idle(client, state)
+    rc, out = ctl_run(client, ["runs", "--limit", "10"])
+    sync_rows = [line.split("\t") for line in out.strip().splitlines() if "\tsync\t" in line]
+    assert [r[2:4] for r in sync_rows] == [["schedule", "ok"], ["schedule", "ok"]]
     sync_calls = [
         json.loads(ln)
         for ln in calls.read_text(encoding="utf-8").splitlines()
@@ -93,61 +79,73 @@ async def test_household_two_accounts_scheduled_and_fused_plan(
     ]
     assert all(c["job"]["full"] is True for c in sync_calls)
     assert {c["job"]["target_dir"] for c in sync_calls} == {
-        str(config.photos_dir / "旭刚"),
-        str(config.photos_dir / "幻伊镜"),
+        str(state.config.photos_dir / "旭刚"),
+        str(state.config.photos_dir / "幻伊镜"),
     }
+    assert _tick(client, state) == 0  # nothing is due right after a success
 
-    # nothing due right after a success
-    assert await app.scheduler.tick() == 0
-
-    # a fused reconcile produces a pending plan; approving it runs --apply-plan without a password
-    plan_file = config.plans_dir / "f.txt"
+    # a fused reconcile -> pending plan -> approve follows to executed (no password for apply)
+    plan_file = state.config.plans_dir / "f.txt"
     plan_file.write_text("2024/01/x.HEIC\n", encoding="utf-8")
-    monkeypatch.setenv(
-        "FAKE_WORKER_SCENARIO",
-        json.dumps(
-            {
-                "reconcile": {
-                    "events": [
-                        {"ev": "started"},
-                        {
-                            "ev": "reconcile_plan",
-                            "remote_total": 50,
-                            "local_total": 90,
-                            "extraneous": 40,
-                            "missing": 0,
-                            "plan_file": str(plan_file),
-                            "fused": True,
-                        },
-                    ],
-                    "exit": 6,
-                }
+    set_scenario(
+        monkeypatch,
+        {
+            "reconcile": {
+                "events": [
+                    {"ev": "started"},
+                    {
+                        "ev": "reconcile_plan", "remote_total": 50, "local_total": 90,
+                        "extraneous": 40, "missing": 0, "plan_file": str(plan_file),
+                        "fused": True,
+                    },
+                ],
+                "exit": 6,
             }
-        ),
+        },
     )
-    with app.store.session() as s:
-        lib_id = repo.list_libraries(s)[0].id
-    rc, _ = await _ctl(config, ["run", "reconcile", lib_id])
+    rc, _ = ctl_run(client, ["run", "reconcile", "旭刚"])
     assert rc == 6
     monkeypatch.delenv("FAKE_WORKER_SCENARIO")
-    rc, out = await _ctl(config, ["plan", "list"])
-    plan_id = out.strip().splitlines()[-1].split("\t")[0]
-    assert (await _ctl(config, ["plan", "approve", plan_id]))[0] == 0
+    rc, out = ctl_run(client, ["plan", "list"])
+    assert rc == 0 and out.count("\n") == 1 and "\tpending\t40\t" in out
+    plan_id = out.strip().split("\t")[0]
+    rc, out = ctl_run(client, ["plan", "approve", plan_id])
+    assert rc == 0 and f"plan {plan_id} executed" in out
     last = json.loads(calls.read_text(encoding="utf-8").splitlines()[-1])
     assert last["argv"][-2:] == ["--apply-plan", str(plan_file)] and last["has_password"] is False
+    _idle(client, state)
 
-    # an expired session on scheduled runs parks both accounts; parked accounts are not retried
-    monkeypatch.setenv(
-        "FAKE_WORKER_SCENARIO",
-        json.dumps({"sync": {"events": [{"ev": "started"}, {"ev": "need_mfa"}], "exit": 3}}),
-    )
-    with app.store.session() as s:
+    # the trash (as left by a worker) is browsable through the CLI
+    day_dir = state.config.photos_dir / ".trash" / "旭刚" / "2026-10-20"
+    (day_dir / "2024/01").mkdir(parents=True)
+    (day_dir / DAY_MARKER).touch()
+    (day_dir / "2024/01/x.HEIC").write_bytes(b"x" * 7)
+    rc, out = ctl_run(client, ["trash", "list"])
+    assert rc == 0 and "旭刚\t2026-10-20\t1\t7" in out
+    rc, out = ctl_run(client, ["trash", "day", "旭刚", "2026-10-20"])
+    assert "2024/01/x.HEIC\t7" in out
+
+    # pause stops scheduling; resume brings it back
+    with state.store.session() as s:
         for lib in repo.list_libraries(s):
             lib.last_success_at = None  # force both due again
-    assert await app.scheduler.tick() == 2
-    await asyncio.gather(*app.scheduler.tasks)
-    with app.store.session() as s:
-        assert all(a.status == "needs_reauth" for a in repo.list_accounts(s))
-    assert await app.scheduler.tick() == 0  # parked accounts are skipped
-    rc, out = await _ctl(config, ["account", "list"])
+    assert ctl_run(client, ["pause"])[0] == 0
+    assert client.get("/api/status").json()["paused"] is True
+    assert _tick(client, state) == 0
+    assert ctl_run(client, ["resume"])[0] == 0
+    assert client.get("/api/status").json()["paused"] is False
+
+    # an expired session on scheduled runs parks both accounts; parked accounts are not retried
+    set_scenario(
+        monkeypatch,
+        {"sync": {"events": [{"ev": "started"}, {"ev": "need_mfa"}], "exit": 3}},
+    )
+    assert _tick(client, state) == 2
+    wait_for(
+        client,
+        lambda c: all(a["status"] == "needs_reauth" for a in c.get("/api/accounts").json()),
+    )
+    assert _tick(client, state) == 0
+    rc, out = ctl_run(client, ["account", "list"])
     assert out.count("needs_reauth") == 2
+    assert not [t for t in threading.enumerate() if t.name == "i2n-ctl-events" and t.is_alive()]

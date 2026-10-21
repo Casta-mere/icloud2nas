@@ -1,0 +1,149 @@
+# HTTP API
+
+`icloud2nas-serve` (port `I2N_PORT`, default 8080) serves everything under `/api`, plus `/healthz`
+and `/metrics`. Bodies are JSON unless noted. The web UI and `icloud2nas-ctl` are clients of
+this API; nothing else touches the database or the workers.
+
+## Auth
+
+By default the API is open. Set an admin password (`PUT /api/settings {"admin_password": "..."}`,
+or the settings page) and every route except `/healthz`, `/metrics` and `/api/session` requires
+the `i2n_session` cookie (signed, HTTP-only, 30 days). Changing or clearing the password
+invalidates earlier sessions. Without a valid cookie protected routes answer `401`.
+TLS is the reverse proxy's job.
+
+`icloud2nas-ctl` reads the base URL from `I2N_URL` (default `http://127.0.0.1:8080`). On a 401
+(or before opening the event stream) it logs in with `I2N_ADMIN_PASSWORD`, or asks for the
+password, then retries once.
+
+| Method | Path | Body | Response | Errors |
+|---|---|---|---|---|
+| GET | `/api/session` | | `{auth_required, authenticated}` | |
+| POST | `/api/session` | `{password}` | 204 + `Set-Cookie: i2n_session` | 401 wrong password |
+| DELETE | `/api/session` | | 204, cookie cleared | |
+
+## Errors
+
+Failures are `{"error": "<kind>", "detail": "<text>"}`: `400` invalid input (`ValueError`),
+`401` unauthorized, `404` unknown id, `409` busy / already exists, `422` malformed body
+(FastAPI validation), `500` cannot decrypt stored passwords, `502` the worker failed.
+
+## Ids
+
+Wherever a path takes an account, library, run or plan id, an unambiguous prefix works too;
+accounts also accept their Apple ID or display name, libraries their display name. An
+ambiguous prefix is a `400`, no match a `404`.
+
+## System
+
+| Method | Path | Body | Response | Errors |
+|---|---|---|---|---|
+| GET | `/healthz` | | `{ok: true}` (open) | 503 `{ok: false, detail}` database or scheduler down |
+| GET | `/metrics` | | Prometheus text (open) | |
+| GET | `/api/status` | | `{paused, space_low, workers_running, version, started_at}` | |
+| POST | `/api/pause` | | `{paused: true}`; stops scheduled runs, manual requests still run | |
+| POST | `/api/resume` | | `{paused: false}` | |
+
+## Accounts
+
+Account object: `id, display_name, apple_id, region, status, failures, backoff_until,
+last_auth_ok_at, last_error, created_at, primary_dir, library_ids`. `status` is one of
+`new, awaiting_code, ok, needs_reauth, password_rejected`.
+
+| Method | Path | Body | Response | Errors |
+|---|---|---|---|---|
+| GET | `/api/accounts` | | `[account]` | |
+| POST | `/api/accounts` | `{display_name, apple_id, region: cn\|com, password, target_dir?}` | 201 `{id, run_id}`; the interactive login starts at once and libraries are discovered after a successful login | 400 invalid, 409 Apple ID exists |
+| GET | `/api/accounts/{id}` | | account | 404 |
+| PATCH | `/api/accounts/{id}` | `{display_name?, password?}` | account; with `password` it re-authenticates and adds `run_id` | 400, 404, 409 busy |
+| DELETE | `/api/accounts/{id}?keep_dir=true\|false` | | 204; `keep_dir=false` moves the photo folders to the trash | 404, 409 busy |
+| POST | `/api/accounts/{id}/auth` | | 202 `{run_id}` (re-login, 2FA again) | 404, 409 busy |
+| POST | `/api/accounts/{id}/code` | `{code}` | 204 | 409 no login is waiting for a code |
+| POST | `/api/accounts/{id}/refresh` | | `{personal: [zone], shared: [zone]}`; re-discovers libraries without a login | 404, 409 busy, 502 worker failed |
+
+## Libraries
+
+Library object: `id, account_id, kind (personal|shared), zone_name, display_name, target_dir,
+enabled, status (ok|paused|space_paused), interval_min, nightly_at, last_run_at,
+last_success_at, first_full_at, stats`.
+
+| Method | Path | Body | Response | Errors |
+|---|---|---|---|---|
+| GET | `/api/libraries` | | `[library]` | |
+| GET | `/api/libraries/{id}` | | library | 404 |
+| PATCH | `/api/libraries/{id}` | `{display_name?, target_dir?, enabled?, interval_min?, nightly_at?}` | library; a changed `target_dir` moves the folder | 400 (absolute dir, bad `HH:MM`, dir taken), 404, 409 a run is active |
+| POST | `/api/libraries/{id}/sync` | | 202 `{queued: true}`; a full sync, ahead of scheduled work, ignoring pause | 400 disabled / account not ok, 409 space low |
+| POST | `/api/libraries/{id}/reconcile` | | 202 `{queued: true}` | same |
+| POST | `/api/libraries/{id}/pause` | | library | 404 |
+| POST | `/api/libraries/{id}/resume` | | library | 404 |
+
+## Runs
+
+Run object: `id, account_id, library_id, mode, trigger, status, started_at, ended_at,
+exit_code, stats, error_kind, error_message, plan_file`.
+
+| Method | Path | Body | Response | Errors |
+|---|---|---|---|---|
+| GET | `/api/runs?library_id=&account_id=&limit=` | | `[run]`, newest first; `limit` 1-500, default 50 | 404 unknown filter id |
+| GET | `/api/runs/{id}` | | run | 404 |
+| GET | `/api/runs/{id}/log` | | `text/plain`, the last 1 MiB of the worker log | 404 no log |
+
+## Plans
+
+Plan object: `id, library_id, run_id, created_at, extraneous_count, plan_file, status
+(pending|approved|executed|rejected|superseded)`.
+
+| Method | Path | Body | Response | Errors |
+|---|---|---|---|---|
+| GET | `/api/plans?status=` | | `[plan]`; `status` is a plan status or `all`, default `pending` | 400 |
+| GET | `/api/plans/{id}` | | plan plus `paths` (first 1000) and `total` | 404 |
+| POST | `/api/plans/{id}/approve` | | 202 plan (`approved`); the apply run follows, then `plan.resolved` | 400 not pending, 409 busy |
+| POST | `/api/plans/{id}/reject` | | plan | 400 not pending |
+
+## Trash
+
+Keyed by the library's relative directory (`rel`), so trash of deleted libraries stays reachable.
+
+| Method | Path | Body | Response | Errors |
+|---|---|---|---|---|
+| GET | `/api/trash` | | `[{rel, library_id, display_name, days: [{day, files, bytes}]}]` | |
+| GET | `/api/trash/{day}?rel=` | | `[{rel, size}]` | 400 bad day / rel, 404 |
+| DELETE | `/api/trash/{day}?rel=` | | `{deleted}` files removed for good | 400, 404 |
+| POST | `/api/trash/{day}/keep?rel=` | `{paths}` | `{kept: [path]}`; moved to `kept/<rel>/` | 400 (path escapes the day), 404 |
+
+## Settings and notifications
+
+| Method | Path | Body | Response | Errors |
+|---|---|---|---|---|
+| GET | `/api/settings` | | `{values, admin_password_set, public_url_fallback}` | |
+| PUT | `/api/settings` | `{<key>: <value>, ..., admin_password?}`; values are strings (booleans `1`/`0`); `admin_password: ""` clears it | same as GET | 400 unknown key, bad value, internal key, null |
+| POST | `/api/notify/test` | | `{sent}` | 400 `apprise_urls` empty |
+
+Keys: `max_workers, min_free_gb, threads_per_worker, trash_retention_days, log_retention_runs,
+file_match_policy, live_photo_mov_filename_policy, keep_unicode_in_filenames, folder_structure,
+paused, apprise_urls, public_url`, plus the notification event switches.
+
+## Events
+
+`GET /api/events` is a server-sent event stream. The first frame is `event: hello`
+(`{server_time}`); `: ping` comments arrive every 15 s. Each frame is
+`event: <topic>\ndata: <json>\n\n`. A slow client loses its oldest events, so clients should
+treat events as hints and re-read the resource when in doubt.
+
+| Topic | Payload |
+|---|---|
+| `run.started` | `run_id, account_id, library_id, mode, trigger` |
+| `run.event` | `run_id, event` (a worker event, e.g. `{ev: "need_mfa"}`) |
+| `run.finished` | `run_id, status, library_id, account_id, mode, trigger, exit_code, first_full, account_failures` |
+| `account.status` | `account_id, status` |
+| `account.updated` | `account_id` (and `deleted: true` after a delete) |
+| `library.updated` | `library_id` |
+| `plan.pending` | `plan_id, extraneous, library_id` |
+| `plan.resolved` | `plan_id, library_id, status` |
+| `space.low`, `space.ok` | `min_free_gb` |
+| `paused` | `paused` |
+| `settings.updated` | `keys` |
+
+`mode` is `auth`, `list`, `sync`, `reconcile`; `trigger` is `onboarding`, `reauth`, `schedule`,
+`nightly` or `manual`. The CLI relies on `account.status` (`awaiting_code`), `run.event`
+(`mfa_result`), `run.finished` and `plan.resolved`.

@@ -13,18 +13,22 @@ account as `needs_reauth` until `icloud2nas-ctl account reauth`; exit 4 parks it
 `password_rejected` until `account set-password`; a fused reconcile (exit 6) creates a pending
 plan for `plan approve|reject`; a reconcile that saw zero remote assets is treated as a transient
 failure, never as a plan; a newer fused reconcile marks older pending plans of the same library
-`superseded`, and only a `pending` plan can be approved or rejected. A worker killed by daemon
+`superseded`, and only a `pending` plan can be approved or rejected. A worker killed by server
 shutdown does not count as an account failure (a timeout does). Shared libraries are recorded
 but not scheduled (v1.1); a shared zone already recorded by another account is skipped.
 
-Stop the daemon before manual runs or onboarding; the CLI refuses otherwise. The daemon and
-every worker-spawning command (`run`, `plan approve`, `account add|reauth|set-password|refresh`)
-take an exclusive `flock` on `<data>/daemon.lock` (released when the process dies); DB-only
-commands (`account list`, `library list|set`, `runs`, `plan list|reject`) never take it.
+`icloud2nas-serve` is the only process that touches the database and spawns workers: it runs
+the scheduler, the REST API (`docs/api.md`), the SSE stream, notifications and housekeeping, and
+holds an exclusive `flock` on `<data>/daemon.lock` for as long as it lives (released when the
+process dies, so a second `icloud2nas-serve` on the same data refuses to start). The CLI is an
+HTTP client of that process and takes no lock: stop nothing before a manual run or onboarding.
+On SIGTERM uvicorn waits at most 5 s for open connections, so a browser tab holding
+`/api/events` cannot block shutdown. A manual request (`run`, `plan approve`) wakes the scheduler
+loop and starts on its next iteration instead of waiting up to `tick` (15 s).
 
 Environment: `I2N_DATA_DIR` (/data), `I2N_PHOTOS_DIR` (/photos), `I2N_MAX_WORKERS`,
 `I2N_MIN_FREE_GB` (5), `I2N_DEFAULT_INTERVAL_MIN`, `I2N_DEFAULT_NIGHTLY_AT` (HH:MM, `3:00` is
-normalised to `03:00`), `I2N_JITTER_S` (`lo,hi` seconds of random delay before the daemon's first
+normalised to `03:00`), `I2N_JITTER_S` (`lo,hi` seconds of random delay before the scheduler's first
 tick, default `0,300`), `I2N_SECRET_KEY` (optional; else `/data/secret.key` is generated), `TZ`,
 `I2N_WORKER_CMD` (tests only).
 
@@ -39,20 +43,31 @@ the database through `icloud2nas-ctl` anyway.
 
 ## CLI
 
-    icloud2nas-ctl account add --name 旭刚 --apple-id you@icloud.com --region cn   # asks password + 2FA
-    icloud2nas-ctl account list | reauth ID | set-password ID | refresh ID
+`icloud2nas-ctl` talks to `icloud2nas-serve` over HTTP: `I2N_URL` (default
+`http://127.0.0.1:8080`), `I2N_ADMIN_PASSWORD` when an admin password is set (otherwise it asks),
+`I2N_CTL_PASSWORD` for the Apple ID password of `account add|set-password` (otherwise it asks).
+
+    icloud2nas-ctl account add --name 旭刚 --apple-id you@icloud.com --region cn [--dir REL]   # asks password + 2FA
+    icloud2nas-ctl account list | reauth ID | set-password ID | refresh ID | delete ID [--delete-dir]
     icloud2nas-ctl library list
     icloud2nas-ctl library set ID [--enable|--disable] [--interval 30] [--nightly 03:00] [--dir REL] [--name N]
-    icloud2nas-ctl run sync ID | run reconcile ID        # now, streaming events
+    icloud2nas-ctl library pause ID | library resume ID
+    icloud2nas-ctl run sync ID | run reconcile ID        # now, streaming events; exit code = the run's
     icloud2nas-ctl runs [--library ID] [--limit 20]
-    icloud2nas-ctl plan list [--status pending|approved|executed|rejected|superseded]
-    icloud2nas-ctl plan approve ID | plan reject ID
-    icloud2nas-ctl daemon                                # the scheduler; stop with SIGTERM
+    icloud2nas-ctl plan list [--status pending|approved|executed|rejected|superseded|all]
+    icloud2nas-ctl plan show ID | plan approve ID | plan reject ID
+    icloud2nas-ctl pause | resume | status
+    icloud2nas-ctl settings get | settings set KEY VALUE
+    icloud2nas-ctl trash list | trash day REL DAY | trash delete REL DAY | trash keep REL DAY PATH…
 
-`library set --dir` renames the target directory for future runs only; it does not move files.
-If `account add` logs in but library discovery fails, it prints the cause; fix it and run
-`icloud2nas-ctl account refresh ID` to discover the libraries again (no new login).
+`account add|reauth|set-password` follow the login on the event stream (prompting for 2FA codes
+and re-prompting on a wrong one), then wait for library discovery and print the libraries.
+`run` and `plan approve` follow their run until it finishes. `library set --dir` renames the
+target directory (the folder is moved when it exists). If discovery fails after a login the cause
+is printed; fix it and run `icloud2nas-ctl account refresh ID`.
 
-Ids accept an unambiguous prefix; accounts also accept the Apple ID. Inside the dev container:
-`docker compose run --rm dev uv run icloud2nas-ctl …` with `./.probe` mounted at `/probe`
-(`I2N_DATA_DIR=/probe/data I2N_PHOTOS_DIR=/probe/photos`).
+Errors print `error: <detail>` and exit 1. Ids accept an unambiguous prefix; accounts also accept
+the Apple ID or display name, libraries their display name.
+
+Inside the dev container, see the README for running `icloud2nas-serve` with `./.probe` mounted
+at `/probe` (`I2N_DATA_DIR=/probe/data I2N_PHOTOS_DIR=/probe/photos`).
