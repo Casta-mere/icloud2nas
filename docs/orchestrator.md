@@ -30,6 +30,13 @@ tick, default `0,300`), `I2N_SECRET_KEY` (optional; else `/data/secret.key` is g
 
 Each run's worker stderr goes to `<data>/logs/runs/<run_id>.log` (also `runs` → `log_path`).
 
+The SQLite database runs in WAL mode. Never open `<data>/icloud2nas.db` from outside the
+container while the daemon runs: on Docker Desktop (macOS/Windows) the bind mount does not share
+SQLite's WAL locks with the host, and a host-side reader checkpoints and deletes the WAL under the
+daemon's feet, silently losing its writes (runs stay `running` until the next restart sweeps
+them). On a Linux NAS the bind mount is a local filesystem and this does not apply, but inspect
+the database through `icloud2nas-ctl` anyway.
+
 ## CLI
 
     icloud2nas-ctl account add --name 旭刚 --apple-id you@icloud.com --region cn   # asks password + 2FA
