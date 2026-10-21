@@ -49,9 +49,9 @@ def verify_session(
     issued_text, _, signature = token.partition(".")
     try:
         issued = int(issued_text)
-    except ValueError:
-        return False
-    if not hmac.compare_digest(signature, _mac(key, issued)):
+        if not hmac.compare_digest(signature.encode(), _mac(key, issued).encode()):
+            return False
+    except (ValueError, TypeError, UnicodeError):
         return False
     return issued >= not_before and now - issued <= max_age_s
 
@@ -73,7 +73,7 @@ def _authenticated(state: AppState, request: Request) -> bool:
     )
 
 
-def require_session(request: Request) -> None:
+async def require_session(request: Request) -> None:
     state = _state(request)
     if not state.settings.get("admin_password_hash"):
         return

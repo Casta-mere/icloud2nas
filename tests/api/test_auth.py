@@ -68,6 +68,16 @@ def test_login_sets_cookie_and_logout_clears(api: tuple[TestClient, AppState]) -
     assert client.get("/api/status").status_code == 401
 
 
+@pytest.mark.parametrize("cookie", ["1.é", "junk.", "é", "1."])
+def test_malformed_cookie_is_unauthorized(api: tuple[TestClient, AppState], cookie: str) -> None:
+    client, state = api
+    _set_password(state)
+    headers = {"cookie": f"i2n_session={cookie}".encode()}
+    assert client.get("/api/status", headers=headers).status_code == 401
+    body = client.get("/api/session", headers=headers).json()
+    assert body == {"auth_required": True, "authenticated": False}
+
+
 def test_password_change_invalidates_old_cookie(api: tuple[TestClient, AppState]) -> None:
     client, state = api
     _set_password(state)
