@@ -264,3 +264,23 @@ def test_set_password_publishes_account_updated(
     )
     ob.set_password(account_id, "new")
     assert seen[-1] == ("account.updated", {"account_id": account_id})
+
+
+async def test_create_account_with_target_dir_feeds_refresh(
+    onboarding: tuple[Onboarding, Store, list[Any]],
+) -> None:
+    ob, store, _ = onboarding
+    with pytest.raises(ValueError):
+        ob.create_account(
+            display_name="x", apple_id="z@icloud.com", region="cn", password="pw",
+            target_dir="../escape",
+        )
+    with store.session() as s:
+        assert repo.get_account_by_apple_id(s, "z@icloud.com") is None
+    account_id = ob.create_account(
+        display_name="旭刚", apple_id="a@icloud.com", region="cn", password="pw",
+        target_dir="家/旭刚",
+    )
+    await ob.refresh_libraries(account_id)
+    with store.session() as s:
+        assert [lib.target_dir for lib in repo.list_libraries(s)] == ["家/旭刚"]

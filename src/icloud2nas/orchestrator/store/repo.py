@@ -5,7 +5,7 @@ from __future__ import annotations
 import posixpath
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from icloud2nas.orchestrator.store.models import (
@@ -88,6 +88,28 @@ def validate_target_dir(
             )
             raise ValueError(msg)
     return norm
+
+
+def libraries_of_account(s: Session, account_id: str) -> list[Library]:
+    return list(s.scalars(select(Library).where(Library.account_id == account_id)))
+
+
+def delete_account_cascade(s: Session, account_id: str) -> list[str]:
+    """Drop the account with its libraries, runs and plans; return the library target dirs."""
+    libraries = libraries_of_account(s, account_id)
+    library_ids = [lib.id for lib in libraries]
+    if library_ids:
+        s.execute(delete(ReconcilePlan).where(ReconcilePlan.library_id.in_(library_ids)))
+    s.execute(delete(Run).where(Run.account_id == account_id))
+    dirs = [lib.target_dir for lib in libraries]
+    for lib in libraries:
+        s.delete(lib)
+    s.flush()
+    account = s.get(Account, account_id)
+    if account is not None:
+        s.delete(account)
+    s.flush()
+    return dirs
 
 
 def get_library_by_zone(s: Session, account_id: str, zone_name: str) -> Library | None:

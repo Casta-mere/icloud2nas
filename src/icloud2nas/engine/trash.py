@@ -77,6 +77,24 @@ def move_to_trash(
     return dest
 
 
+def trash_directory(photos_root: str | Path, library_rel: str, day: date) -> Path | None:
+    """Move a whole library folder to <.trash>/<library_rel>/<day>/<name>; None if it is absent."""
+    src = Path(photos_root) / library_rel
+    if not src.exists():
+        return None
+    day_dir = trash_day_dir(photos_root, library_rel, day)
+    day_dir.mkdir(parents=True, exist_ok=True)
+    (day_dir / DAY_MARKER).touch(exist_ok=True)
+    dest = _unique(day_dir / Path(library_rel).name)
+    try:
+        os.rename(src, dest)
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise
+        shutil.move(src, dest)
+    return dest
+
+
 def purge_expired(
     photos_root: str | Path, retention_days: int, today: date | None = None
 ) -> list[Path]:

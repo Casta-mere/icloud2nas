@@ -65,7 +65,13 @@ class Onboarding:
     # -- accounts ------------------------------------------------------------------------------
 
     def create_account(
-        self, *, display_name: str, apple_id: str, region: str, password: str
+        self,
+        *,
+        display_name: str,
+        apple_id: str,
+        region: str,
+        password: str,
+        target_dir: str | None = None,
     ) -> str:
         if region not in ("cn", "com"):
             raise ValueError("region must be 'cn' or 'com'")
@@ -78,6 +84,8 @@ class Onboarding:
                 password_enc=self.secrets.encrypt(password),
                 client_id=str(uuid.uuid4()),
             )
+            if target_dir is not None:
+                account.primary_dir = repo.validate_target_dir(s, target_dir)
             account_id = account.id
         self.config.cookie_dir(account_id).mkdir(parents=True, exist_ok=True)
         return account_id
@@ -221,7 +229,8 @@ class Onboarding:
                 existing = repo.get_library_by_zone(s, account.id, zone)
                 library = repo.upsert_library(
                     s, account, kind="personal", zone_name=zone, display_name=account.display_name,
-                    target_dir=safe_dir_name(account.display_name, fallback),
+                    target_dir=account.primary_dir
+                    or safe_dir_name(account.display_name, fallback),
                     interval_min=self.config.default_interval_min,
                     nightly_at=nightly_at,
                 )

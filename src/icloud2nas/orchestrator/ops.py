@@ -1,0 +1,227 @@
+"""Ops facade: every mutation the HTTP API and the CLI perform (spec §5)."""
+
+from __future__ import annotations
+
+import errno
+import os
+import shutil
+from datetime import date
+from pathlib import Path
+from typing import Literal
+
+from sqlalchemy.orm import Session
+
+from icloud2nas.engine.trash import TRASH_DIRNAME, trash_directory
+from icloud2nas.orchestrator.bus import EventBus
+from icloud2nas.orchestrator.config import Config, normalize_hhmm
+from icloud2nas.orchestrator.onboarding import Onboarding
+from icloud2nas.orchestrator.scheduler import DueJob, Scheduler
+from icloud2nas.orchestrator.settings import Settings
+from icloud2nas.orchestrator.store import repo
+from icloud2nas.orchestrator.store.db import Store
+from icloud2nas.orchestrator.store.models import ReconcilePlan
+
+CROSS_DEVICE = "cross-device: move the folder manually, then set the directory"
+
+
+class Busy(RuntimeError):
+    """The target is mid-run or mid-auth (the API answers 409)."""
+
+
+def _rename(src: Path, dest: Path, *, note: str = "") -> None:
+    try:
+        os.rename(src, dest)
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise
+        raise ValueError(CROSS_DEVICE + note) from None
+
+
+class Ops:
+    def __init__(
+        self,
+        config: Config,
+        store: Store,
+        settings: Settings,
+        bus: EventBus,
+        scheduler: Scheduler,
+        onboarding: Onboarding,
+    ) -> None:
+        self.config = config
+        self.store = store
+        self.settings = settings
+        self.bus = bus
+        self.scheduler = scheduler
+        self.onboarding = onboarding
+
+    # -- libraries -----------------------------------------------------------------------------
+
+    def set_library(
+        self,
+        library_id: str,
+        *,
+        display_name: str | None = None,
+        target_dir: str | None = None,
+        enabled: bool | None = None,
+        interval_min: int | None = None,
+        nightly_at: str | None = None,
+    ) -> None:
+        if interval_min is not None and not 5 <= interval_min <= 1440:
+            raise ValueError("interval_min must be between 5 and 1440")
+        nightly = normalize_hhmm(nightly_at) if nightly_at is not None else None
+        with self.store.session() as s:
+            library = repo.get_library(s, library_id)
+            if library is None:
+                raise KeyError(library_id)
+            old_dir = library.target_dir
+            new_dir = old_dir
+            if target_dir is not None:
+                new_dir = repo.validate_target_dir(
+                    s, target_dir, exclude_library_id=library_id, kind=library.kind
+                )
+            if new_dir != old_dir:
+                if library_id in self.scheduler.running_libraries:
+                    raise Busy("library has a running job")
+                self._move_library_dirs(old_dir, new_dir)  # before the row: failure keeps it
+            if display_name is not None:
+                library.display_name = display_name.strip()
+            library.target_dir = new_dir
+            if enabled is not None:
+                library.enabled = enabled
+            if interval_min is not None:
+                library.interval_min = interval_min
+            if nightly is not None:
+                library.nightly_at = nightly
+        self.bus.publish("library.updated", library_id=library_id)
+
+    def _move_library_dirs(self, old: str, new: str) -> None:
+        photos = self.config.photos_dir
+        src, dest = photos / old, photos / new
+        if src.exists():
+            if dest.is_dir() and any(dest.iterdir()):
+                raise ValueError(f"{new!r} already exists and is not empty")
+            if dest.exists() and not dest.is_dir():
+                raise ValueError(f"{new!r} already exists and is not a directory")
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            _rename(src, dest)
+        trash_src = photos / TRASH_DIRNAME / old
+        if trash_src.exists():
+            trash_dest = photos / TRASH_DIRNAME / new
+            trash_dest.parent.mkdir(parents=True, exist_ok=True)
+            _rename(trash_src, trash_dest, note=" (the library folder was already renamed)")
+
+    def pause_library(self, library_id: str) -> None:
+        with self.store.session() as s:
+            library = repo.get_library(s, library_id)
+            if library is None:
+                raise KeyError(library_id)
+            if library.status != "ok":
+                raise ValueError(f"library is {library.status}; only an ok library can be paused")
+            library.status = "paused"
+        self.bus.publish("library.updated", library_id=library_id)
+
+    def resume_library(self, library_id: str) -> None:
+        with self.store.session() as s:
+            library = repo.get_library(s, library_id)
+            if library is None:
+                raise KeyError(library_id)
+            if library.status == "ok":
+                return
+            if library.status != "paused":
+                hint = "; frees up space to resume" if library.status == "space_paused" else ""
+                raise ValueError(f"library is {library.status}{hint}")
+            library.status = "ok"
+        self.bus.publish("library.updated", library_id=library_id)
+
+    def pause_all(self) -> None:
+        self.settings.set("paused", "1")
+        self.bus.publish("paused", paused=True)
+
+    def resume_all(self) -> None:
+        self.settings.set("paused", "0")
+        self.bus.publish("paused", paused=False)
+
+    def request_run(self, library_id: str, mode: Literal["sync", "reconcile"]) -> None:
+        if mode not in ("sync", "reconcile"):
+            raise ValueError("mode must be 'sync' or 'reconcile'")
+        with self.store.session() as s:
+            library = repo.get_library(s, library_id)
+            if library is None:
+                raise KeyError(library_id)
+            account_id = library.account_id
+        kind = "full" if mode == "sync" else "reconcile"
+        self.scheduler.enqueue(DueJob(library_id, account_id, kind, "manual"))
+
+    # -- reconcile plans -----------------------------------------------------------------------
+
+    def approve_plan(self, plan_id: str) -> None:
+        with self.store.session() as s:
+            plan = s.get(ReconcilePlan, plan_id)
+            if plan is None:
+                raise KeyError(plan_id)
+            if plan.status != "pending":
+                raise ValueError(f"plan is {plan.status}, not pending")
+            plan.status = "approved"
+            library_id = plan.library_id
+            account_id = self._account_of(s, library_id)
+        try:
+            self.scheduler.enqueue(DueJob(library_id, account_id, "apply_plan", "manual", plan_id))
+        except Exception:
+            with self.store.session() as s:
+                plan = s.get(ReconcilePlan, plan_id)
+                if plan is not None and plan.status == "approved":
+                    plan.status = "pending"
+            raise
+
+    @staticmethod
+    def _account_of(s: Session, library_id: str) -> str:
+        library = repo.get_library(s, library_id)
+        if library is None:
+            raise KeyError(library_id)
+        return library.account_id
+
+    def reject_plan(self, plan_id: str) -> None:
+        with self.store.session() as s:
+            plan = s.get(ReconcilePlan, plan_id)
+            if plan is None:
+                raise KeyError(plan_id)
+            if plan.status != "pending":
+                raise ValueError(f"plan is {plan.status}, not pending")
+            plan.status = "rejected"
+            library_id = plan.library_id
+        self.bus.publish(
+            "plan.resolved", plan_id=plan_id, library_id=library_id, status="rejected"
+        )
+
+    # -- accounts ------------------------------------------------------------------------------
+
+    def _check_idle(self, account_id: str) -> None:
+        if account_id in self.scheduler.running_accounts or account_id in self.onboarding.sessions:
+            raise Busy("account has an active run or auth session")
+
+    def delete_account(self, account_id: str, *, keep_dir: bool) -> None:
+        self._check_idle(account_id)
+        with self.store.session() as s:
+            if repo.get_account(s, account_id) is None:
+                raise KeyError(account_id)
+            dirs = [lib.target_dir for lib in repo.libraries_of_account(s, account_id)]
+        if not keep_dir:
+            for target_dir in dirs:
+                trash_directory(self.config.photos_dir, target_dir, date.today())
+        shutil.rmtree(self.config.cookie_dir(account_id).parent, ignore_errors=True)
+        with self.store.session() as s:
+            repo.delete_account_cascade(s, account_id)
+        self.bus.publish("account.updated", account_id=account_id, deleted=True)
+
+    async def start_auth(self, account_id: str) -> str:
+        self._check_idle(account_id)
+        session = await self.onboarding.start_auth(account_id, trigger="reauth")
+        return session.run_id
+
+    async def submit_code(self, account_id: str, code: str) -> None:
+        await self.onboarding.submit_code(account_id, code)
+
+    async def set_password(self, account_id: str, password: str) -> str:
+        self.onboarding.set_password(account_id, password)
+        return await self.start_auth(account_id)
+
