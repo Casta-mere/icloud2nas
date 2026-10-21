@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -54,6 +55,14 @@ def _int_range(lo: int, hi: int | None = None) -> Callable[[Any], None]:
     return check
 
 
+def _finite_range(lo: float) -> Callable[[Any], None]:
+    def check(value: Any) -> None:
+        if not math.isfinite(value) or value < lo:
+            raise ValueError(f"must be a finite number >= {lo:g}")
+
+    return check
+
+
 def _one_of(choices: tuple[str, ...]) -> Callable[[Any], None]:
     def check(value: Any) -> None:
         if value not in choices:
@@ -85,7 +94,7 @@ SPECS: dict[str, SettingSpec] = {
     spec.key: spec
     for spec in (
         _spec("max_workers", "2", int, _int_range(1, 8)),
-        _spec("min_free_gb", "5", float, _int_range(0)),
+        _spec("min_free_gb", "5", float, _finite_range(0)),
         _spec("threads_per_worker", "2", int, _int_range(1, 8)),
         _spec("trash_retention_days", "30", int, _int_range(0)),
         _spec("log_retention_runs", "20", int, _int_range(1)),

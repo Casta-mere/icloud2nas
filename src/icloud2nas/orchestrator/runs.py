@@ -129,17 +129,39 @@ class RunManager:
 
     def _mark_internal_failure(self, run_id: str, exc: BaseException) -> None:
         """Best effort: never leave a run `running` because our own bookkeeping crashed."""
+        finished: dict[str, Any] = {
+            "run_id": run_id,
+            "status": "failed",
+            "library_id": None,
+            "account_id": None,
+            "mode": None,
+            "trigger": None,
+            "exit_code": 1,
+            "first_full": False,
+            "account_failures": 0,
+        }  # the same shape finish_run publishes
         try:
             with self.store.session() as s:
                 run = repo.get_run(s, run_id)
-                if run is not None and run.status == "running":
-                    run.status = "failed"
-                    run.error_kind = "internal"
-                    run.error_message = f"{type(exc).__name__}: {exc}"[:500]
-                    run.ended_at = utcnow()
+                if run is not None:
+                    if run.status == "running":
+                        run.status = "failed"
+                        run.error_kind = "internal"
+                        run.error_message = f"{type(exc).__name__}: {exc}"[:500]
+                        run.ended_at = utcnow()
+                    finished.update(
+                        library_id=run.library_id,
+                        account_id=run.account_id,
+                        mode=run.mode,
+                        trigger=run.trigger,
+                        exit_code=run.exit_code if run.exit_code is not None else 1,
+                    )
+                    account = repo.get_account(s, run.account_id)
+                    if account is not None:
+                        finished["account_failures"] = account.failures
         except Exception:  # noqa: BLE001
             log.exception("run %s: could not mark internal failure", run_id)
-        self.bus.publish("run.finished", run_id=run_id, status="failed", library_id=None)
+        self.bus.publish("run.finished", **finished)
 
     # -- state machine -------------------------------------------------------------------------
 

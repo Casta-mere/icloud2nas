@@ -224,8 +224,14 @@ async def test_finish_run_crash_marks_run_internal_failure(
         run = repo.get_run(s, run_id)
         assert run is not None and run.status == "failed" and run.error_kind == "internal"
         assert run.ended_at is not None
-    finished = {"run_id": run_id, "status": "failed", "library_id": None}
-    assert ("run.finished", finished) in world["seen"]
+    finished = [p for t, p in world["seen"] if t == "run.finished"]
+    assert finished == [
+        {
+            "run_id": run_id, "status": "failed", "library_id": world["library"],
+            "account_id": world["account"], "mode": "sync", "trigger": "manual",
+            "exit_code": 1, "first_full": False, "account_failures": 0,
+        }
+    ]  # the same keys as finish_run's payload: subscribers can index it safely
 
 
 async def test_execute_spawn_failure_marks_run_internal_and_backs_off(

@@ -219,6 +219,12 @@ class EventStream:
                 return topic, data
 
 
+def _exit_code(finished: dict[str, Any]) -> int:
+    """A run.finished frame's exit code; 1 when it carries none (an internal failure)."""
+    code = finished.get("exit_code")
+    return int(code) if code is not None else 1
+
+
 def _submit_code(api: Api, account_id: str, code: str) -> None:
     # 409: the session ended meanwhile; its run.finished is already on the way
     api.call("POST", f"/api/accounts/{account_id}/code", json={"code": code.strip()}, allow=(409,))
@@ -258,7 +264,7 @@ def follow_auth(
                     if event.get("ev") == "mfa_result" and event.get("ok") is False:
                         _submit_code(api, account_id, ask_code(prompt))
                 elif topic == "run.finished" and data.get("run_id") == run_id:
-                    exit_code = data["exit_code"] if data["exit_code"] is not None else 1
+                    exit_code = _exit_code(data)
             if exit_code != 0:
                 out.write(f"login failed with exit code {exit_code}\n")
                 return int(exit_code)
@@ -283,8 +289,8 @@ def _await_discovery(api: Api, events: EventStream, account_id: str, out: TextIO
     except TimeoutError:
         out.write(hint.format("no answer"))
         return 1
-    if done["exit_code"] != 0:
-        out.write(hint.format(f"exit code {done['exit_code']}"))
+    if _exit_code(done) != 0:
+        out.write(hint.format(f"exit code {_exit_code(done)}"))
         return 1
     libraries = api.get("/api/libraries")
     print_libraries(
@@ -335,7 +341,7 @@ def follow_run(
                     and until is None
                     and data["run_id"] == run_id
                 ):
-                    return int(data["exit_code"]) if data["exit_code"] is not None else 1
+                    return _exit_code(data)
         except TimeoutError:
             out.write("error: timed out waiting for the run to finish\n")
             return 1

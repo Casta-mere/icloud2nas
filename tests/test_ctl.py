@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import io
 import json
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
-from icloud2nas import ctl
+from icloud2nas import ctl, ctl_follow
 from icloud2nas.api.state import AppState
 from icloud2nas.engine.trash import DAY_MARKER
 from tests.api.conftest import PASSWORD, onboard, set_scenario, wait_for
@@ -364,3 +366,53 @@ def test_rows_show_utc_times_in_local_tz(monkeypatch: pytest.MonkeyPatch) -> Non
     finally:
         monkeypatch.undo()
         time.tzset()
+
+
+class _FakeStream:
+    """Stands in for EventStream: replays SSE frames, then times out."""
+
+    def __init__(self, frames: list[tuple[str, dict[str, Any]]]) -> None:
+        self.frames = list(frames)
+
+    def __enter__(self) -> _FakeStream:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def get(self, deadline: float) -> tuple[str, dict[str, Any]]:
+        if not self.frames:
+            raise TimeoutError
+        return self.frames.pop(0)
+
+    def wait_for(self, deadline: float, match: Any) -> tuple[str, dict[str, Any]]:
+        while True:
+            topic, data = self.get(deadline)
+            if match(topic, data):
+                return topic, data
+
+
+def _frames(text: str) -> list[tuple[str, dict[str, Any]]]:
+    return list(ctl_follow.parse_sse(text.splitlines(keepends=True)))
+
+
+def test_followers_survive_a_minimal_run_finished(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An internal-failure frame without exit_code ends the follow with 1, not a KeyError."""
+    sse = (
+        'event: run.started\ndata: {"run_id": "r1", "library_id": "L", "trigger": "manual",'
+        ' "account_id": "A"}\n\n'
+        'event: run.finished\ndata: {"run_id": "r1", "status": "failed", "library_id": null}\n\n'
+    )
+    out = io.StringIO()
+    monkeypatch.setattr(ctl_follow, "EventStream", lambda api: _FakeStream(_frames(sse)))
+    assert ctl_follow.follow_run(None, "L", lambda: None, out) == 1  # type: ignore[arg-type]
+    assert ctl_follow.follow_auth(None, lambda: "r1", lambda p: "", out) == 1  # type: ignore[arg-type]
+    assert "login failed with exit code 1" in out.getvalue()
+
+
+def test_discovery_wait_survives_a_minimal_run_finished() -> None:
+    sse = 'event: run.finished\ndata: {"run_id": "r2", "mode": "list", "account_id": "A"}\n\n'
+    out = io.StringIO()
+    stream = _FakeStream(_frames(sse))
+    assert ctl_follow._await_discovery(None, stream, "A", out) == 1  # type: ignore[arg-type]
+    assert "exit code 1" in out.getvalue()
