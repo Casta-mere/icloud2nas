@@ -5,7 +5,13 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from icloud2nas.api.auth import hash_password, sign_session, verify_password, verify_session
+from icloud2nas.api.auth import (
+    COOKIE,
+    hash_password,
+    sign_session,
+    verify_password,
+    verify_session,
+)
 from icloud2nas.api.state import AppState
 from icloud2nas.orchestrator.config import Config
 from icloud2nas.orchestrator.lock import DaemonLock
@@ -121,6 +127,51 @@ def test_serve_refuses_when_lock_held(
     lock.acquire("someone")
     try:
         assert serve([]) == 1
+    finally:
+        lock.release()
+    assert "holds the worker lock" in capsys.readouterr().err
+
+
+def test_reset_admin_password_flag(
+    config: Config, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import uvicorn
+
+    from icloud2nas.main import create_app, serve
+
+    env = make_env(config)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+
+    def fail(*args: object, **kwargs: object) -> None:
+        raise AssertionError("uvicorn.run must not be called")
+
+    monkeypatch.setattr(uvicorn, "run", fail)
+    with TestClient(create_app(config, env)) as client:
+        put = client.put("/api/settings", json={"admin_password": PASSWORD})
+        assert put.status_code == 200
+        login(client)
+        assert client.get("/api/status").status_code == 200
+        state0: AppState = client.app.state.i2n  # type: ignore[attr-defined]
+        old_cookie = sign_session(state0.secrets.derive("i2n-session"), int(time.time()) - 5)
+    before = int(time.time())
+    assert serve(["--reset-admin-password"]) == 0
+    assert capsys.readouterr().out.strip() == "admin password cleared; set a new one in Settings"
+    with TestClient(create_app(config, env)) as client:
+        state: AppState = client.app.state.i2n  # type: ignore[attr-defined]
+        assert state.settings.get("admin_password_hash") == ""
+        assert state.settings.get("admin_password_set_at") >= before
+        assert client.get("/api/session").json() == {
+            "auth_required": False, "authenticated": False,
+        }
+        # a cookie issued before the reset does not come back to life under a new password
+        client.put("/api/settings", json={"admin_password": "new"})
+        client.cookies.set(COOKIE, old_cookie)
+        assert client.get("/api/status").status_code == 401
+    lock = DaemonLock(config.lock_path)
+    lock.acquire("icloud2nas-serve pid 1")
+    try:
+        assert serve(["--reset-admin-password"]) == 1
     finally:
         lock.release()
     assert "holds the worker lock" in capsys.readouterr().err

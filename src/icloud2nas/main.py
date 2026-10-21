@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import contextlib
 import json
 import logging
 import os
 import sys
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -31,6 +33,8 @@ from icloud2nas.api.events import SseHub
 from icloud2nas.api.state import AppState, build_state
 from icloud2nas.orchestrator.config import Config
 from icloud2nas.orchestrator.lock import DaemonLock, LockHeld
+from icloud2nas.orchestrator.settings import Settings
+from icloud2nas.orchestrator.store.db import Store, make_engine, upgrade_db
 
 SHUTDOWN_CEILING_S = 30
 MUTATING = frozenset({"POST", "PUT", "PATCH", "DELETE"})
@@ -162,7 +166,32 @@ def create_app(
     return app
 
 
+def reset_admin_password(config: Config) -> None:
+    """Clear the admin password; the new set_at invalidates every session cookie issued so far."""
+    engine = make_engine(config.db_path)
+    try:
+        upgrade_db(engine)
+        Settings(Store(engine)).set_many(
+            {"admin_password_hash": "", "admin_password_set_at": str(int(time.time()))}
+        )
+    finally:
+        engine.dispose()
+
+
+def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="icloud2nas-serve", description="Run the icloud2nas web service."
+    )
+    parser.add_argument(
+        "--reset-admin-password",
+        action="store_true",
+        help="clear the web UI admin password and exit (the service must be stopped)",
+    )
+    return parser.parse_args(list(argv))
+
+
 def serve(argv: Sequence[str]) -> int:
+    args = _parse_args(argv)
     configure_logging(True)
     env = os.environ
     config = Config.from_env(env)
@@ -174,6 +203,10 @@ def serve(argv: Sequence[str]) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     try:
+        if args.reset_admin_password:
+            reset_admin_password(config)
+            print("admin password cleared; set a new one in Settings")
+            return 0
         import uvicorn
 
         state = build_state(config, env)
