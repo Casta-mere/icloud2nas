@@ -15,7 +15,7 @@ from icloud2nas.orchestrator.scheduler import DueJob, Scheduler, nightly_due
 from icloud2nas.orchestrator.settings import Settings
 from icloud2nas.orchestrator.store import repo
 from icloud2nas.orchestrator.store.db import Store, make_engine, upgrade_db
-from icloud2nas.orchestrator.store.models import Library
+from icloud2nas.orchestrator.store.models import Library, ReconcilePlan
 from icloud2nas.orchestrator.store.secrets import Secrets
 
 T0 = datetime(2026, 10, 16, 1, 0, tzinfo=UTC)  # 09:00 Shanghai
@@ -413,3 +413,171 @@ async def test_manual_full_sync_does_not_stamp_nightly(world: dict[str, Any]) ->
         lib = repo.get_library(s, world["旭刚"])
         assert lib is not None and lib.last_success_at is not None
         assert lib.last_nightly_on is None
+
+
+def _scenario(monkeypatch: pytest.MonkeyPatch, mode: str, exit_code: int) -> None:
+    monkeypatch.setenv(
+        "FAKE_WORKER_SCENARIO",
+        json.dumps(
+            {mode: {"events": [{"ev": "started"}, {"ev": "done", "stats": {}}], "exit": exit_code}}
+        ),
+    )
+
+
+def _approved_plan(world: dict[str, Any], config: Config, status: str = "approved") -> str:
+    plan_file = config.plans_dir / "plan.json"
+    plan_file.parent.mkdir(parents=True, exist_ok=True)
+    plan_file.write_text("{}")
+    with world["store"].session() as s:
+        run = repo.create_run(
+            s,
+            account_id=world["旭刚_acc"],
+            library_id=world["旭刚"],
+            mode="reconcile",
+            trigger="manual",
+        )
+        run.status = "ok"
+        plan = repo.create_plan(
+            s,
+            library_id=world["旭刚"],
+            run_id=run.id,
+            extraneous_count=1,
+            plan_file=str(plan_file),
+        )
+        plan.status = status
+        return str(plan.id)
+
+
+async def test_manual_job_runs_before_due_jobs(
+    world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sched = world["sched"]
+    monkeypatch.setattr(sched.settings, "get", lambda k: 1 if k == "max_workers" else 0)
+    _scenario(monkeypatch, "sync", 0)
+    job = sched.request_manual(world["幻伊镜"], "sync")
+    sched.enqueue(job)
+    assert sched.pending_manual() == [job]
+    assert await sched.tick() == 1
+    assert sched.running_libraries == {world["幻伊镜"]}
+    assert sched.pending_manual() == []
+    await asyncio.gather(*sched.tasks)
+
+
+async def test_manual_queue_dedupes(world: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    sched = world["sched"]
+    _scenario(monkeypatch, "sync", 0)
+    sched.enqueue(sched.request_manual(world["幻伊镜"], "sync"))
+    sched.enqueue(sched.request_manual(world["幻伊镜"], "sync"))
+    assert len(sched.pending_manual()) == 1
+    _set(world["store"], world["旭刚"], enabled=False)
+    await sched.tick()
+    await asyncio.gather(*sched.tasks)
+    with world["store"].session() as s:
+        assert len(repo.list_runs(s, library_id=world["幻伊镜"])) == 1
+
+
+async def test_manual_ignores_pause_but_not_account_state(
+    world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, sched = world["store"], world["sched"]
+    _scenario(monkeypatch, "sync", 0)
+    world["settings"].set("paused", "true")
+    _set(store, world["旭刚"], enabled=False)
+    sched.enqueue(sched.request_manual(world["幻伊镜"], "sync"))
+    assert await sched.tick() == 1
+    await asyncio.gather(*sched.tasks)
+    with store.session() as s:
+        assert [r.status for r in repo.list_runs(s, library_id=world["幻伊镜"])] == ["ok"]
+        acc = repo.get_account(s, world["旭刚_acc"])
+        assert acc is not None
+        acc.status = "needs_reauth"
+    _set(store, world["旭刚"], enabled=True)
+    with pytest.raises(ValueError):
+        sched.enqueue(sched.request_manual(world["旭刚"], "sync"))
+    _set(store, world["幻伊镜"], enabled=False)
+    with pytest.raises(ValueError):
+        sched.enqueue(sched.request_manual(world["幻伊镜"], "sync"))
+    with store.session() as s:
+        acc = repo.get_account(s, world["旭刚_acc"])
+        assert acc is not None
+        acc.status = "ok"
+    monkeypatch.setattr(sched, "free_space_ok", lambda: False)
+    with pytest.raises(RuntimeError, match="space low"):
+        sched.enqueue(sched.request_manual(world["旭刚"], "sync"))
+
+
+async def test_apply_plan_marks_executed_and_publishes_resolved(
+    world: dict[str, Any], config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sched = world["sched"]
+    _scenario(monkeypatch, "reconcile", 0)
+    plan_id = _approved_plan(world, config)
+    sched.enqueue(DueJob(world["旭刚"], world["旭刚_acc"], "apply_plan", "manual", plan_id=plan_id))
+    await sched.tick()
+    await sched.wait_idle(world["旭刚"])
+    await asyncio.gather(*sched.tasks)
+    with world["store"].session() as s:
+        plan = s.get(ReconcilePlan, plan_id)
+        assert plan is not None and plan.status == "executed"
+        runs = repo.list_runs(s, library_id=world["旭刚"])
+        assert [(r.mode, r.trigger) for r in runs if r.id != plan.run_id] == [
+            ("reconcile", "manual")
+        ]
+    resolved = [p for t, p in world["seen"] if t == "plan.resolved"]
+    assert resolved == [{"plan_id": plan_id, "library_id": world["旭刚"], "status": "executed"}]
+
+
+async def test_apply_plan_failure_returns_plan_to_pending(
+    world: dict[str, Any], config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sched = world["sched"]
+    _scenario(monkeypatch, "reconcile", 1)
+    plan_id = _approved_plan(world, config)
+    sched.enqueue(DueJob(world["旭刚"], world["旭刚_acc"], "apply_plan", "manual", plan_id=plan_id))
+    await sched.tick()
+    await asyncio.gather(*sched.tasks)
+    with world["store"].session() as s:
+        plan = s.get(ReconcilePlan, plan_id)
+        assert plan is not None and plan.status == "pending"
+    resolved = [p for t, p in world["seen"] if t == "plan.resolved"]
+    assert [p["status"] for p in resolved] == ["pending"]
+
+
+async def test_apply_plan_no_longer_approved_is_refused(
+    world: dict[str, Any], config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sched = world["sched"]
+    _scenario(monkeypatch, "reconcile", 0)
+    plan_id = _approved_plan(world, config, status="rejected")
+    sched.enqueue(DueJob(world["旭刚"], world["旭刚_acc"], "apply_plan", "manual", plan_id=plan_id))
+    await sched.tick()
+    await asyncio.gather(*sched.tasks)
+    resolved = [p for t, p in world["seen"] if t == "plan.resolved"]
+    assert [p["status"] for p in resolved] == ["rejected"]
+    with world["store"].session() as s:
+        assert [r.mode for r in repo.list_runs(s, library_id=world["旭刚"])] == ["reconcile"]
+
+
+async def test_startup_sweeps_approved_plans_and_running_runs(
+    world: dict[str, Any], config: Config
+) -> None:
+    store, sched = world["store"], world["sched"]
+    plan_id = _approved_plan(world, config)
+    with store.session() as s:
+        stale = repo.create_run(
+            s,
+            account_id=world["旭刚_acc"],
+            library_id=world["旭刚"],
+            mode="sync",
+            trigger="schedule",
+        )
+        stale.status = "running"
+    world["settings"].set("paused", "true")
+    stop = asyncio.Event()
+    stop.set()
+    await asyncio.wait_for(sched.run_forever(stop), 5)
+    with store.session() as s:
+        plan = s.get(ReconcilePlan, plan_id)
+        assert plan is not None and plan.status == "pending"
+        run = repo.get_run(s, stale.id)
+        assert run is not None and run.status == "failed" and run.error_kind == "killed"

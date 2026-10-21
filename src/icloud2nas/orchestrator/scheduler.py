@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import contextlib
 import logging
 import random
@@ -20,21 +21,22 @@ from icloud2nas.orchestrator.runs import RunManager
 from icloud2nas.orchestrator.settings import Settings
 from icloud2nas.orchestrator.store import repo
 from icloud2nas.orchestrator.store.db import Store
-from icloud2nas.orchestrator.store.models import Library, utcnow
+from icloud2nas.orchestrator.store.models import Library, ReconcilePlan, utcnow
 from icloud2nas.orchestrator.store.secrets import Secrets
 from icloud2nas.orchestrator.supervisor import WorkerProcess, WorkerResult
 
 log = logging.getLogger(__name__)
 RUN_TIMEOUT_S = 12 * 3600
-KIND_ORDER = {"nightly": 0, "reconcile": 1, "full": 2, "quick": 3}
+KIND_ORDER = {"apply_plan": 0, "nightly": 0, "reconcile": 1, "full": 2, "quick": 3}
 
 
 @dataclass(frozen=True)
 class DueJob:
     library_id: str
     account_id: str
-    kind: str  # quick | full | nightly | reconcile
+    kind: str  # quick | full | nightly | reconcile | apply_plan
     trigger: str  # schedule | nightly | manual
+    plan_id: str | None = None
 
 
 def local_now(now: datetime, tz: str) -> datetime:
@@ -78,6 +80,7 @@ class Scheduler:
         self.active: dict[str, WorkerProcess] = {}
         self.tasks: set[asyncio.Task[None]] = set()
         self._space_low = False
+        self.manual: collections.deque[DueJob] = collections.deque()
 
     # -- policy --------------------------------------------------------------------------------
 
@@ -151,6 +154,31 @@ class Scheduler:
         kind = "full" if mode == "sync" else "reconcile"
         return DueJob(library_id, account_id, kind, "manual")
 
+    def enqueue(self, job: DueJob) -> None:
+        """Queue an explicit request; it ignores pause (an explicit request wins)."""
+        with self.store.session() as s:
+            library = repo.get_library(s, job.library_id)
+            if library is None:
+                raise KeyError(job.library_id)
+            account = repo.get_account(s, library.account_id)
+            if not library.enabled:
+                raise ValueError("library is disabled")
+            if account is None or account.status != "ok":
+                raise ValueError("account is not ok")
+        if not self.free_space_ok():
+            raise RuntimeError("space low")
+        key = (job.library_id, job.kind, job.plan_id)
+        if any((j.library_id, j.kind, j.plan_id) == key for j in self.manual):
+            return
+        self.manual.append(job)
+
+    def pending_manual(self) -> list[DueJob]:
+        return list(self.manual)
+
+    async def wait_idle(self, library_id: str) -> None:
+        while library_id in self.running_libraries:
+            await asyncio.sleep(0.01)
+
     # -- launching -----------------------------------------------------------------------------
 
     def can_launch(self, job: DueJob) -> bool:
@@ -161,17 +189,22 @@ class Scheduler:
         )
 
     async def launch(self, job: DueJob) -> str:
+        """Start the job; returns its run id ("" for apply_plan: its run starts once the plan
+        is confirmed still approved)."""
         if not self.can_launch(job):
             raise RuntimeError("busy")
         self.running_libraries.add(job.library_id)
         self.running_accounts.add(job.account_id)
-        first_mode = "reconcile" if job.kind == "reconcile" else "sync"
         try:
-            run_id = self.runs.start_run(
-                account_id=job.account_id,
-                library_id=job.library_id,
-                mode=first_mode,
-                trigger=job.trigger,
+            run_id = (
+                ""
+                if job.kind == "apply_plan"
+                else self.runs.start_run(
+                    account_id=job.account_id,
+                    library_id=job.library_id,
+                    mode="reconcile" if job.kind == "reconcile" else "sync",
+                    trigger=job.trigger,
+                )
             )
         except Exception:
             self.running_libraries.discard(job.library_id)
@@ -182,7 +215,15 @@ class Scheduler:
         task.add_done_callback(self.tasks.discard)
         return run_id
 
-    async def _run_one(self, job: DueJob, run_id: str, mode: str, full: bool) -> int:
+    async def _run_one(
+        self,
+        job: DueJob,
+        run_id: str,
+        mode: str,
+        full: bool,
+        *,
+        apply_plan: str | None = None,
+    ) -> int:
         try:
             with self.store.session() as s:
                 account = repo.get_account(s, job.account_id)
@@ -196,7 +237,7 @@ class Scheduler:
                     full=full,
                     policy=self.settings.policy(),
                 )
-                password = self.onboarding.password_for(account)
+                password = None if apply_plan else self.onboarding.password_for(account)
             validate_job(mode, spec)
         except Exception as exc:
             self.runs.finish_run(
@@ -219,6 +260,7 @@ class Scheduler:
                 job=spec,
                 password=password,
                 interactive=False,
+                apply_plan=apply_plan,
                 timeout_s=RUN_TIMEOUT_S,
                 on_start=register,
             )
@@ -231,6 +273,9 @@ class Scheduler:
         try:
             if job.kind == "reconcile":
                 await self._run_one(job, run_id, "reconcile", full=False)
+                return
+            if job.kind == "apply_plan":
+                await self._run_apply_plan(job)
                 return
             code: int | None = None
             try:
@@ -261,8 +306,45 @@ class Scheduler:
             self.running_libraries.discard(job.library_id)
             self.running_accounts.discard(job.account_id)
 
+    async def _run_apply_plan(self, job: DueJob) -> None:
+        assert job.plan_id is not None
+        with self.store.session() as s:
+            plan = s.get(ReconcilePlan, job.plan_id)
+            if plan is None:
+                raise KeyError(job.plan_id)
+            status, plan_file = plan.status, plan.plan_file
+        if status != "approved":
+            log.warning("plan %s is %s, not approved: not applying", job.plan_id, status)
+            self.bus.publish(
+                "plan.resolved", plan_id=job.plan_id, library_id=job.library_id, status=status
+            )
+            return
+        run_id = self.runs.start_run(
+            account_id=job.account_id,
+            library_id=job.library_id,
+            mode="reconcile",
+            trigger="manual",
+        )
+        code = 1
+        try:
+            code = await self._run_one(job, run_id, "reconcile", full=False, apply_plan=plan_file)
+        finally:
+            final = "executed" if code == 0 else "pending"
+            with self.store.session() as s:
+                plan = s.get(ReconcilePlan, job.plan_id)
+                if plan is not None:
+                    plan.status = final
+            self.bus.publish(
+                "plan.resolved", plan_id=job.plan_id, library_id=job.library_id, status=final
+            )
+
     async def tick(self) -> int:
         launched = 0
+        for job in self.pending_manual():
+            if self.can_launch(job):
+                self.manual.remove(job)
+                await self.launch(job)
+                launched += 1
         for job in self.due_jobs():
             if self.can_launch(job):
                 await self.launch(job)
@@ -274,9 +356,12 @@ class Scheduler:
     async def run_forever(self, stop: asyncio.Event) -> None:
         with self.store.session() as s:
             swept = repo.sweep_stale_runs(s, "daemon restarted")
+            plans = repo.sweep_approved_plans(s)
             self._space_low = any(lib.status == "space_paused" for lib in repo.list_libraries(s))
         if swept:
             log.warning("marked %d stale runs as killed", swept)
+        if plans:
+            log.warning("reset %d approved plans to pending", plans)
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(stop.wait(), random.uniform(*self.jitter_s))
         try:

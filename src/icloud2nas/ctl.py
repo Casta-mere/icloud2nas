@@ -24,7 +24,7 @@ from icloud2nas.orchestrator.jobs import build_job, validate_job
 from icloud2nas.orchestrator.lock import DaemonLock, LockHeld
 from icloud2nas.orchestrator.onboarding import Onboarding
 from icloud2nas.orchestrator.runs import RunManager
-from icloud2nas.orchestrator.scheduler import Scheduler
+from icloud2nas.orchestrator.scheduler import DueJob, Scheduler
 from icloud2nas.orchestrator.settings import Settings
 from icloud2nas.orchestrator.store import repo
 from icloud2nas.orchestrator.store.db import Store, make_engine, upgrade_db
@@ -279,13 +279,14 @@ async def _run_now(app: App, library_id: str, mode: str, out: TextIO) -> int:
         lambda topic, payload: printer(payload["event"]) if topic == "run.event" else None
     )
     try:
-        run_id = await app.scheduler.launch(job)
+        app.scheduler.enqueue(job)
+        await app.scheduler.tick()
         await asyncio.gather(*app.scheduler.tasks)
     finally:
         unsubscribe()
     with app.store.session() as s:
-        run = repo.get_run(s, run_id)
-        return run.exit_code if run is not None and run.exit_code is not None else 1
+        run = repo.list_runs(s, library_id=library_id, limit=1)[0]
+        return run.exit_code if run.exit_code is not None else 1
 
 
 def cmd_run(app: App, args: argparse.Namespace, out: TextIO) -> int:
@@ -326,30 +327,22 @@ async def _apply_plan(app: App, plan_id: str, out: TextIO) -> int:
         job = build_job(
             app.config, account, library, interactive=False, policy=app.settings.policy()
         )
-        plan_file = plan.plan_file
         validate_job("reconcile", job)
         plan.status = "approved"
-    exit_code = 1
+        due = DueJob(library.id, account.id, "apply_plan", "manual", plan_id=plan.id)
+    printer = _event_printer(out)
+    unsubscribe = app.bus.subscribe(
+        lambda topic, payload: printer(payload["event"]) if topic == "run.event" else None
+    )
     try:
-        run_id = app.runs.start_run(
-            account_id=account.id, library_id=library.id, mode="reconcile", trigger="manual"
-        )
-        result = await app.runs.execute(
-            run_id,
-            mode="reconcile",
-            job=job,
-            password=None,
-            interactive=False,
-            apply_plan=plan_file,
-            on_event=_event_printer(out),
-        )
-        exit_code = result.exit_code
+        app.scheduler.enqueue(due)
+        await app.scheduler.tick()
+        await asyncio.gather(*app.scheduler.tasks)
     finally:
-        with app.store.session() as s:
-            plan = s.get(ReconcilePlan, plan_id)
-            assert plan is not None
-            plan.status = "executed" if exit_code == 0 else "pending"
-    return exit_code
+        unsubscribe()
+    with app.store.session() as s:
+        plan = s.get(ReconcilePlan, plan_id)
+        return 0 if plan is not None and plan.status == "executed" else 1
 
 
 def cmd_plan(app: App, args: argparse.Namespace, out: TextIO) -> int:

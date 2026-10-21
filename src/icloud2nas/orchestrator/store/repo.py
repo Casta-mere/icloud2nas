@@ -206,6 +206,14 @@ def set_setting(s: Session, key: str, value: str) -> None:
         row.value = value
 
 
+def sweep_approved_plans(s: Session) -> int:
+    """Plans approved but never finished by a previous process go back to pending."""
+    approved = list(s.scalars(select(ReconcilePlan).where(ReconcilePlan.status == "approved")))
+    for plan in approved:
+        plan.status = "pending"
+    return len(approved)
+
+
 def sweep_stale_runs(s: Session, message: str) -> int:
     """Mark runs left queued/running by a previous process as failed (daemon restart)."""
     stale = list(s.scalars(select(Run).where(Run.status.in_(("queued", "running")))))
