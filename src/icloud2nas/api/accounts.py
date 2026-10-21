@@ -84,14 +84,17 @@ async def patch_account(account_id: str, body: AccountPatch, request: Request) -
     state = _state(request)
     resolved = resolve_account(state, account_id)
     run_id: str | None = None
+    display_name = body.display_name.strip() if body.display_name is not None else None
+    if display_name is not None and not display_name:
+        raise ValueError("display_name must not be blank")
     if body.password is not None:
         state.ops.check_idle(resolved)  # fail before the stored password changes
-    if body.display_name is not None:
+    if display_name is not None:
         with state.store.session() as s:
             account = repo.get_account(s, resolved)
             if account is None:
                 raise KeyError(resolved)
-            account.display_name = body.display_name.strip()
+            account.display_name = display_name
         state.bus.publish("account.updated", account_id=resolved)
     if body.password is not None:
         run_id = await state.ops.set_password(resolved, body.password)
@@ -129,9 +132,10 @@ async def submit_code(account_id: str, body: CodeBody, request: Request) -> Resp
 async def refresh(account_id: str, request: Request) -> Response:
     state = _state(request)
     resolved = resolve_account(state, account_id)
-    state.ops.check_idle(resolved)
     try:
-        personal, shared = await state.onboarding.refresh_libraries(resolved)
+        personal, shared = await state.ops.refresh_libraries(resolved)
+    except Busy:
+        raise
     except RuntimeError as exc:
         return JSONResponse({"error": "worker failed", "detail": str(exc)}, status_code=502)
     with state.store.session() as s:

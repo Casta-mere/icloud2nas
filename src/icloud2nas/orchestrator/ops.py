@@ -58,6 +58,7 @@ class Ops:
         self.scheduler = scheduler
         self.onboarding = onboarding
         self._tasks: set[asyncio.Task[None]] = set()
+        self._discovering: set[str] = set()  # also held in scheduler.running_accounts
 
     # -- libraries -----------------------------------------------------------------------------
 
@@ -236,10 +237,19 @@ class Ops:
             repo.delete_account_cascade(s, account_id)
         self.bus.publish("account.updated", account_id=account_id, deleted=True)
 
+    def _hold(self, account_id: str) -> None:
+        self._discovering.add(account_id)
+        self.scheduler.running_accounts.add(account_id)
+
+    def _release(self, account_id: str) -> None:
+        self._discovering.discard(account_id)
+        self.scheduler.running_accounts.discard(account_id)
+
     async def start_auth(self, account_id: str, *, discover: bool = True) -> str:
         self.check_idle(account_id)
         session = await self.onboarding.start_auth(account_id, trigger="reauth")
         if discover:
+            self._hold(account_id)  # busy from auth start through discovery, no idle gap
             task = asyncio.create_task(self._discover_after_auth(account_id))
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
@@ -247,7 +257,16 @@ class Ops:
 
     @property
     def discovering(self) -> bool:
-        return bool(self._tasks)
+        return bool(self._discovering)
+
+    async def refresh_libraries(self, account_id: str) -> tuple[list[str], list[str]]:
+        """Manual library discovery; the account is busy while the list worker runs."""
+        self.check_idle(account_id)
+        self._hold(account_id)
+        try:
+            return await self.onboarding.refresh_libraries(account_id)
+        finally:
+            self._release(account_id)
 
     async def shutdown(self) -> None:
         """Cancel background library discovery (process exit)."""
@@ -272,6 +291,8 @@ class Ops:
             self.bus.publish("account.updated", account_id=account_id)
         except Exception:  # noqa: BLE001 - background chain; the account stays usable
             log.exception("library discovery after auth failed for %s", account_id)
+        finally:
+            self._release(account_id)
 
     async def submit_code(self, account_id: str, code: str) -> None:
         await self.onboarding.submit_code(account_id, code)

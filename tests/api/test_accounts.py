@@ -116,13 +116,13 @@ def test_patch_password_restarts_auth(api: API) -> None:
 
 
 def test_reauth_and_refresh(api: API, monkeypatch: pytest.MonkeyPatch) -> None:
-    client, _ = api
+    client, state = api
     account_id, _ = onboard(client)
     wait_for(client, lambda c: _status(c, account_id) == "ok")
     reauth = client.post(f"/api/accounts/{account_id}/auth")
     assert reauth.status_code == 202 and reauth.json()["run_id"]
     wait_for(client, lambda c: _status(c, account_id) == "ok")
-    wait_for(client, lambda c: c.post(f"/api/accounts/{account_id}/refresh").status_code == 200)
+    wait_for(client, lambda c: not state.ops.discovering)
     refreshed = client.post(f"/api/accounts/{account_id}/refresh")
     assert refreshed.json() == {"personal": ["PrimarySync"], "shared": []}
     set_scenario(monkeypatch, {"list": {"events": [{"ev": "started"}], "exit": 1}})
@@ -162,3 +162,42 @@ def test_prefix_ids_resolve(api: API) -> None:
     assert client.get(f"/api/libraries/{library_id[:8]}").json()["id"] == library_id
     assert client.get("/api/libraries/旭刚").json()["id"] == library_id
     assert client.get("/api/accounts/zzzz").status_code == 404
+
+
+def test_account_is_busy_while_discovery_runs(api: API, monkeypatch: pytest.MonkeyPatch) -> None:
+    client, state = api
+    account_id, _ = onboard(client)
+    wait_for(client, lambda c: _status(c, account_id) == "ok" and not state.ops.discovering)
+    set_scenario(
+        monkeypatch,
+        {
+            "list": {
+                "events": [
+                    {"ev": "started"},
+                    {"sleep": 1},
+                    {"ev": "libraries", "personal": ["PrimarySync"], "shared": []},
+                    {"ev": "done", "stats": {}},
+                ],
+                "exit": 0,
+            }
+        },
+    )
+    assert client.post(f"/api/accounts/{account_id}/auth").status_code == 202
+    wait_for(client, lambda c: _status(c, account_id) == "ok")
+    wait_for(client, lambda c: state.ops.discovering)
+    assert account_id in state.scheduler.running_accounts
+    assert client.post(f"/api/accounts/{account_id}/refresh").status_code == 409
+    assert client.post(f"/api/accounts/{account_id}/auth").status_code == 409
+    assert client.delete(f"/api/accounts/{account_id}").status_code == 409
+    wait_for(client, lambda c: not state.ops.discovering)
+    assert account_id not in state.scheduler.running_accounts
+    assert client.post(f"/api/accounts/{account_id}/refresh").status_code == 200
+    assert client.delete(f"/api/accounts/{account_id}").status_code == 204
+
+
+def test_blank_display_name_rejected(api: API) -> None:
+    client, _ = api
+    account_id, _ = onboard(client)
+    response = client.patch(f"/api/accounts/{account_id}", json={"display_name": "  "})
+    assert response.status_code == 400
+    assert client.get(f"/api/accounts/{account_id}").json()["display_name"] == "旭刚"
