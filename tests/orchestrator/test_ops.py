@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import errno
+import json
 import os
 from datetime import date
 from pathlib import Path
@@ -256,7 +258,7 @@ def test_delete_account_keep_dir(ops: dict[str, Any]) -> None:
 
 
 def test_delete_account_busy(ops: dict[str, Any]) -> None:
-    ops["sched"].running_accounts.add(ops["旭刚_acc"])
+    ops["sched"].hold_account(ops["旭刚_acc"], "run-1")
     with pytest.raises(Busy):
         ops["ops"].delete_account(ops["旭刚_acc"], keep_dir=False)
     ops["sched"].running_accounts.clear()
@@ -268,7 +270,7 @@ def test_delete_account_busy(ops: dict[str, Any]) -> None:
 
 
 async def test_start_auth_busy_and_set_password(ops: dict[str, Any]) -> None:
-    ops["sched"].running_accounts.add(ops["旭刚_acc"])
+    ops["sched"].hold_account(ops["旭刚_acc"], "run-1")
     with pytest.raises(Busy):
         await ops["ops"].start_auth(ops["旭刚_acc"])
     ops["sched"].running_accounts.clear()
@@ -278,3 +280,83 @@ async def test_start_auth_busy_and_set_password(ops: dict[str, Any]) -> None:
     with pytest.raises(KeyError):
         await ops["ops"].submit_code(ops["旭刚_acc"], "1")
     await ops["ops"].shutdown()
+
+
+def _auth_waits_for_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(
+        "FAKE_WORKER_SCENARIO",
+        json.dumps({"auth": {"events": [{"ev": "started"}, {"wait_code": "123456"}], "exit": 0}}),
+    )
+
+
+async def test_concurrent_start_auth_yields_one_session(
+    ops: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _auth_waits_for_code(monkeypatch)
+    acc = ops["旭刚_acc"]
+    results = await asyncio.gather(
+        ops["ops"].start_auth(acc), ops["ops"].start_auth(acc), return_exceptions=True
+    )
+    assert sum(isinstance(r, str) for r in results) == 1
+    assert sum(isinstance(r, Busy) for r in results) == 1
+    session = ops["onboarding"].sessions[acc]
+    assert session.run_id in results
+    with ops["store"].session() as s:
+        assert len([r for r in repo.list_runs(s) if r.mode == "auth"]) == 1
+    await ops["sched"].shutdown()
+    await ops["ops"].shutdown()
+
+
+@pytest.mark.parametrize("auth_first", [True, False])
+async def test_start_auth_racing_tick_never_overlaps_on_one_account(
+    ops: dict[str, Any], monkeypatch: pytest.MonkeyPatch, auth_first: bool
+) -> None:
+    _auth_waits_for_code(monkeypatch)
+    sched, acc = ops["sched"], ops["旭刚_acc"]
+    with ops["store"].session() as s:  # only 旭刚's library is due
+        repo.get_library(s, ops["幻伊镜"]).enabled = False  # type: ignore[union-attr]
+    calls = [ops["ops"].start_auth(acc), sched.tick()]
+    results = await asyncio.gather(*(calls if auth_first else calls[::-1]), return_exceptions=True)
+    if not auth_first:
+        results = results[::-1]
+    auth, launched = results
+    if auth_first:
+        assert isinstance(auth, str) and launched == 0
+    else:
+        assert isinstance(auth, Busy) and launched == 1
+    with ops["store"].session() as s:
+        modes = [r.mode for r in repo.list_runs(s) if r.account_id == acc]
+    assert modes == (["auth"] if auth_first else ["sync"])
+    await sched.shutdown()
+    await ops["ops"].shutdown()
+
+
+async def test_discovery_release_never_clears_a_sync_hold(ops: dict[str, Any]) -> None:
+    sched, acc = ops["sched"], ops["旭刚_acc"]
+    assert sched.hold_account(acc, "run-sync")
+    # a discovery chain whose auth session is gone ends at once and releases its own token
+    await ops["ops"]._discover_after_auth(acc, f"discovery:{acc}")
+    assert sched.running_accounts == {acc: "run-sync"}
+    with pytest.raises(Busy):
+        await ops["ops"].refresh_libraries(acc)
+    assert sched.running_accounts == {acc: "run-sync"}
+
+
+async def test_start_auth_spawn_failure_releases_the_hold(
+    ops: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def boom(*args: Any, **kwargs: Any) -> Any:
+        raise OSError("no worker binary")
+
+    monkeypatch.setattr(ops["onboarding"], "start_auth", boom)
+    with pytest.raises(OSError):
+        await ops["ops"].start_auth(ops["旭刚_acc"])
+    assert ops["sched"].running_accounts == {} and not ops["ops"].discovering
+
+
+def test_delete_account_drops_its_queued_jobs(ops: dict[str, Any]) -> None:
+    ops["ops"].request_run(ops["旭刚"], "sync")
+    ops["ops"].request_run(ops["幻伊镜"], "sync")
+    ops["ops"].delete_account(ops["旭刚_acc"], keep_dir=True)
+    assert [j.library_id for j in ops["sched"].pending_manual()] == [ops["幻伊镜"]]
+

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -171,7 +172,7 @@ def test_locks_and_concurrency_cap(world: dict[str, Any]) -> None:
     job_b = DueJob(world["幻伊镜"], world["幻伊镜_acc"], "full", "schedule")
     assert sched.can_launch(job_a) and sched.can_launch(job_b)
     sched.running_libraries.add(job_a.library_id)
-    sched.running_accounts.add(job_a.account_id)
+    assert sched.hold_account(job_a.account_id, "run-a")
     assert not sched.can_launch(job_a) and sched.can_launch(job_b)
     sched.running_libraries.update({"x", "y"})
     assert not sched.can_launch(job_b)  # max_workers=2
@@ -370,7 +371,7 @@ async def test_crash_before_execute_finishes_run_and_releases_locks(
     with store.session() as s:
         run = repo.list_runs(s, library_id=world["旭刚"])[0]
         assert run.status == "failed" and run.error_kind == "internal"
-    assert sched.running_libraries == set() and sched.running_accounts == set()
+    assert sched.running_libraries == set() and sched.running_accounts == {}
 
 
 async def test_first_full_sync_stamps_tonight_and_nightly_uses_start_date(
@@ -603,3 +604,159 @@ async def test_enqueue_wakes_the_loop_before_the_next_tick(world: dict[str, Any]
     stop.set()
     await asyncio.wait_for(daemon, 10)
     assert started
+
+
+def test_account_holds_are_per_owner(world: dict[str, Any]) -> None:
+    sched, acc = world["sched"], world["旭刚_acc"]
+    assert sched.hold_account(acc, "run-1")
+    assert sched.hold_account(acc, "run-1")  # the holder may re-assert its own hold
+    assert not sched.hold_account(acc, "discovery:" + acc)
+    sched.release_account(acc, "discovery:" + acc)  # not the holder: no-op
+    assert sched.running_accounts == {acc: "run-1"}
+    sched.release_account(acc, "run-1")
+    assert sched.running_accounts == {}
+
+
+def test_can_launch_refuses_an_account_in_an_auth_session(world: dict[str, Any]) -> None:
+    sched = world["sched"]
+    job = DueJob(world["旭刚"], world["旭刚_acc"], "full", "schedule")
+    sched.onboarding.sessions[world["旭刚_acc"]] = object()
+    assert not sched.can_launch(job)
+    assert [j.library_id for j in sched.due_jobs() if sched.can_launch(j)] == [world["幻伊镜"]]
+
+
+async def test_tick_drops_queued_job_of_deleted_account_and_continues(
+    world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, sched = world["store"], world["sched"]
+    _scenario(monkeypatch, "sync", 0)
+    sched.enqueue(sched.request_manual(world["旭刚"], "sync"))
+    sched.enqueue(sched.request_manual(world["幻伊镜"], "sync"))
+    with store.session() as s:
+        repo.delete_account_cascade(s, world["旭刚_acc"])
+    world["settings"].set("paused", "1")  # only the queue matters here
+    assert await sched.tick() == 1
+    await asyncio.gather(*sched.tasks)
+    assert sched.pending_manual() == []
+    with store.session() as s:
+        assert [r.status for r in repo.list_runs(s, library_id=world["幻伊镜"])] == ["ok"]
+
+
+async def test_tick_drops_a_job_whose_launch_raises_and_continues(
+    world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, sched = world["store"], world["sched"]
+    _scenario(monkeypatch, "sync", 0)
+    sched.enqueue(sched.request_manual(world["旭刚"], "sync"))
+    sched.enqueue(sched.request_manual(world["幻伊镜"], "sync"))
+    real = sched.runs.start_run
+
+    def flaky(**kwargs: Any) -> str:
+        if kwargs["library_id"] == world["旭刚"]:
+            raise RuntimeError("database is locked")
+        return real(**kwargs)
+
+    monkeypatch.setattr(sched.runs, "start_run", flaky)
+    world["settings"].set("paused", "1")
+    assert await sched.tick() == 1
+    await asyncio.gather(*sched.tasks)
+    assert sched.pending_manual() == [] and sched.running_accounts == {}
+    with store.session() as s:
+        assert len(repo.list_runs(s, library_id=world["幻伊镜"])) == 1
+
+
+async def test_queued_job_is_dropped_when_its_account_needs_reauth(
+    world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, sched = world["store"], world["sched"]
+    _scenario(monkeypatch, "sync", 0)
+    sched.enqueue(sched.request_manual(world["旭刚"], "sync"))
+    with store.session() as s:
+        acc = repo.get_account(s, world["旭刚_acc"])
+        assert acc is not None
+        acc.status = "needs_reauth"
+    world["settings"].set("paused", "1")
+    assert await sched.tick() == 0
+    assert sched.pending_manual() == []
+    with store.session() as s:
+        assert repo.list_runs(s, library_id=world["旭刚"]) == []
+
+
+async def test_dropped_apply_plan_job_returns_the_plan_to_pending(
+    world: dict[str, Any], config: Config
+) -> None:
+    store, sched = world["store"], world["sched"]
+    plan_id = _approved_plan(world, config)
+    sched.enqueue(DueJob(world["旭刚"], world["旭刚_acc"], "apply_plan", "manual", plan_id=plan_id))
+    assert sched.drop_manual(account_id=world["旭刚_acc"]) == 1
+    with store.session() as s:
+        plan = s.get(ReconcilePlan, plan_id)
+        assert plan is not None and plan.status == "pending"
+    assert ("plan.resolved", {"plan_id": plan_id, "library_id": world["旭刚"],
+                              "status": "pending"}) in world["seen"]
+
+
+async def test_manual_request_during_startup_jitter_runs_at_once(
+    world: dict[str, Any],
+) -> None:
+    store, sched = world["store"], world["sched"]
+    sched.jitter_s = (5, 5)
+    stop = asyncio.Event()
+    daemon = asyncio.create_task(sched.run_forever(stop))
+    await asyncio.sleep(0.05)
+    sched.enqueue(sched.request_manual(world["旭刚"], "sync"))
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 0.5
+    started = False
+    while not started and loop.time() < deadline:
+        await asyncio.sleep(0.02)
+        with store.session() as s:
+            started = bool(repo.list_runs(s, library_id=world["旭刚"]))
+    await asyncio.sleep(0.2)
+    with store.session() as s:  # 幻伊镜 is due (never synced) but must wait out the jitter
+        due_started = bool(repo.list_runs(s, library_id=world["幻伊镜"]))
+    stop.set()
+    await asyncio.wait_for(daemon, 10)
+    assert started and not due_started
+
+
+async def test_shutdown_kills_workers_concurrently(
+    world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sched = world["sched"]
+    monkeypatch.setenv(
+        "FAKE_WORKER_SCENARIO",
+        json.dumps(
+            {"sync": {"events": [{"ignore_term": 1.0}, {"ev": "started"}, {"sleep": 30}],
+                      "exit": 0}}
+        ),
+    )
+    assert await sched.tick() == 2
+    for _ in range(100):
+        await asyncio.sleep(0.05)
+        if len(sched.active) == 2:
+            break
+    assert len(sched.active) == 2
+    await asyncio.sleep(0.2)  # both workers are past their SIGTERM handler install
+    began = time.monotonic()
+    await sched.shutdown()
+    elapsed = time.monotonic() - began
+    assert sched.active == {} and sched.running_accounts == {}
+    assert elapsed < 1.9, elapsed  # one shared grace period, not one per worker
+
+
+async def test_shutdown_kills_interactive_auth_sessions(
+    world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, sched = world["store"], world["sched"]
+    monkeypatch.setenv(
+        "FAKE_WORKER_SCENARIO",
+        json.dumps({"auth": {"events": [{"ev": "started"}, {"wait_code": "123456"}], "exit": 0}}),
+    )
+    session = await sched.onboarding.start_auth(world["旭刚_acc"])
+    await asyncio.sleep(0.2)
+    await asyncio.wait_for(sched.shutdown(), 3)
+    assert session.finished.is_set() and world["旭刚_acc"] not in sched.onboarding.sessions
+    with store.session() as s:
+        run = repo.get_run(s, session.run_id)
+        assert run is not None and run.status == "failed" and run.error_kind == "killed"

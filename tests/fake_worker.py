@@ -6,7 +6,8 @@ Speaks docs/worker-protocol.md: JSON events on stdout, stderr free-form, exit co
 FAKE_WORKER_SCENARIO maps a mode to {"events": [step, ...], "exit": N}. A step is an event dict
 or one of: {"wait_code": C} (read stdin until code C), {"sleep": S}, {"stderr": TEXT},
 {"raw": TEXT} (verbatim stdout line), {"raw_len": N} (one stdout line of N "x" characters,
-for lines too long to pass through the environment).
+for lines too long to pass through the environment), {"ignore_term": S} (from now on a SIGTERM
+is answered only S seconds later, by exiting 143: a worker slow to stop).
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import sys
 import time
 from datetime import UTC, datetime
@@ -91,6 +93,14 @@ def wait_for_code(expected: str) -> None:
     sys.exit(1)  # stdin closed without the right code
 
 
+def ignore_term(delay: float) -> None:
+    def on_term(_signum: int, _frame: Any) -> None:
+        time.sleep(delay)
+        os._exit(143)
+
+    signal.signal(signal.SIGTERM, on_term)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", required=True)
@@ -118,6 +128,8 @@ def main() -> int:
     for step in scenario["events"]:
         if "wait_code" in step:
             wait_for_code(str(step["wait_code"]))
+        elif "ignore_term" in step:
+            ignore_term(float(step["ignore_term"]))
         elif "sleep" in step:
             time.sleep(float(step["sleep"]))
         elif "stderr" in step:

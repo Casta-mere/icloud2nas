@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import collections
-import contextlib
 import logging
 import random
 import shutil
@@ -76,7 +75,9 @@ class Scheduler:
         self.jitter_s = jitter_s
         self.tick_s = tick_s
         self.running_libraries: set[str] = set()
-        self.running_accounts: set[str] = set()
+        # account_id -> owner token (a run id, "auth:<id>", "discovery:<id>", ...): one holder
+        # per account, and only the holder can release it
+        self.running_accounts: dict[str, str] = {}
         self.active: dict[str, WorkerProcess] = {}
         self.tasks: set[asyncio.Task[None]] = set()
         self._space_low = False
@@ -181,16 +182,70 @@ class Scheduler:
     def pending_manual(self) -> list[DueJob]:
         return list(self.manual)
 
+    def drop_manual(self, *, account_id: str) -> int:
+        """Forget queued manual jobs of an account (deleted, or no longer able to run)."""
+        dropped = [job for job in self.manual if job.account_id == account_id]
+        for job in dropped:
+            self.manual.remove(job)
+            self._abandon(job, "its account was removed")
+        return len(dropped)
+
+    def _abandon(self, job: DueJob, reason: str) -> None:
+        log.warning(
+            "dropping queued %s job for library %s: %s", job.kind, job.library_id, reason
+        )
+        if job.kind != "apply_plan" or job.plan_id is None:
+            return
+        with self.store.session() as s:  # an approved plan that will not run goes back
+            plan = s.get(ReconcilePlan, job.plan_id)
+            if plan is None or plan.status != "approved":
+                return
+            plan.status = "pending"
+        self.bus.publish(
+            "plan.resolved", plan_id=job.plan_id, library_id=job.library_id, status="pending"
+        )
+
+    def _still_valid(self, job: DueJob) -> str | None:
+        """Why a queued manual job can no longer run (None when it still can)."""
+        with self.store.session() as s:
+            library = repo.get_library(s, job.library_id)
+            if library is None or library.account_id != job.account_id:
+                return "its library is gone"
+            if not library.enabled:
+                return "its library is disabled"
+            account = repo.get_account(s, job.account_id)
+            if account is None:
+                return "its account is gone"
+            if job.kind != "apply_plan" and account.status != "ok":
+                return f"its account is {account.status}"  # apply_plan never authenticates
+        return None
+
     async def wait_idle(self, library_id: str) -> None:
         while library_id in self.running_libraries:
             await asyncio.sleep(0.01)
 
     # -- launching -----------------------------------------------------------------------------
 
+    def account_busy(self, account_id: str) -> bool:
+        return account_id in self.running_accounts or account_id in self.onboarding.sessions
+
+    def hold_account(self, account_id: str, owner: str) -> bool:
+        """Mark the account busy for `owner`; False when someone else already holds it."""
+        holder = self.running_accounts.get(account_id)
+        if holder is not None and holder != owner:
+            return False
+        self.running_accounts[account_id] = owner
+        return True
+
+    def release_account(self, account_id: str, owner: str) -> None:
+        """Drop `owner`'s hold; a no-op when the account is held by someone else (or nobody)."""
+        if self.running_accounts.get(account_id) == owner:
+            del self.running_accounts[account_id]
+
     def can_launch(self, job: DueJob) -> bool:
         return (
             job.library_id not in self.running_libraries
-            and job.account_id not in self.running_accounts
+            and not self.account_busy(job.account_id)
             and len(self.running_libraries) < self.settings.get("max_workers")
         )
 
@@ -199,24 +254,21 @@ class Scheduler:
         is confirmed still approved)."""
         if not self.can_launch(job):
             raise RuntimeError("busy")
-        self.running_libraries.add(job.library_id)
-        self.running_accounts.add(job.account_id)
-        try:
-            run_id = (
-                ""
-                if job.kind == "apply_plan"
-                else self.runs.start_run(
-                    account_id=job.account_id,
-                    library_id=job.library_id,
-                    mode="reconcile" if job.kind == "reconcile" else "sync",
-                    trigger=job.trigger,
-                )
+        # no await from the check to the holds: nothing else can claim the account meanwhile
+        run_id = (
+            ""
+            if job.kind == "apply_plan"
+            else self.runs.start_run(
+                account_id=job.account_id,
+                library_id=job.library_id,
+                mode="reconcile" if job.kind == "reconcile" else "sync",
+                trigger=job.trigger,
             )
-        except Exception:
-            self.running_libraries.discard(job.library_id)
-            self.running_accounts.discard(job.account_id)
-            raise
-        task = asyncio.create_task(self._run_chain(job, run_id))
+        )
+        owner = run_id or f"apply_plan:{job.plan_id}"
+        self.running_libraries.add(job.library_id)
+        self.running_accounts[job.account_id] = owner
+        task = asyncio.create_task(self._run_chain(job, run_id, owner))
         self.tasks.add(task)
         task.add_done_callback(self.tasks.discard)
         return run_id
@@ -274,7 +326,7 @@ class Scheduler:
             self.active.pop(run_id, None)
         return result.exit_code
 
-    async def _run_chain(self, job: DueJob, run_id: str) -> None:
+    async def _run_chain(self, job: DueJob, run_id: str, owner: str) -> None:
         started_on = local_now(self.clock(), self.config.tz).date()  # the night this run belongs to
         try:
             if job.kind == "reconcile":
@@ -310,7 +362,7 @@ class Scheduler:
             log.exception("job %s on library %s crashed", job.kind, job.library_id)
         finally:
             self.running_libraries.discard(job.library_id)
-            self.running_accounts.discard(job.account_id)
+            self.release_account(job.account_id, owner)
 
     async def _run_apply_plan(self, job: DueJob) -> None:
         assert job.plan_id is not None
@@ -344,17 +396,39 @@ class Scheduler:
                 "plan.resolved", plan_id=job.plan_id, library_id=job.library_id, status=final
             )
 
-    async def tick(self) -> int:
+    async def launch_manual(self) -> int:
+        """Launch the queued manual jobs that can start now; drop those that never can."""
         launched = 0
         for job in self.pending_manual():
-            if self.can_launch(job):
+            reason = self._still_valid(job)
+            if reason is not None:
                 self.manual.remove(job)
+                self._abandon(job, reason)
+                continue
+            if not self.can_launch(job):
+                continue
+            self.manual.remove(job)
+            try:
                 await self.launch(job)
-                launched += 1
+            except Exception:  # noqa: BLE001 - one bad job must not starve the rest
+                log.exception("manual %s job for library %s failed to launch; dropped",
+                              job.kind, job.library_id)
+                self._abandon(job, "launch failed")
+                continue
+            launched += 1
+        return launched
+
+    async def tick(self) -> int:
+        launched = await self.launch_manual()
         for job in self.due_jobs():
-            if self.can_launch(job):
+            if not self.can_launch(job):
+                continue
+            try:
                 await self.launch(job)
-                launched += 1
+            except Exception:  # noqa: BLE001 - retried on a later tick
+                log.exception("%s job for library %s failed to launch", job.kind, job.library_id)
+                continue
+            launched += 1
         return launched
 
     # -- daemon --------------------------------------------------------------------------------
@@ -368,23 +442,37 @@ class Scheduler:
             log.warning("marked %d stale runs as killed", swept)
         if plans:
             log.warning("reset %d approved plans to pending", plans)
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(stop.wait(), random.uniform(*self.jitter_s))
+        await self._startup_jitter(stop)
         try:
             while not stop.is_set():
                 try:
                     await self.tick()
                 except Exception:  # noqa: BLE001
                     log.exception("scheduler tick failed")
-                await self._sleep(stop)
+                await self._sleep(stop, self.tick_s)
         finally:
             await self.shutdown()
 
-    async def _sleep(self, stop: asyncio.Event) -> None:
-        """Wait up to tick_s, returning early on stop or when a manual request is queued."""
+    async def _startup_jitter(self, stop: asyncio.Event) -> None:
+        """Hold due jobs back for a random delay after start, but serve manual requests at once."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + random.uniform(*self.jitter_s)
+        while not stop.is_set():
+            if self.manual:
+                try:
+                    await self.launch_manual()
+                except Exception:  # noqa: BLE001
+                    log.exception("manual launch during startup jitter failed")
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return
+            await self._sleep(stop, remaining)
+
+    async def _sleep(self, stop: asyncio.Event, timeout: float) -> None:
+        """Wait up to timeout, returning early on stop or when a manual request is queued."""
         waiters = {asyncio.create_task(stop.wait()), asyncio.create_task(self._wake.wait())}
         try:
-            await asyncio.wait(waiters, timeout=self.tick_s, return_when=asyncio.FIRST_COMPLETED)
+            await asyncio.wait(waiters, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
         finally:
             for waiter in waiters:
                 waiter.cancel()
@@ -392,7 +480,18 @@ class Scheduler:
             self._wake.clear()
 
     async def shutdown(self) -> None:
-        for process in list(self.active.values()):
-            await process.kill()
-        if self.tasks:
-            await asyncio.gather(*self.tasks, return_exceptions=True)
+        """Kill every worker at once (runs and interactive logins), then let the chains settle.
+
+        Concurrent kills keep the whole shutdown within one KILL_GRACE_S, whatever the count.
+        """
+        processes = [*self.active.values()]
+        processes += [session.process for session in self.onboarding.sessions.values()]
+        await asyncio.gather(*(p.kill() for p in processes), return_exceptions=True)
+        pending: list[asyncio.Task[None]] = [*self.tasks]
+        pending += [
+            session.task
+            for session in self.onboarding.sessions.values()
+            if session.task is not None
+        ]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)

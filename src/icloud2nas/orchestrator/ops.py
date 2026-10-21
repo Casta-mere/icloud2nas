@@ -32,6 +32,14 @@ class Busy(RuntimeError):
     """The target is mid-run or mid-auth (the API answers 409)."""
 
 
+def _same_device(src: Path, dest: Path) -> bool:
+    """Whether a rename of src to dest stays on one filesystem (dest need not exist yet)."""
+    ancestor = dest.parent
+    while not ancestor.exists():
+        ancestor = ancestor.parent
+    return os.stat(src).st_dev == os.stat(ancestor).st_dev
+
+
 def _rename(src: Path, dest: Path) -> None:
     try:
         os.rename(src, dest)
@@ -58,7 +66,7 @@ class Ops:
         self.scheduler = scheduler
         self.onboarding = onboarding
         self._tasks: set[asyncio.Task[None]] = set()
-        self._discovering: set[str] = set()  # also held in scheduler.running_accounts
+        self._discovering: set[str] = set()  # accounts whose library discovery is running
 
     # -- libraries -----------------------------------------------------------------------------
 
@@ -128,10 +136,7 @@ class Ops:
             raise ValueError(f"{label!r} already exists and is not a directory")
         if dest.is_dir() and any(dest.iterdir()):
             raise ValueError(f"{label!r} already exists and is not empty")
-        ancestor = dest.parent
-        while not ancestor.exists():
-            ancestor = ancestor.parent
-        if os.stat(src).st_dev != os.stat(ancestor).st_dev:
+        if not _same_device(src, dest):
             raise ValueError(CROSS_DEVICE)
 
     def pause_library(self, library_id: str) -> None:
@@ -220,7 +225,13 @@ class Ops:
     # -- accounts ------------------------------------------------------------------------------
 
     def check_idle(self, account_id: str) -> None:
-        if account_id in self.scheduler.running_accounts or account_id in self.onboarding.sessions:
+        if self.scheduler.account_busy(account_id):
+            raise Busy("account has an active run or auth session")
+
+    def _claim(self, account_id: str, owner: str) -> None:
+        """Check idle and hold the account in one synchronous step (no await in between)."""
+        self.check_idle(account_id)
+        if not self.scheduler.hold_account(account_id, owner):
             raise Busy("account has an active run or auth session")
 
     def delete_account(self, account_id: str, *, keep_dir: bool) -> None:
@@ -232,25 +243,29 @@ class Ops:
         if not keep_dir:
             for target_dir in dirs:
                 trash_directory(self.config.photos_dir, target_dir, date.today())
+        self.scheduler.drop_manual(account_id=account_id)
         shutil.rmtree(self.config.cookie_dir(account_id).parent, ignore_errors=True)
         with self.store.session() as s:
             repo.delete_account_cascade(s, account_id)
         self.bus.publish("account.updated", account_id=account_id, deleted=True)
 
-    def _hold(self, account_id: str) -> None:
-        self._discovering.add(account_id)
-        self.scheduler.running_accounts.add(account_id)
-
-    def _release(self, account_id: str) -> None:
+    def _release(self, account_id: str, owner: str) -> None:
         self._discovering.discard(account_id)
-        self.scheduler.running_accounts.discard(account_id)
+        self.scheduler.release_account(account_id, owner)
 
     async def start_auth(self, account_id: str, *, discover: bool = True) -> str:
-        self.check_idle(account_id)
-        session = await self.onboarding.start_auth(account_id, trigger="reauth")
+        auth_owner = f"auth:{account_id}"
+        self._claim(account_id, auth_owner)  # before the first await: no window for a 2nd claim
+        try:
+            session = await self.onboarding.start_auth(account_id, trigger="reauth")
+        finally:
+            # from here on onboarding.sessions keeps the account busy
+            self.scheduler.release_account(account_id, auth_owner)
         if discover:
-            self._hold(account_id)  # busy from auth start through discovery, no idle gap
-            task = asyncio.create_task(self._discover_after_auth(account_id))
+            owner = f"discovery:{account_id}"
+            self.scheduler.hold_account(account_id, owner)  # busy through discovery, no gap
+            self._discovering.add(account_id)
+            task = asyncio.create_task(self._discover_after_auth(account_id, owner))
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
         return session.run_id
@@ -261,12 +276,13 @@ class Ops:
 
     async def refresh_libraries(self, account_id: str) -> tuple[list[str], list[str]]:
         """Manual library discovery; the account is busy while the list worker runs."""
-        self.check_idle(account_id)
-        self._hold(account_id)
+        owner = f"refresh:{account_id}"
+        self._claim(account_id, owner)
+        self._discovering.add(account_id)
         try:
             return await self.onboarding.refresh_libraries(account_id)
         finally:
-            self._release(account_id)
+            self._release(account_id, owner)
 
     async def shutdown(self) -> None:
         """Cancel background library discovery (process exit)."""
@@ -275,7 +291,7 @@ class Ops:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def _discover_after_auth(self, account_id: str) -> None:
+    async def _discover_after_auth(self, account_id: str, owner: str) -> None:
         """List the account's libraries once its auth session ended with exit 0."""
         try:
             result = await self.onboarding.wait_auth(account_id)
@@ -292,12 +308,13 @@ class Ops:
         except Exception:  # noqa: BLE001 - background chain; the account stays usable
             log.exception("library discovery after auth failed for %s", account_id)
         finally:
-            self._release(account_id)
+            self._release(account_id, owner)
 
     async def submit_code(self, account_id: str, code: str) -> None:
         await self.onboarding.submit_code(account_id, code)
 
     async def set_password(self, account_id: str, password: str) -> str:
+        self.check_idle(account_id)  # before the stored password changes
         self.onboarding.set_password(account_id, password)
         return await self.start_auth(account_id)
 
