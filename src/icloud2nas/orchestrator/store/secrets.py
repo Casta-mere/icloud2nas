@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 from collections.abc import Mapping
 from pathlib import Path
@@ -32,6 +33,7 @@ def load_or_create_key(path: Path, env_value: str | None = None) -> bytes:
 
 class Secrets:
     def __init__(self, key: bytes) -> None:
+        self._key = key
         self._fernet = Fernet(key)
 
     @classmethod
@@ -44,3 +46,7 @@ class Secrets:
 
     def decrypt(self, token: bytes) -> str:
         return self._fernet.decrypt(token).decode("utf-8")
+
+    def derive(self, label: str) -> bytes:
+        """Purpose-bound key material (e.g. cookie signing) that never reuses the Fernet key raw."""
+        return hashlib.sha256(label.encode() + self._key).digest()

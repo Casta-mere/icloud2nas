@@ -82,6 +82,10 @@ class Scheduler:
         self._space_low = False
         self.manual: collections.deque[DueJob] = collections.deque()
 
+    @property
+    def space_low(self) -> bool:
+        return self._space_low
+
     # -- policy --------------------------------------------------------------------------------
 
     def paused(self) -> bool:
