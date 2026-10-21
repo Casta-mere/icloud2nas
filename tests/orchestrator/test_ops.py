@@ -135,6 +135,41 @@ def test_rename_cross_device(ops: dict[str, Any], monkeypatch: pytest.MonkeyPatc
     assert (ops["config"].photos_dir / "旭刚").is_dir()
 
 
+def test_rename_refused_when_trash_destination_non_empty(ops: dict[str, Any]) -> None:
+    photos: Path = ops["config"].photos_dir
+    (photos / ".trash" / "旭刚").mkdir(parents=True)
+    (photos / ".trash" / "新").mkdir(parents=True)
+    (photos / ".trash" / "新" / "old.jpg").write_bytes(b"1")
+    (photos / "旭刚" / "a.jpg").write_bytes(b"a")
+    with pytest.raises(ValueError, match="not empty"):
+        ops["ops"].set_library(ops["旭刚"], target_dir="新")
+    assert (photos / "旭刚" / "a.jpg").exists() and not (photos / "新").exists()
+    assert _lib(ops).target_dir == "旭刚"
+
+
+def test_trash_rename_failure_rolls_library_back(
+    ops: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    photos: Path = ops["config"].photos_dir
+    (photos / ".trash" / "旭刚").mkdir(parents=True)
+    (photos / "旭刚" / "a.jpg").write_bytes(b"a")
+    real = os.rename
+    calls: list[int] = []
+
+    def flaky(src: Any, dst: Any) -> None:
+        calls.append(1)
+        if len(calls) == 2:
+            raise OSError(errno.EIO, "boom")
+        real(src, dst)
+
+    monkeypatch.setattr(os, "rename", flaky)
+    with pytest.raises(ValueError, match="trash"):
+        ops["ops"].set_library(ops["旭刚"], target_dir="新")
+    assert (photos / "旭刚" / "a.jpg").read_bytes() == b"a" and not (photos / "新").exists()
+    assert (photos / ".trash" / "旭刚").is_dir()
+    assert _lib(ops).target_dir == "旭刚"
+
+
 def test_pause_resume_library_and_global(ops: dict[str, Any]) -> None:
     o = ops["ops"]
     o.pause_library(ops["旭刚"])

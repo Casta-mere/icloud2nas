@@ -28,13 +28,13 @@ class Busy(RuntimeError):
     """The target is mid-run or mid-auth (the API answers 409)."""
 
 
-def _rename(src: Path, dest: Path, *, note: str = "") -> None:
+def _rename(src: Path, dest: Path) -> None:
     try:
         os.rename(src, dest)
     except OSError as exc:
         if exc.errno != errno.EXDEV:
             raise
-        raise ValueError(CROSS_DEVICE + note) from None
+        raise ValueError(CROSS_DEVICE) from None
 
 
 class Ops:
@@ -97,18 +97,36 @@ class Ops:
     def _move_library_dirs(self, old: str, new: str) -> None:
         photos = self.config.photos_dir
         src, dest = photos / old, photos / new
-        if src.exists():
-            if dest.is_dir() and any(dest.iterdir()):
-                raise ValueError(f"{new!r} already exists and is not empty")
-            if dest.exists() and not dest.is_dir():
-                raise ValueError(f"{new!r} already exists and is not a directory")
+        trash_src, trash_dest = photos / TRASH_DIRNAME / old, photos / TRASH_DIRNAME / new
+        move_lib, move_trash = src.exists(), trash_src.exists()
+        if move_lib:  # pre-check both moves so neither can fail half-way
+            self._check_destination(src, dest, new)
+        if move_trash:
+            self._check_destination(trash_src, trash_dest, f"{TRASH_DIRNAME}/{new}")
+        if move_lib:
             dest.parent.mkdir(parents=True, exist_ok=True)
             _rename(src, dest)
-        trash_src = photos / TRASH_DIRNAME / old
-        if trash_src.exists():
-            trash_dest = photos / TRASH_DIRNAME / new
+        if not move_trash:
+            return
+        try:
             trash_dest.parent.mkdir(parents=True, exist_ok=True)
-            _rename(trash_src, trash_dest, note=" (the library folder was already renamed)")
+            _rename(trash_src, trash_dest)
+        except (OSError, ValueError) as exc:
+            if move_lib:
+                os.rename(dest, src)  # backstop: never leave the library folder orphaned
+            raise ValueError(f"could not move the trash folder: {exc}") from exc
+
+    @staticmethod
+    def _check_destination(src: Path, dest: Path, label: str) -> None:
+        if dest.exists() and not dest.is_dir():
+            raise ValueError(f"{label!r} already exists and is not a directory")
+        if dest.is_dir() and any(dest.iterdir()):
+            raise ValueError(f"{label!r} already exists and is not empty")
+        ancestor = dest.parent
+        while not ancestor.exists():
+            ancestor = ancestor.parent
+        if os.stat(src).st_dev != os.stat(ancestor).st_dev:
+            raise ValueError(CROSS_DEVICE)
 
     def pause_library(self, library_id: str) -> None:
         with self.store.session() as s:
