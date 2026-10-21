@@ -78,8 +78,14 @@ def move_to_trash(
     return dest
 
 
-def trash_directory(photos_root: str | Path, library_rel: str, day: date) -> Path | None:
-    """Move a whole library folder to <.trash>/<library_rel>/<day>/<name>; None if it is absent."""
+def trash_directory(
+    photos_root: str | Path, library_rel: str, day: date, *, allow_copy: bool = True
+) -> Path | None:
+    """Move a whole library folder to <.trash>/<library_rel>/<day>/<name>; None if it is absent.
+
+    Across filesystems it falls back to a (slow, blocking) copy unless allow_copy is False,
+    in which case the EXDEV OSError propagates.
+    """
     src = Path(photos_root) / library_rel
     if not src.exists():
         return None
@@ -90,7 +96,7 @@ def trash_directory(photos_root: str | Path, library_rel: str, day: date) -> Pat
     try:
         os.rename(src, dest)
     except OSError as exc:
-        if exc.errno != errno.EXDEV:
+        if exc.errno != errno.EXDEV or not allow_copy:
             raise
         shutil.move(src, dest)
     return dest

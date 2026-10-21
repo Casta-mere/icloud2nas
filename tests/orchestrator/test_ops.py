@@ -360,3 +360,79 @@ def test_delete_account_drops_its_queued_jobs(ops: dict[str, Any]) -> None:
     ops["ops"].delete_account(ops["旭刚_acc"], keep_dir=True)
     assert [j.library_id for j in ops["sched"].pending_manual()] == [ops["幻伊镜"]]
 
+
+def _second_library(ops: dict[str, Any]) -> Path:
+    photos: Path = ops["config"].photos_dir
+    with ops["store"].session() as s:
+        acc = repo.get_account(s, ops["旭刚_acc"])
+        assert acc is not None
+        repo.upsert_library(
+            s, acc, kind="shared", zone_name="SharedSync-1", display_name="家",
+            target_dir="shared/家", interval_min=30, nightly_at="03:00",
+        )
+    (photos / "shared" / "家").mkdir(parents=True)
+    (photos / "shared" / "家" / "s.jpg").write_bytes(b"s")
+    (photos / "旭刚" / "x.jpg").write_bytes(b"x")
+    return photos
+
+
+def _rows_intact(ops: dict[str, Any]) -> None:
+    with ops["store"].session() as s:
+        assert repo.get_account(s, ops["旭刚_acc"]) is not None
+        assert len(repo.libraries_of_account(s, ops["旭刚_acc"])) == 2
+
+
+def test_delete_account_refuses_cross_device_before_moving(
+    ops: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    photos = _second_library(ops)
+    real_stat = os.stat
+
+    def fake_stat(path: Any, *args: Any, **kwargs: Any) -> Any:
+        st = real_stat(path, *args, **kwargs)
+        if Path(path) == photos / "shared" / "家":  # the second library sits on another disk
+            return os.stat_result((*st[:2], st.st_dev + 1, *st[3:]))
+        return st
+
+    monkeypatch.setattr(os, "stat", fake_stat)
+    with pytest.raises(ValueError, match="cross-device"):
+        ops["ops"].delete_account(ops["旭刚_acc"], keep_dir=False)
+    assert (photos / "旭刚" / "x.jpg").exists() and (photos / "shared" / "家" / "s.jpg").exists()
+    _rows_intact(ops)
+
+
+@pytest.mark.parametrize("err", [errno.EXDEV, errno.EBUSY])
+def test_delete_account_rename_failure_moves_nothing(
+    ops: dict[str, Any], monkeypatch: pytest.MonkeyPatch, err: int
+) -> None:
+    photos = _second_library(ops)
+    real = os.rename
+    calls: list[int] = []
+
+    def flaky(src: Any, dst: Any) -> None:
+        calls.append(1)
+        if len(calls) == 2:  # the first library moved; the second fails
+            raise OSError(err, os.strerror(err))
+        real(src, dst)
+
+    monkeypatch.setattr(os, "rename", flaky)
+    with pytest.raises(ValueError, match="could not move"):
+        ops["ops"].delete_account(ops["旭刚_acc"], keep_dir=False)
+    assert (photos / "旭刚" / "x.jpg").read_bytes() == b"x"  # moved back
+    assert (photos / "shared" / "家" / "s.jpg").exists()
+    assert ops["config"].cookie_dir(ops["旭刚_acc"]).is_dir()
+    _rows_intact(ops)
+
+
+@pytest.mark.parametrize("target", ["旭刚/iCloud", "旭刚/a/b"])
+def test_rename_into_own_subtree_is_refused(ops: dict[str, Any], target: str) -> None:
+    with pytest.raises(ValueError, match="contain one another"):
+        ops["ops"].set_library(ops["旭刚"], target_dir=target)
+    assert _lib(ops).target_dir == "旭刚" and (ops["config"].photos_dir / "旭刚").is_dir()
+
+
+def test_rename_to_own_parent_is_refused(ops: dict[str, Any]) -> None:
+    ops["ops"].set_library(ops["旭刚"], target_dir="家/旭刚")
+    with pytest.raises(ValueError, match="contain one another"):
+        ops["ops"].set_library(ops["旭刚"], target_dir="家")
+    assert _lib(ops).target_dir == "家/旭刚"

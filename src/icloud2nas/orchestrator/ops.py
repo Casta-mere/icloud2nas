@@ -13,7 +13,7 @@ from typing import Literal
 
 from sqlalchemy.orm import Session
 
-from icloud2nas.engine.trash import TRASH_DIRNAME, trash_directory
+from icloud2nas.engine.trash import TRASH_DIRNAME, trash_day_dir, trash_directory
 from icloud2nas.orchestrator.bus import EventBus
 from icloud2nas.orchestrator.config import Config, normalize_hhmm
 from icloud2nas.orchestrator.onboarding import Onboarding
@@ -30,6 +30,13 @@ CROSS_DEVICE = "cross-device: move the folder manually, then set the directory"
 
 class Busy(RuntimeError):
     """The target is mid-run or mid-auth (the API answers 409)."""
+
+
+def _nested(a: str, b: str) -> bool:
+    """True when one library rel is the other or lies inside it."""
+    pa, pb = Path(a).parts, Path(b).parts
+    shorter = min(len(pa), len(pb))
+    return pa[:shorter] == pb[:shorter]
 
 
 def _same_device(src: Path, dest: Path) -> bool:
@@ -94,6 +101,10 @@ class Ops:
                     s, target_dir, exclude_library_id=library_id, kind=library.kind
                 )
             if new_dir != old_dir:
+                if _nested(old_dir, new_dir):
+                    raise ValueError(
+                        f"{new_dir!r} and {old_dir!r} contain one another; pick a separate folder"
+                    )
                 if library_id in self.scheduler.running_libraries:
                     raise Busy("library has a running job")
                 self._move_library_dirs(old_dir, new_dir)  # before the row: failure keeps it
@@ -241,13 +252,36 @@ class Ops:
                 raise KeyError(account_id)
             dirs = [lib.target_dir for lib in repo.libraries_of_account(s, account_id)]
         if not keep_dir:
-            for target_dir in dirs:
-                trash_directory(self.config.photos_dir, target_dir, date.today())
+            self._trash_library_dirs(dirs)
         self.scheduler.drop_manual(account_id=account_id)
         shutil.rmtree(self.config.cookie_dir(account_id).parent, ignore_errors=True)
         with self.store.session() as s:
             repo.delete_account_cascade(s, account_id)
         self.bus.publish("account.updated", account_id=account_id, deleted=True)
+
+    def _trash_library_dirs(self, dirs: list[str]) -> None:
+        """Move every folder to the trash by rename, or none of them: no copying, no half state."""
+        photos = self.config.photos_dir
+        today = date.today()
+        present = [rel for rel in dirs if (photos / rel).exists()]
+        for rel in present:  # check all before moving any
+            src = photos / rel
+            if os.path.ismount(src) or not _same_device(src, trash_day_dir(photos, rel, today)):
+                raise ValueError(f"{rel!r}: {CROSS_DEVICE}")
+        moved: list[tuple[Path, Path]] = []
+        for rel in present:
+            try:
+                dest = trash_directory(photos, rel, today, allow_copy=False)
+            except OSError as exc:
+                for home, trashed in reversed(moved):  # put back what already moved
+                    try:
+                        os.rename(trashed, home)
+                    except OSError:
+                        log.exception("could not move %s back to %s", trashed, home)
+                reason = CROSS_DEVICE if exc.errno == errno.EXDEV else exc.strerror or str(exc)
+                raise ValueError(f"could not move {rel!r} to the trash: {reason}") from exc
+            if dest is not None:
+                moved.append((photos / rel, dest))
 
     def _release(self, account_id: str, owner: str) -> None:
         self._discovering.discard(account_id)
