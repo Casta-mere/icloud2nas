@@ -69,14 +69,20 @@ class Api:
 
     def login(self) -> None:
         password = self._env.get(ADMIN_PASSWORD_ENV) or self._ask_password("Admin password: ")
-        response = self.client.post(self.url("/api/session"), json={"password": password})
+        try:
+            response = self.client.post(self.url("/api/session"), json={"password": password})
+        except httpx.HTTPError as exc:
+            raise CtlError(f"cannot reach {self.base}: {exc}") from exc
         if response.status_code >= 400:
             raise CtlError("login failed: wrong admin password")
         self._logged_in = True
 
     def ensure_session(self) -> None:
         """Log in up front when the server wants it (the event stream cannot retry a 401)."""
-        response = self.client.get(self.url("/api/session"))
+        try:
+            response = self.client.get(self.url("/api/session"))
+        except httpx.HTTPError as exc:
+            raise CtlError(f"cannot reach {self.base}: {exc}") from exc
         if response.status_code == 200:
             body = response.json()
             if body.get("auth_required") and not body.get("authenticated"):

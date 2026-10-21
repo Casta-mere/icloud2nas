@@ -379,6 +379,12 @@ def main(
     except CtlError as exc:
         out.write(f"error: {exc}\n")
         return 1
+    except KeyboardInterrupt:
+        out.write("interrupted\n")
+        return 130
+    except EOFError:
+        out.write("error: input ended before a value was entered\n")
+        return 1
     finally:
         if owned:
             http.close()

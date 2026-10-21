@@ -219,6 +219,61 @@ def test_unreachable_server_is_rc_1() -> None:
     assert rc == 1 and "cannot reach http://127.0.0.1:9" in out.getvalue()
 
 
+def test_unreachable_server_during_follow_is_rc_1_without_traceback() -> None:
+    import io
+
+    env = {"I2N_URL": "http://127.0.0.1:9", "I2N_CTL_PASSWORD": "pw"}
+    for argv in (ADD, ["account", "reauth", "x"], ["run", "sync", "x"]):
+        out = io.StringIO()
+        assert ctl.main(argv, env=env, out=out) == 1
+        assert out.getvalue().startswith("error: cannot reach http://127.0.0.1:9")
+    # the stream path itself (ensure_session before the event stream), past id resolution
+    out = io.StringIO()
+    api = ctl.Api(ctl.httpx.Client(), "http://127.0.0.1:9", {}, lambda prompt: "")
+    with pytest.raises(ctl.CtlError, match="cannot reach"):
+        ctl.follow_run(api, "lib", lambda: None, out)
+
+
+def test_eof_and_interrupt_at_the_code_prompt_exit_cleanly(
+    api: API, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import io
+
+    client, _ = api
+    set_scenario(
+        monkeypatch,
+        {"auth": {"events": [{"ev": "started"}, {"ev": "need_mfa"}, {"wait_code": "1"}],
+                  "exit": 0}},
+    )
+
+    def run(exc: BaseException) -> tuple[int, str]:
+        def ask(prompt: str) -> str:
+            raise exc
+
+        out = io.StringIO()
+        rc = ctl.main(
+            ["account", "add", "--name", str(id(exc)), "--apple-id", f"{id(exc)}@x.com",
+             "--region", "cn"],
+            env={"I2N_URL": "http://testserver", "I2N_CTL_PASSWORD": "pw"},
+            ask_code=ask, out=out, client=client,
+        )
+        return rc, out.getvalue()
+
+    rc, out = run(EOFError())
+    assert rc == 1 and "input ended" in out
+    rc, out = run(KeyboardInterrupt())
+    assert rc == 130 and "interrupted" in out
+    for account in client.get("/api/accounts").json():  # let the abandoned logins finish
+        client.post(f"/api/accounts/{account['id']}/code", json={"code": "1"})
+    wait_for(
+        client,
+        lambda c: all(
+            a["status"] != "awaiting_code" for a in c.get("/api/accounts").json()
+        ),
+    )
+    wait_for(client, lambda c: not api[1].ops.discovering)
+
+
 def test_library_set_dir_nightly_pause_and_errors(api: API) -> None:
     client, _ = api
     _, library_id = onboard(client)
