@@ -20,11 +20,12 @@ from sqlalchemy.exc import IntegrityError
 
 from icloud2nas.orchestrator.bus import EventBus
 from icloud2nas.orchestrator.config import Config, normalize_hhmm
-from icloud2nas.orchestrator.jobs import build_job, policy_from_settings, validate_job
+from icloud2nas.orchestrator.jobs import build_job, validate_job
 from icloud2nas.orchestrator.lock import DaemonLock, LockHeld
 from icloud2nas.orchestrator.onboarding import Onboarding
 from icloud2nas.orchestrator.runs import RunManager
 from icloud2nas.orchestrator.scheduler import Scheduler
+from icloud2nas.orchestrator.settings import Settings
 from icloud2nas.orchestrator.store import repo
 from icloud2nas.orchestrator.store.db import Store, make_engine, upgrade_db
 from icloud2nas.orchestrator.store.models import ReconcilePlan
@@ -43,6 +44,7 @@ class App:
     runs: RunManager
     onboarding: Onboarding
     scheduler: Scheduler
+    settings: Settings
 
 
 def build_app(config: Config, env: Mapping[str, str] | None = None) -> App:
@@ -51,15 +53,22 @@ def build_app(config: Config, env: Mapping[str, str] | None = None) -> App:
     engine = make_engine(config.db_path)
     upgrade_db(engine)
     store = Store(engine)
+    settings = Settings(store)
+    settings.seed_from_env(
+        {
+            "I2N_MAX_WORKERS": str(config.max_workers),
+            "I2N_MIN_FREE_GB": str(config.min_free_gb),
+        }
+    )
     secrets = Secrets.from_config(config, source)
     bus = EventBus()
     runs = RunManager(config, store, secrets, bus)
-    onboarding = Onboarding(config, store, secrets, bus, runs)
+    onboarding = Onboarding(config, store, secrets, bus, runs, settings)
     lo, _, hi = source.get("I2N_JITTER_S", "0,300").partition(",")
     scheduler = Scheduler(
-        config, store, secrets, bus, runs, onboarding, jitter_s=(int(lo), int(hi or lo))
+        config, store, secrets, bus, runs, onboarding, settings, jitter_s=(int(lo), int(hi or lo))
     )
-    return App(config, store, secrets, bus, runs, onboarding, scheduler)
+    return App(config, store, secrets, bus, runs, onboarding, scheduler, settings)
 
 
 def resolve_id(candidates: Sequence[tuple[str, str]], text: str) -> str:
@@ -315,7 +324,7 @@ async def _apply_plan(app: App, plan_id: str, out: TextIO) -> int:
         account = repo.get_account(s, library.account_id)
         assert account is not None
         job = build_job(
-            app.config, account, library, interactive=False, policy=policy_from_settings(s)
+            app.config, account, library, interactive=False, policy=app.settings.policy()
         )
         plan_file = plan.plan_file
         validate_job("reconcile", job)

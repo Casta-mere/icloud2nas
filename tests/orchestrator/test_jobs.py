@@ -3,7 +3,8 @@ import json
 import pytest
 
 from icloud2nas.orchestrator.config import Config
-from icloud2nas.orchestrator.jobs import build_job, policy_from_settings, validate_job
+from icloud2nas.orchestrator.jobs import build_job, validate_job
+from icloud2nas.orchestrator.settings import Settings
 from icloud2nas.orchestrator.store import repo
 from icloud2nas.orchestrator.store.db import Store, make_engine, upgrade_db
 
@@ -52,15 +53,17 @@ def test_build_job_for_primary_and_shared(config: Config, store: Store) -> None:
 
 
 def test_policy_from_settings_and_type_check(config: Config, store: Store) -> None:
+    settings = Settings(store)
+    settings.set("file_match_policy", "name-size-dedup-with-suffix")
+    settings.set("threads_per_worker", "4")
     with store.session() as s:
-        repo.set_setting(s, "file_match_policy", "name-size-dedup-with-suffix")
-        repo.set_setting(s, "threads_num", "4")
         acc = repo.create_account(
             s, display_name="x", apple_id="b@icloud.com", region="com",
             password_enc=b"x", client_id="22222222-2222-2222-2222-222222222222",
         )
-        policy = policy_from_settings(s)
-        assert policy == {"file_match_policy": "name-size-dedup-with-suffix", "threads_num": 4}
+        policy = settings.policy()
+        assert policy["file_match_policy"] == "name-size-dedup-with-suffix"
+        assert policy["threads_num"] == 4
         job = build_job(config, acc, None, interactive=True, policy=policy)
         assert job["policy"] == policy
         validate_job("auth", job)

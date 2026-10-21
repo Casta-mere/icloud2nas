@@ -14,10 +14,10 @@ from icloud2nas.orchestrator.jobs import (
     MFA_TIMEOUT_S,
     PRIMARY_ZONE,
     build_job,
-    policy_from_settings,
     validate_job,
 )
 from icloud2nas.orchestrator.runs import RunManager
+from icloud2nas.orchestrator.settings import Settings
 from icloud2nas.orchestrator.store import repo
 from icloud2nas.orchestrator.store.db import Store
 from icloud2nas.orchestrator.store.models import Account
@@ -46,13 +46,20 @@ class AuthSession:
 
 class Onboarding:
     def __init__(
-        self, config: Config, store: Store, secrets: Secrets, bus: EventBus, runs: RunManager
+        self,
+        config: Config,
+        store: Store,
+        secrets: Secrets,
+        bus: EventBus,
+        runs: RunManager,
+        settings: Settings,
     ) -> None:
         self.config = config
         self.store = store
         self.secrets = secrets
         self.bus = bus
         self.runs = runs
+        self.settings = settings
         self.sessions: dict[str, AuthSession] = {}
 
     # -- accounts ------------------------------------------------------------------------------
@@ -106,7 +113,7 @@ class Onboarding:
             if account is None:
                 raise KeyError(account_id)
             job = build_job(
-                self.config, account, None, interactive=True, policy=policy_from_settings(s)
+                self.config, account, None, interactive=True, policy=self.settings.policy()
             )
             password = self.password_for(account)
         validate_job("auth", job)
@@ -179,7 +186,7 @@ class Onboarding:
             if account is None:
                 raise KeyError(account_id)
             job = build_job(
-                self.config, account, None, interactive=False, policy=policy_from_settings(s)
+                self.config, account, None, interactive=False, policy=self.settings.policy()
             )
             password = self.password_for(account)
         validate_job("list", job)

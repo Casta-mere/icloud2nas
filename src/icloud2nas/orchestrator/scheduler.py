@@ -14,9 +14,10 @@ from zoneinfo import ZoneInfo
 
 from icloud2nas.orchestrator.bus import EventBus
 from icloud2nas.orchestrator.config import Config
-from icloud2nas.orchestrator.jobs import build_job, policy_from_settings, validate_job
+from icloud2nas.orchestrator.jobs import build_job, validate_job
 from icloud2nas.orchestrator.onboarding import Onboarding
 from icloud2nas.orchestrator.runs import RunManager
+from icloud2nas.orchestrator.settings import Settings
 from icloud2nas.orchestrator.store import repo
 from icloud2nas.orchestrator.store.db import Store
 from icloud2nas.orchestrator.store.models import Library, utcnow
@@ -56,6 +57,7 @@ class Scheduler:
         bus: EventBus,
         runs: RunManager,
         onboarding: Onboarding,
+        settings: Settings,
         *,
         clock: Callable[[], datetime] = utcnow,
         jitter_s: tuple[int, int] = (0, 300),
@@ -67,6 +69,7 @@ class Scheduler:
         self.bus = bus
         self.runs = runs
         self.onboarding = onboarding
+        self.settings = settings
         self.clock = clock
         self.jitter_s = jitter_s
         self.tick_s = tick_s
@@ -79,15 +82,14 @@ class Scheduler:
     # -- policy --------------------------------------------------------------------------------
 
     def paused(self) -> bool:
-        with self.store.session() as s:
-            return repo.get_setting(s, "paused", "0") == "1"
+        return bool(self.settings.get("paused"))
 
     def free_space_ok(self) -> bool:
         try:
             free = shutil.disk_usage(self.config.photos_dir).free
         except FileNotFoundError:
             return True  # photos dir not mounted yet: let the worker fail loudly instead
-        return free >= self.config.min_free_gb * 1024**3
+        return bool(free >= self.settings.get("min_free_gb") * 1024**3)
 
     def _apply_space_state(self) -> bool:
         ok = self.free_space_ok()
@@ -100,7 +102,8 @@ class Scheduler:
                 elif ok and library.status == "space_paused":
                     library.status = "ok"
         self._space_low = not ok
-        self.bus.publish("space.low" if not ok else "space.ok", min_free_gb=self.config.min_free_gb)
+        topic = "space.low" if not ok else "space.ok"
+        self.bus.publish(topic, min_free_gb=self.settings.get("min_free_gb"))
         return ok
 
     def due_jobs(self, now: datetime | None = None) -> list[DueJob]:
@@ -154,7 +157,7 @@ class Scheduler:
         return (
             job.library_id not in self.running_libraries
             and job.account_id not in self.running_accounts
-            and len(self.running_libraries) < self.config.max_workers
+            and len(self.running_libraries) < self.settings.get("max_workers")
         )
 
     async def launch(self, job: DueJob) -> str:
@@ -191,7 +194,7 @@ class Scheduler:
                     library,
                     interactive=False,
                     full=full,
-                    policy=policy_from_settings(s),
+                    policy=self.settings.policy(),
                 )
                 password = self.onboarding.password_for(account)
             validate_job(mode, spec)

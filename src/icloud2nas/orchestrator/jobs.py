@@ -5,11 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from sqlalchemy.orm import Session
-
 from icloud2nas.engine.job import JobSpec
 from icloud2nas.orchestrator.config import Config
-from icloud2nas.orchestrator.store import repo
 from icloud2nas.orchestrator.store.models import Account, Library
 
 PRIMARY_ZONE = "PrimarySync"
@@ -43,22 +40,6 @@ POLICY_FIELD_TYPES: dict[str, type] = {
     "keep_unicode_in_filenames": bool,
     "threads_num": int,
 }
-_POLICY_SETTING_PARSERS: dict[str, Any] = {
-    "folder_structure": str,
-    "file_match_policy": str,
-    "live_photo_mov_filename_policy": str,
-    "keep_unicode_in_filenames": lambda v: v.lower() in ("1", "true", "yes"),
-    "threads_num": int,
-}
-
-
-def policy_from_settings(s: Session) -> dict[str, Any]:
-    policy: dict[str, Any] = {}
-    for key, parse in _POLICY_SETTING_PARSERS.items():
-        raw = repo.get_setting(s, key, "")
-        if raw != "":
-            policy[key] = parse(raw)
-    return policy
 
 
 def build_job(

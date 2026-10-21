@@ -12,6 +12,7 @@ from icloud2nas.orchestrator.config import Config
 from icloud2nas.orchestrator.onboarding import Onboarding
 from icloud2nas.orchestrator.runs import RunManager
 from icloud2nas.orchestrator.scheduler import DueJob, Scheduler, nightly_due
+from icloud2nas.orchestrator.settings import Settings
 from icloud2nas.orchestrator.store import repo
 from icloud2nas.orchestrator.store.db import Store, make_engine, upgrade_db
 from icloud2nas.orchestrator.store.models import Library
@@ -38,10 +39,20 @@ def world(config: Config) -> dict[str, Any]:
     bus.subscribe(lambda t, p: seen.append((t, p)))
     secrets = Secrets.from_config(config)
     runs = RunManager(config, store, secrets, bus)
-    onboarding = Onboarding(config, store, secrets, bus, runs)
+    settings = Settings(store)
+    onboarding = Onboarding(config, store, secrets, bus, runs, settings)
     clock = Clock(T0)
     sched = Scheduler(
-        config, store, secrets, bus, runs, onboarding, clock=clock, jitter_s=(0, 0), tick_s=0.01
+        config,
+        store,
+        secrets,
+        bus,
+        runs,
+        onboarding,
+        settings,
+        clock=clock,
+        jitter_s=(0, 0),
+        tick_s=0.01,
     )
     ids: dict[str, str] = {}
     with store.session() as s:
@@ -68,7 +79,14 @@ def world(config: Config) -> dict[str, Any]:
             lib.enabled = True
             ids[name] = lib.id
             ids[name + "_acc"] = acc.id
-    return {"store": store, "sched": sched, "clock": clock, "seen": seen, **ids}
+    return {
+        "store": store,
+        "settings": settings,
+        "sched": sched,
+        "clock": clock,
+        "seen": seen,
+        **ids,
+    }
 
 
 def _set(store: Store, library_id: str, **fields: Any) -> None:
@@ -157,6 +175,32 @@ def test_locks_and_concurrency_cap(world: dict[str, Any]) -> None:
     assert not sched.can_launch(job_a) and sched.can_launch(job_b)
     sched.running_libraries.update({"x", "y"})
     assert not sched.can_launch(job_b)  # max_workers=2
+
+
+async def test_cap_comes_from_settings(
+    world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(
+        "FAKE_WORKER_SCENARIO",
+        json.dumps(
+            {
+                "sync": {
+                    "events": [{"ev": "started"}, {"sleep": 0.3}, {"ev": "done", "stats": {}}],
+                    "exit": 0,
+                }
+            }
+        ),
+    )
+    sched = world["sched"]
+    world["settings"].set("max_workers", "1")
+    assert len(sched.due_jobs()) == 2
+    assert await sched.tick() == 1  # the second account's due job waits for a free slot
+    await asyncio.gather(*sched.tasks)
+
+
+def test_paused_reads_settings(world: dict[str, Any]) -> None:
+    world["settings"].set("paused", "true")
+    assert world["sched"].paused() and world["sched"].due_jobs() == []
 
 
 async def test_tick_runs_full_sync_and_nightly_chains_reconcile(

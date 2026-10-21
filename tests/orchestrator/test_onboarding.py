@@ -10,6 +10,7 @@ from icloud2nas.orchestrator.bus import EventBus
 from icloud2nas.orchestrator.config import Config
 from icloud2nas.orchestrator.onboarding import Onboarding, safe_dir_name
 from icloud2nas.orchestrator.runs import RunManager
+from icloud2nas.orchestrator.settings import Settings
 from icloud2nas.orchestrator.store import repo
 from icloud2nas.orchestrator.store.db import Store, make_engine, upgrade_db
 from icloud2nas.orchestrator.store.secrets import Secrets
@@ -25,7 +26,7 @@ def onboarding(config: Config) -> tuple[Onboarding, Store, list[tuple[str, dict[
     bus.subscribe(lambda t, p: seen.append((t, p)))
     secrets = Secrets.from_config(config)
     runs = RunManager(config, store, secrets, bus)
-    return Onboarding(config, store, secrets, bus, runs), store, seen
+    return Onboarding(config, store, secrets, bus, runs, Settings(store)), store, seen
 
 
 @pytest.mark.parametrize(
