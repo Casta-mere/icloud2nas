@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 
 from fastapi import FastAPI, Request, Response
 
-from icloud2nas.api import auth, system
+from icloud2nas.api import accounts, auth, libraries, plans, runs, system
 from icloud2nas.api.errors import install_error_handlers
 from icloud2nas.api.state import AppState, build_state
 from icloud2nas.orchestrator.config import Config
@@ -70,6 +70,7 @@ def create_app(
                     asyncio.gather(scheduler_task, housekeeping_task, return_exceptions=True),
                     SHUTDOWN_CEILING_S,
                 )
+            await app_state.ops.shutdown()
             app_state.housekeeping.stop()
             await app_state.notifier.stop()
 
@@ -90,6 +91,8 @@ def create_app(
     app.include_router(system.open_router)
     app.include_router(system.router)
     app.include_router(auth.router)
+    for router in (accounts.router, libraries.router, runs.router, plans.router):
+        app.include_router(router)
     return app
 
 

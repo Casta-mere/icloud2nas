@@ -176,8 +176,16 @@ def get_run(s: Session, run_id: str) -> Run | None:
     return s.get(Run, run_id)
 
 
-def list_runs(s: Session, *, library_id: str | None = None, limit: int = 50) -> list[Run]:
+def list_runs(
+    s: Session,
+    *,
+    library_id: str | None = None,
+    account_id: str | None = None,
+    limit: int = 50,
+) -> list[Run]:
     stmt = select(Run).order_by(Run.started_at.desc()).limit(limit)
+    if account_id is not None:
+        stmt = stmt.where(Run.account_id == account_id)
     if library_id is not None:
         stmt = stmt.where(Run.library_id == library_id)
     return list(s.scalars(stmt))

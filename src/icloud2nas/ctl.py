@@ -17,6 +17,7 @@ from typing import Any, TextIO
 from cryptography.fernet import InvalidToken
 from sqlalchemy.exc import IntegrityError
 
+from icloud2nas.api.serializers import resolve as resolve_id
 from icloud2nas.api.state import AppState, build_state
 from icloud2nas.orchestrator.config import Config, normalize_hhmm
 from icloud2nas.orchestrator.jobs import build_job, validate_job
@@ -34,19 +35,6 @@ App = AppState
 
 def build_app(config: Config, env: Mapping[str, str] | None = None) -> App:
     return build_state(config, env)
-
-
-def resolve_id(candidates: Sequence[tuple[str, str]], text: str) -> str:
-    """Match a full id, an unambiguous id prefix, or an alias (apple id / name)."""
-    if not text:
-        raise KeyError(text)
-    exact = [i for i, alias in candidates if i == text or alias == text]
-    matches = exact or [i for i, _ in candidates if i.startswith(text)]
-    if len(matches) > 1:
-        raise ValueError(f"ambiguous id {text!r}: {len(matches)} matches")
-    if not matches:
-        raise KeyError(text)
-    return matches[0]
 
 
 def _fmt(value: Any) -> str:

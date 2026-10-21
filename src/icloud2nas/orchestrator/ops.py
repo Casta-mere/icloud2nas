@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import errno
+import logging
 import os
 import shutil
 from datetime import date
@@ -20,6 +22,8 @@ from icloud2nas.orchestrator.settings import Settings
 from icloud2nas.orchestrator.store import repo
 from icloud2nas.orchestrator.store.db import Store
 from icloud2nas.orchestrator.store.models import ReconcilePlan
+
+log = logging.getLogger(__name__)
 
 CROSS_DEVICE = "cross-device: move the folder manually, then set the directory"
 
@@ -53,6 +57,7 @@ class Ops:
         self.bus = bus
         self.scheduler = scheduler
         self.onboarding = onboarding
+        self._tasks: set[asyncio.Task[None]] = set()
 
     # -- libraries -----------------------------------------------------------------------------
 
@@ -213,12 +218,12 @@ class Ops:
 
     # -- accounts ------------------------------------------------------------------------------
 
-    def _check_idle(self, account_id: str) -> None:
+    def check_idle(self, account_id: str) -> None:
         if account_id in self.scheduler.running_accounts or account_id in self.onboarding.sessions:
             raise Busy("account has an active run or auth session")
 
     def delete_account(self, account_id: str, *, keep_dir: bool) -> None:
-        self._check_idle(account_id)
+        self.check_idle(account_id)
         with self.store.session() as s:
             if repo.get_account(s, account_id) is None:
                 raise KeyError(account_id)
@@ -231,10 +236,42 @@ class Ops:
             repo.delete_account_cascade(s, account_id)
         self.bus.publish("account.updated", account_id=account_id, deleted=True)
 
-    async def start_auth(self, account_id: str) -> str:
-        self._check_idle(account_id)
+    async def start_auth(self, account_id: str, *, discover: bool = True) -> str:
+        self.check_idle(account_id)
         session = await self.onboarding.start_auth(account_id, trigger="reauth")
+        if discover:
+            task = asyncio.create_task(self._discover_after_auth(account_id))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
         return session.run_id
+
+    @property
+    def discovering(self) -> bool:
+        return bool(self._tasks)
+
+    async def shutdown(self) -> None:
+        """Cancel background library discovery (process exit)."""
+        tasks = list(self._tasks)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _discover_after_auth(self, account_id: str) -> None:
+        """List the account's libraries once its auth session ended with exit 0."""
+        try:
+            result = await self.onboarding.wait_auth(account_id)
+            if result.exit_code != 0:
+                return
+            with self.store.session() as s:
+                before = {lib.id for lib in repo.list_libraries(s)}
+            await self.onboarding.refresh_libraries(account_id)
+            with self.store.session() as s:
+                created = [lib.id for lib in repo.list_libraries(s) if lib.id not in before]
+            for library_id in created:
+                self.bus.publish("library.updated", library_id=library_id)
+            self.bus.publish("account.updated", account_id=account_id)
+        except Exception:  # noqa: BLE001 - background chain; the account stays usable
+            log.exception("library discovery after auth failed for %s", account_id)
 
     async def submit_code(self, account_id: str, code: str) -> None:
         await self.onboarding.submit_code(account_id, code)

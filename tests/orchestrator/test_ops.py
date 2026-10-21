@@ -277,3 +277,4 @@ async def test_start_auth_busy_and_set_password(ops: dict[str, Any]) -> None:
     await ops["onboarding"].wait_auth(ops["旭刚_acc"])
     with pytest.raises(KeyError):
         await ops["ops"].submit_code(ops["旭刚_acc"], "1")
+    await ops["ops"].shutdown()
