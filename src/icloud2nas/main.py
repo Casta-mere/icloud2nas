@@ -14,7 +14,17 @@ from datetime import UTC, datetime
 
 from fastapi import FastAPI, Request, Response
 
-from icloud2nas.api import accounts, auth, events, libraries, plans, runs, system
+from icloud2nas.api import (
+    accounts,
+    auth,
+    events,
+    libraries,
+    plans,
+    runs,
+    settings,
+    system,
+    trash,
+)
 from icloud2nas.api.errors import install_error_handlers
 from icloud2nas.api.events import SseHub
 from icloud2nas.api.state import AppState, build_state
@@ -96,7 +106,15 @@ def create_app(
     app.include_router(system.open_router)
     app.include_router(system.router)
     app.include_router(auth.router)
-    for router in (accounts.router, libraries.router, runs.router, plans.router, events.router):
+    for router in (
+        accounts.router,
+        libraries.router,
+        runs.router,
+        plans.router,
+        events.router,
+        trash.router,
+        settings.router,
+    ):
         app.include_router(router)
     return app
 
