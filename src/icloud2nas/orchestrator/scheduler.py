@@ -81,6 +81,7 @@ class Scheduler:
         self.tasks: set[asyncio.Task[None]] = set()
         self._space_low = False
         self.manual: collections.deque[DueJob] = collections.deque()
+        self._wake = asyncio.Event()  # enqueue() sets it: a manual request launches now
 
     @property
     def space_low(self) -> bool:
@@ -175,6 +176,7 @@ class Scheduler:
         if any((j.library_id, j.kind, j.plan_id) == key for j in self.manual):
             return
         self.manual.append(job)
+        self._wake.set()
 
     def pending_manual(self) -> list[DueJob]:
         return list(self.manual)
@@ -374,10 +376,20 @@ class Scheduler:
                     await self.tick()
                 except Exception:  # noqa: BLE001
                     log.exception("scheduler tick failed")
-                with contextlib.suppress(TimeoutError):
-                    await asyncio.wait_for(stop.wait(), self.tick_s)
+                await self._sleep(stop)
         finally:
             await self.shutdown()
+
+    async def _sleep(self, stop: asyncio.Event) -> None:
+        """Wait up to tick_s, returning early on stop or when a manual request is queued."""
+        waiters = {asyncio.create_task(stop.wait()), asyncio.create_task(self._wake.wait())}
+        try:
+            await asyncio.wait(waiters, timeout=self.tick_s, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for waiter in waiters:
+                waiter.cancel()
+            await asyncio.gather(*waiters, return_exceptions=True)
+            self._wake.clear()
 
     async def shutdown(self) -> None:
         for process in list(self.active.values()):

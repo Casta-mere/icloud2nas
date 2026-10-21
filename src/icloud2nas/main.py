@@ -140,6 +140,7 @@ def serve(argv: Sequence[str]) -> int:
             host=env.get("I2N_HOST") or "0.0.0.0",  # noqa: S104 - container service
             port=int(env.get("I2N_PORT") or 8080),
             log_config=None,
+            timeout_graceful_shutdown=5,  # an open /api/events tab must not block SIGTERM
         )
         return 0
     finally:

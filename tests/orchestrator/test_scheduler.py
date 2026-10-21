@@ -581,3 +581,25 @@ async def test_startup_sweeps_approved_plans_and_running_runs(
         assert plan is not None and plan.status == "pending"
         run = repo.get_run(s, stale.id)
         assert run is not None and run.status == "failed" and run.error_kind == "killed"
+
+
+async def test_enqueue_wakes_the_loop_before_the_next_tick(world: dict[str, Any]) -> None:
+    store, sched, clock = world["store"], world["sched"], world["clock"]
+    for name in ("旭刚", "幻伊镜"):  # nothing due: only the manual job can start a run
+        _set(store, world[name], last_success_at=clock.now, last_nightly_on=clock.now.date())
+    sched.tick_s = 10
+    stop = asyncio.Event()
+    daemon = asyncio.create_task(sched.run_forever(stop))
+    await asyncio.sleep(0.1)  # first tick done, the loop is now parked for up to 10 s
+    with store.session() as s:
+        assert repo.list_runs(s, library_id=world["旭刚"]) == []
+    sched.enqueue(sched.request_manual(world["旭刚"], "sync"))
+    deadline = asyncio.get_running_loop().time() + 0.5
+    started = False
+    while not started and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.02)
+        with store.session() as s:
+            started = bool(repo.list_runs(s, library_id=world["旭刚"]))
+    stop.set()
+    await asyncio.wait_for(daemon, 10)
+    assert started
