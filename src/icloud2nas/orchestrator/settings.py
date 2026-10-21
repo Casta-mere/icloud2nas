@@ -88,7 +88,7 @@ SPECS: dict[str, SettingSpec] = {
         _spec("min_free_gb", "5", float, _int_range(0)),
         _spec("threads_per_worker", "2", int, _int_range(1, 8)),
         _spec("trash_retention_days", "30", int, _int_range(0)),
-        _spec("log_retention_runs", "200", int, _int_range(1)),
+        _spec("log_retention_runs", "20", int, _int_range(1)),
         _spec("file_match_policy", "name-id7", _text, _one_of(FILE_MATCH_POLICIES)),
         _spec("live_photo_mov_filename_policy", "original", _text, _one_of(LIVE_PHOTO_POLICIES)),
         _spec("keep_unicode_in_filenames", "1", _bool),

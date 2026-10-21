@@ -18,6 +18,8 @@ def store(config: Config) -> Store:
 def test_defaults_and_round_trip(store: Store) -> None:
     st = Settings(store)
     assert st.get("max_workers") == 2 and st.get("trash_retention_days") == 30
+    assert st.get("log_retention_runs") == 20 and st.get("threads_per_worker") == 2
+    assert st.get("file_match_policy") == "name-id7"
     st.set("max_workers", "3")
     assert st.get("max_workers") == 3
     with pytest.raises(ValueError, match="max_workers"):
