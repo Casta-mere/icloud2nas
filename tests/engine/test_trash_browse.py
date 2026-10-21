@@ -89,3 +89,32 @@ def test_keep_files_moves_and_refuses_traversal(photos_tree: tuple[Path, Path]) 
     (d / "2024/05/x.HEIC").write_bytes(b"h2")
     again = keep_files(photos, "旭刚", day, ["2024/05/x.HEIC"])
     assert again[0].name == "x~1.HEIC"
+
+
+def test_library_rel_cannot_escape_trash(photos_tree: tuple[Path, Path]) -> None:
+    photos, _ = photos_tree
+    day = date(2026, 10, 1)
+    outside = photos / "x" / "2026-10-01"
+    outside.mkdir(parents=True)
+    (outside / DAY_MARKER).touch()
+    (photos / ".trash").mkdir()
+    for bad in ("../x", "/abs", "", "a/../../x"):
+        with pytest.raises(ValueError, match=r"."):
+            delete_day(photos, bad, day)
+        with pytest.raises(ValueError, match=r"."):
+            list_days(photos, bad)
+        with pytest.raises(ValueError, match=r"."):
+            list_day(photos, bad, day)
+        with pytest.raises(ValueError, match=r"."):
+            keep_files(photos, bad, day, ["a"])
+    assert outside.is_dir() and (outside / DAY_MARKER).exists()
+
+
+def test_keep_files_refuses_marker_alias_and_duplicates(photos_tree: tuple[Path, Path]) -> None:
+    photos, _ = photos_tree
+    d = _day(photos, "旭刚", "2026-10-01", {"a": b"1"})
+    day = date(2026, 10, 1)
+    for bad in (["./" + DAY_MARKER], ["a", "a"], ["a", "./a"]):
+        with pytest.raises(ValueError, match=r"."):
+            keep_files(photos, "旭刚", day, bad)
+    assert (d / "a").exists() and (d / DAY_MARKER).exists() and not (photos / "kept").exists()

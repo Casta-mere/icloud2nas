@@ -146,8 +146,20 @@ def _day_files(day_dir: Path) -> list[TrashFile]:
     return sorted(out, key=lambda f: f.rel)
 
 
+def _trash_lib_dir(photos_root: str | Path, library_rel: str) -> Path:
+    """<.trash>/<library_rel>, refusing empty, absolute, '..' or escaping rels."""
+    pure = Path(library_rel)
+    if not library_rel or pure.is_absolute() or ".." in pure.parts:
+        raise ValueError(f"invalid library path: {library_rel!r}")
+    root = trash_root(photos_root)
+    lib_dir = root / pure
+    if not lib_dir.resolve().is_relative_to(root.resolve()):
+        raise ValueError(f"invalid library path: {library_rel!r}")
+    return lib_dir
+
+
 def _require_day_dir(photos_root: str | Path, library_rel: str, day: date) -> Path:
-    day_dir = trash_day_dir(photos_root, library_rel, day)
+    day_dir = _trash_lib_dir(photos_root, library_rel) / day.isoformat()
     if not _is_day_dir(day_dir):
         raise ValueError(f"no trash day {day.isoformat()} for {library_rel!r}")
     return day_dir
@@ -155,7 +167,7 @@ def _require_day_dir(photos_root: str | Path, library_rel: str, day: date) -> Pa
 
 def list_days(photos_root: str | Path, library_rel: str) -> list[TrashDay]:
     """Day folders of one library's trash, newest first."""
-    base = trash_root(photos_root) / library_rel
+    base = _trash_lib_dir(photos_root, library_rel)
     if not base.is_dir():
         return []
     days: list[TrashDay] = []
@@ -187,15 +199,22 @@ def keep_files(
     day_dir = _require_day_dir(photos_root, library_rel, day)
     base = day_dir.resolve()
     checked: list[tuple[str, Path]] = []
+    seen: set[Path] = set()
     for rel in rels:
         pure = Path(rel)
-        if pure.is_absolute() or ".." in pure.parts or rel == DAY_MARKER:
+        if pure.is_absolute() or ".." in pure.parts:
             raise ValueError(f"invalid trash path: {rel!r}")
         src = (day_dir / rel).resolve()
-        if not src.is_relative_to(base) or not src.is_file():
-            raise ValueError(f"invalid trash path: {rel!r}")
+        if (
+            not src.is_relative_to(base)
+            or not src.is_file()
+            or (src.name == DAY_MARKER and src.parent == base)
+            or src in seen
+        ):
+            raise ValueError(f"invalid or duplicate trash path: {rel!r}")
+        seen.add(src)
         checked.append((rel, src))
-    kept_base = Path(photos_root) / KEPT_DIRNAME / library_rel
+    kept_base = Path(photos_root) / KEPT_DIRNAME / Path(library_rel)
     moved: list[Path] = []
     for rel, src in checked:
         dest = _unique(kept_base / rel)
