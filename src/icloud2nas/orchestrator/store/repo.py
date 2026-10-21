@@ -183,6 +183,29 @@ def list_runs(s: Session, *, library_id: str | None = None, limit: int = 50) -> 
     return list(s.scalars(stmt))
 
 
+def prune_runs(s: Session, keep_per_library: int) -> list[str]:
+    """Delete runs beyond the newest keep_per_library per library (per account when library-less).
+
+    Runs referenced by a reconcile plan or still queued/running are kept. Returns the deleted
+    rows' log paths so the caller can remove the files.
+    """
+    protected = set(s.scalars(select(ReconcilePlan.run_id)))
+    groups: dict[tuple[str, str], list[Run]] = {}
+    for run in s.scalars(select(Run).order_by(Run.started_at.desc())):
+        key = ("lib", run.library_id) if run.library_id else ("acc", run.account_id)
+        groups.setdefault(key, []).append(run)
+    log_paths: list[str] = []
+    for runs in groups.values():
+        for run in runs[keep_per_library:]:
+            if run.id in protected or run.status in ("queued", "running"):
+                continue
+            if run.log_path:
+                log_paths.append(run.log_path)
+            s.delete(run)
+    s.flush()
+    return log_paths
+
+
 def create_plan(
     s: Session, *, library_id: str, run_id: str, extraneous_count: int, plan_file: str
 ) -> ReconcilePlan:

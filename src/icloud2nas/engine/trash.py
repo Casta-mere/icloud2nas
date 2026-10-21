@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import os
 import shutil
+from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -118,3 +119,113 @@ def purge_expired(
             keep.append(name)
         dirnames[:] = keep
     return removed
+
+
+@dataclass(frozen=True)
+class TrashDay:
+    day: date
+    files: int
+    bytes: int
+
+
+@dataclass(frozen=True)
+class TrashFile:
+    rel: str
+    size: int
+
+
+def _day_files(day_dir: Path) -> list[TrashFile]:
+    out: list[TrashFile] = []
+    for path in day_dir.rglob("*"):
+        if path.is_symlink() or not path.is_file():
+            continue
+        rel = path.relative_to(day_dir)
+        if rel.as_posix() == DAY_MARKER:
+            continue
+        out.append(TrashFile(rel.as_posix(), path.stat().st_size))
+    return sorted(out, key=lambda f: f.rel)
+
+
+def _require_day_dir(photos_root: str | Path, library_rel: str, day: date) -> Path:
+    day_dir = trash_day_dir(photos_root, library_rel, day)
+    if not _is_day_dir(day_dir):
+        raise ValueError(f"no trash day {day.isoformat()} for {library_rel!r}")
+    return day_dir
+
+
+def list_days(photos_root: str | Path, library_rel: str) -> list[TrashDay]:
+    """Day folders of one library's trash, newest first."""
+    base = trash_root(photos_root) / library_rel
+    if not base.is_dir():
+        return []
+    days: list[TrashDay] = []
+    for child in base.iterdir():
+        if _is_day_dir(child):
+            files = _day_files(child)
+            days.append(
+                TrashDay(date.fromisoformat(child.name), len(files), sum(f.size for f in files))
+            )
+    return sorted(days, key=lambda d: d.day, reverse=True)
+
+
+def list_day(photos_root: str | Path, library_rel: str, day: date) -> list[TrashFile]:
+    return _day_files(_require_day_dir(photos_root, library_rel, day))
+
+
+def delete_day(photos_root: str | Path, library_rel: str, day: date) -> int:
+    """Permanently delete one trash day folder (inside .trash only); returns files removed."""
+    day_dir = _require_day_dir(photos_root, library_rel, day)
+    count = len(_day_files(day_dir))
+    shutil.rmtree(day_dir)
+    return count
+
+
+def keep_files(
+    photos_root: str | Path, library_rel: str, day: date, rels: list[str]
+) -> list[Path]:
+    """Rescue trash files into <photos_root>/kept/<library_rel>/<rel>; all-or-nothing validation."""
+    day_dir = _require_day_dir(photos_root, library_rel, day)
+    base = day_dir.resolve()
+    checked: list[tuple[str, Path]] = []
+    for rel in rels:
+        pure = Path(rel)
+        if pure.is_absolute() or ".." in pure.parts or rel == DAY_MARKER:
+            raise ValueError(f"invalid trash path: {rel!r}")
+        src = (day_dir / rel).resolve()
+        if not src.is_relative_to(base) or not src.is_file():
+            raise ValueError(f"invalid trash path: {rel!r}")
+        checked.append((rel, src))
+    kept_base = Path(photos_root) / KEPT_DIRNAME / library_rel
+    moved: list[Path] = []
+    for rel, src in checked:
+        dest = _unique(kept_base / rel)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.rename(src, dest)
+        except OSError as exc:
+            if exc.errno != errno.EXDEV:
+                raise
+            _copy_then_unlink(src, dest)
+        moved.append(dest)
+    return moved
+
+
+def trash_bytes(photos_root: str | Path) -> int:
+    root = trash_root(photos_root)
+    if not root.exists():
+        return 0
+    return sum(p.stat().st_size for p in root.rglob("*") if p.is_file() and not p.is_symlink())
+
+
+def list_trash_rels(photos_root: str | Path) -> list[str]:
+    """Library rels (relative to .trash, '/'-separated) that directly contain a day dir."""
+    root = trash_root(photos_root)
+    rels: list[str] = []
+    if not root.exists():
+        return rels
+    for dirpath, dirnames, _files in os.walk(root):
+        here = Path(dirpath)
+        if any(_is_day_dir(here / n) for n in dirnames):
+            rels.append(here.relative_to(root).as_posix())
+        dirnames[:] = [n for n in dirnames if not _is_day_dir(here / n)]
+    return sorted(rels)
