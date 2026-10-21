@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from icloud2nas.api.auth import require_session
 from icloud2nas.api.state import AppState
 from icloud2nas.engine import trash
+from icloud2nas.orchestrator.ops import Busy
 from icloud2nas.orchestrator.store import repo
 
 router = APIRouter(prefix="/api/trash", dependencies=[Depends(require_session)])
@@ -34,6 +35,14 @@ def _rel(value: str) -> str:
     if any(not part or part.startswith(".") for part in rel.split("/")):
         raise ValueError(f"invalid library path: {value!r}")
     return rel
+
+
+def _check_not_running(state: AppState, rel: str) -> None:
+    """A running worker may be trashing into this folder right now: refuse to touch it."""
+    with state.store.session() as s:
+        ids = {lib.id for lib in repo.list_libraries(s) if lib.target_dir == rel}
+    if ids & state.scheduler.running_libraries:
+        raise Busy("the library is running; try again when it finishes")
 
 
 def _day(value: str) -> date:
@@ -75,14 +84,19 @@ async def list_day(day: str, rel: str, request: Request) -> list[dict[str, Any]]
 
 @router.delete("/{day}")
 async def delete_day(day: str, rel: str, request: Request) -> dict[str, int]:
-    photos = _state(request).config.photos_dir
-    return {"deleted": await asyncio.to_thread(trash.delete_day, photos, _rel(rel), _day(day))}
+    state = _state(request)
+    rel = _rel(rel)
+    _check_not_running(state, rel)
+    deleted = await asyncio.to_thread(trash.delete_day, state.config.photos_dir, rel, _day(day))
+    return {"deleted": deleted}
 
 
 @router.post("/{day}/keep")
 async def keep(day: str, rel: str, body: KeepBody, request: Request) -> dict[str, list[str]]:
-    photos = _state(request).config.photos_dir
+    state = _state(request)
+    photos = state.config.photos_dir
     rel = _rel(rel)
+    _check_not_running(state, rel)
     moved = await asyncio.to_thread(trash.keep_files, photos, rel, _day(day), body.paths)
     base = photos / trash.KEPT_DIRNAME / rel
     return {"kept": [p.relative_to(base).as_posix() for p in moved]}

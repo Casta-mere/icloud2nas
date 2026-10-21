@@ -22,7 +22,7 @@ def test_runs_listing_and_log(api: API, monkeypatch: pytest.MonkeyPatch) -> None
         monkeypatch,
         {"sync": {"events": [{"ev": "started"}, {"stderr": "hello from worker"}], "exit": 0}},
     )
-    client.post(f"/api/libraries/{library_id}/sync")
+    client.post(f"/api/libraries/{library_id}/sync", json={})
     run_manual(client, state, {"sync"})
     sync = next(r for r in client.get("/api/runs?limit=10").json() if r["mode"] == "sync")
     assert client.get(f"/api/runs/{sync['id'][:8]}").json()["id"] == sync["id"]
@@ -73,7 +73,7 @@ def test_plan_detail_approve_reject(api: API, monkeypatch: pytest.MonkeyPatch) -
         }
     }
     set_scenario(monkeypatch, fused)
-    client.post(f"/api/libraries/{library_id}/reconcile")
+    client.post(f"/api/libraries/{library_id}/reconcile", json={})
     run_manual(client, state, {"reconcile"})
     monkeypatch.delenv("FAKE_WORKER_SCENARIO")
     pending = client.get("/api/plans").json()
@@ -83,13 +83,13 @@ def test_plan_detail_approve_reject(api: API, monkeypatch: pytest.MonkeyPatch) -
     assert detail["paths"] == ["2024/01/x.HEIC", "2024/01/y.HEIC"] and detail["total"] == 2
     assert client.get("/api/plans?status=bogus").status_code == 400
 
-    approved = client.post(f"/api/plans/{plan_id}/approve")
+    approved = client.post(f"/api/plans/{plan_id}/approve", json={})
     assert approved.status_code == 202 and approved.json()["status"] == "approved"
     client.portal.call(state.scheduler.tick)  # type: ignore[union-attr]
     wait_for(
         client, lambda c: c.get(f"/api/plans/{plan_id}").json()["status"] == "executed"
     )
-    assert client.post(f"/api/plans/{plan_id}/reject").status_code == 400
+    assert client.post(f"/api/plans/{plan_id}/reject", json={}).status_code == 400
     assert client.get("/api/plans").json() == []
     assert [p["id"] for p in client.get("/api/plans?status=all").json()] == [plan_id]
 
@@ -114,9 +114,9 @@ def test_reject_pending_plan(api: API, monkeypatch: pytest.MonkeyPatch) -> None:
             }
         },
     )
-    client.post(f"/api/libraries/{library_id}/reconcile")
+    client.post(f"/api/libraries/{library_id}/reconcile", json={})
     run_manual(client, state, {"reconcile"})
     plan_id = client.get("/api/plans").json()[0]["id"]
-    rejected = client.post(f"/api/plans/{plan_id}/reject")
+    rejected = client.post(f"/api/plans/{plan_id}/reject", json={})
     assert rejected.status_code == 200 and rejected.json()["status"] == "rejected"
-    assert client.post(f"/api/plans/{plan_id}/approve").status_code == 400
+    assert client.post(f"/api/plans/{plan_id}/approve", json={}).status_code == 400

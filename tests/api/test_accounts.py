@@ -119,14 +119,14 @@ def test_reauth_and_refresh(api: API, monkeypatch: pytest.MonkeyPatch) -> None:
     client, state = api
     account_id, _ = onboard(client)
     wait_for(client, lambda c: _status(c, account_id) == "ok")
-    reauth = client.post(f"/api/accounts/{account_id}/auth")
+    reauth = client.post(f"/api/accounts/{account_id}/auth", json={})
     assert reauth.status_code == 202 and reauth.json()["run_id"]
     wait_for(client, lambda c: _status(c, account_id) == "ok")
     wait_for(client, lambda c: not state.ops.discovering)
-    refreshed = client.post(f"/api/accounts/{account_id}/refresh")
+    refreshed = client.post(f"/api/accounts/{account_id}/refresh", json={})
     assert refreshed.json() == {"personal": ["PrimarySync"], "shared": []}
     set_scenario(monkeypatch, {"list": {"events": [{"ev": "started"}], "exit": 1}})
-    failed = client.post(f"/api/accounts/{account_id}/refresh")
+    failed = client.post(f"/api/accounts/{account_id}/refresh", json={})
     assert failed.status_code == 502
     assert failed.json()["error"] == "worker failed"
 
@@ -137,7 +137,8 @@ def test_delete_account_keep_dir_flag(api: API) -> None:
     (state.config.photos_dir / "Ann").mkdir(parents=True, exist_ok=True)
     (state.config.photos_dir / "Ann" / "a.jpg").write_bytes(b"x")
     wait_for(client, lambda c: _status(c, account_id) == "ok")
-    assert client.delete(f"/api/accounts/{account_id}?keep_dir=false").status_code == 204
+    gone = client.request("DELETE", f"/api/accounts/{account_id}?keep_dir=false", json={})
+    assert gone.status_code == 204
     assert client.get(f"/api/accounts/{account_id}").status_code == 404
     assert not (state.config.photos_dir / "Ann").exists()
     assert list((state.config.photos_dir / ".trash").rglob("a.jpg"))
@@ -148,7 +149,7 @@ def test_delete_account_keeps_dir_by_default(api: API) -> None:
     account_id, _ = onboard(client, name="Ann", apple_id="ann@icloud.com")
     (state.config.photos_dir / "Ann").mkdir(parents=True, exist_ok=True)
     wait_for(client, lambda c: _status(c, account_id) == "ok")
-    assert client.delete(f"/api/accounts/{account_id}").status_code == 204
+    assert client.request("DELETE", f"/api/accounts/{account_id}", json={}).status_code == 204
     assert (state.config.photos_dir / "Ann").is_dir()
     assert client.get("/api/libraries").json() == []
 
@@ -182,17 +183,17 @@ def test_account_is_busy_while_discovery_runs(api: API, monkeypatch: pytest.Monk
             }
         },
     )
-    assert client.post(f"/api/accounts/{account_id}/auth").status_code == 202
+    assert client.post(f"/api/accounts/{account_id}/auth", json={}).status_code == 202
     wait_for(client, lambda c: _status(c, account_id) == "ok")
     wait_for(client, lambda c: state.ops.discovering)
     assert account_id in state.scheduler.running_accounts
-    assert client.post(f"/api/accounts/{account_id}/refresh").status_code == 409
-    assert client.post(f"/api/accounts/{account_id}/auth").status_code == 409
-    assert client.delete(f"/api/accounts/{account_id}").status_code == 409
+    assert client.post(f"/api/accounts/{account_id}/refresh", json={}).status_code == 409
+    assert client.post(f"/api/accounts/{account_id}/auth", json={}).status_code == 409
+    assert client.request("DELETE", f"/api/accounts/{account_id}", json={}).status_code == 409
     wait_for(client, lambda c: not state.ops.discovering)
     assert account_id not in state.scheduler.running_accounts
-    assert client.post(f"/api/accounts/{account_id}/refresh").status_code == 200
-    assert client.delete(f"/api/accounts/{account_id}").status_code == 204
+    assert client.post(f"/api/accounts/{account_id}/refresh", json={}).status_code == 200
+    assert client.request("DELETE", f"/api/accounts/{account_id}", json={}).status_code == 204
 
 
 def test_blank_display_name_rejected(api: API) -> None:

@@ -57,12 +57,12 @@ def test_admin_password_set_and_cleared(api: API) -> None:
 
 def test_notify_test_endpoint(api: API, sent: list[tuple[list[str], str, str]]) -> None:
     client, _ = api
-    empty = client.post("/api/notify/test")
+    empty = client.post("/api/notify/test", json={})
     assert empty.status_code == 400
     assert empty.json() == {"error": "invalid", "detail": "apprise_urls is empty"}
     assert sent == []
     client.put("/api/settings", json={"apprise_urls": "json://localhost\n\n"})
-    response = client.post("/api/notify/test")
+    response = client.post("/api/notify/test", json={})
     assert response.json() == {"sent": True}
     urls, title, body = sent[0]
     assert urls == ["json://localhost"]

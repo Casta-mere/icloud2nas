@@ -26,14 +26,14 @@ def test_library_patch_sync_pause(api: API) -> None:
     assert "stats" in patched.json() and "first_full_at" in patched.json()
     assert client.patch(f"/api/libraries/{library_id}", json={"interval_min": 1}).status_code == 400
 
-    paused = client.post(f"/api/libraries/{library_id}/pause")
+    paused = client.post(f"/api/libraries/{library_id}/pause", json={})
     assert paused.json()["status"] == "paused"
-    sync = client.post(f"/api/libraries/{library_id}/sync")
+    sync = client.post(f"/api/libraries/{library_id}/sync", json={})
     assert sync.status_code == 202 and sync.json() == {"queued": True}
     run_manual(client, state, {"sync"})
     runs = client.get(f"/api/runs?library_id={library_id}").json()
     assert runs and runs[0]["mode"] == "sync" and runs[0]["trigger"] == "manual"
-    assert client.post(f"/api/libraries/{library_id}/resume").json()["status"] == "ok"
+    assert client.post(f"/api/libraries/{library_id}/resume", json={}).json()["status"] == "ok"
 
 
 def test_sync_disabled_library_is_400_and_space_low_is_409(
@@ -43,13 +43,13 @@ def test_sync_disabled_library_is_400_and_space_low_is_409(
     account_id, library_id = onboard(client)
     wait_for(client, lambda c: _ok(c, account_id))
     monkeypatch.setattr(state.scheduler, "free_space_ok", lambda: False)
-    low = client.post(f"/api/libraries/{library_id}/reconcile")
+    low = client.post(f"/api/libraries/{library_id}/reconcile", json={})
     assert low.status_code == 409
     assert low.json() == {"error": "busy", "detail": "space low"}
     monkeypatch.undo()
     off = client.patch(f"/api/libraries/{library_id}", json={"enabled": False})
     assert off.json()["enabled"] is False
-    assert client.post(f"/api/libraries/{library_id}/sync").status_code == 400
+    assert client.post(f"/api/libraries/{library_id}/sync", json={}).status_code == 400
 
 
 def test_library_patch_target_dir_conflicts(api: API, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -62,7 +62,7 @@ def test_library_patch_target_dir_conflicts(api: API, monkeypatch: pytest.Monkey
     assert nested.status_code == 400
     wait_for(client, lambda c: _ok(c, account_id) and _ok(c, other_account))
     set_scenario(monkeypatch, {"sync": {"events": [{"ev": "started"}, {"sleep": 2}], "exit": 0}})
-    assert client.post(f"/api/libraries/{library_id}/sync").status_code == 202
+    assert client.post(f"/api/libraries/{library_id}/sync", json={}).status_code == 202
     client.portal.call(state.scheduler.tick)  # type: ignore[union-attr]
     wait_for(client, lambda c: library_id in state.scheduler.running_libraries)
     busy = client.patch(f"/api/libraries/{library_id}", json={"target_dir": "Moved"})

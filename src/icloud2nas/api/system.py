@@ -64,7 +64,7 @@ def render_metrics(state: AppState) -> str:
     statuses: list[tuple[str, float | int]] = []
     with state.store.session() as s:
         for lib in repo.list_libraries(s):
-            label = _labels(library=lib.display_name)
+            label = _labels(library_id=lib.id, library=lib.display_name)  # names can repeat
             count = lib.stats.get("files")
             if count is not None:
                 files.append((label, count))

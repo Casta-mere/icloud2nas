@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
 from fastapi import FastAPI, Request, Response
+from fastapi.responses import JSONResponse
 
 from icloud2nas.api import (
     accounts,
@@ -32,6 +33,27 @@ from icloud2nas.orchestrator.config import Config
 from icloud2nas.orchestrator.lock import DaemonLock, LockHeld
 
 SHUTDOWN_CEILING_S = 30
+MUTATING = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "host.docker.internal"})
+
+
+def _hostname(host: str) -> str:
+    """The host part of a Host header value ("[::1]:8080" -> "::1", "nas:80" -> "nas")."""
+    if host.startswith("["):
+        return host[1:].partition("]")[0]
+    return host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+
+
+def _is_page_load(request: Request) -> bool:
+    """A browser navigating to the UI: the only requests whose Host is a link worth sending."""
+    if request.headers.get("sec-fetch-mode") == "navigate":
+        return True
+    return "text/html" in request.headers.get("accept", "")
+
+
+def _is_json(request: Request) -> bool:
+    media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    return media_type == "application/json"
 
 
 class JsonFormatter(logging.Formatter):
@@ -97,10 +119,31 @@ def create_app(
     async def remember_origin(
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
-        path = request.url.path
-        if not path.startswith(("/healthz", "/metrics")):
-            host = request.headers.get("host", request.url.netloc)
+        response = await call_next(request)
+        host = request.headers.get("host", request.url.netloc)
+        if (
+            response.status_code != 401
+            and not request.url.path.startswith(("/healthz", "/metrics"))
+            and _is_page_load(request)
+            and _hostname(host).lower() not in LOOPBACK_HOSTS
+        ):
             app_state.last_origin = f"{request.url.scheme}://{host}"
+        return response
+
+    @app.middleware("http")
+    async def require_json(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        # a cross-site form or a no-cors fetch cannot send application/json: CSRF guard
+        if (
+            request.method in MUTATING
+            and request.url.path.startswith("/api/")
+            and not _is_json(request)
+        ):
+            return JSONResponse(
+                {"error": "unsupported media type", "detail": "send application/json"},
+                status_code=415,
+            )
         return await call_next(request)
 
     app.include_router(system.open_router)

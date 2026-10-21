@@ -112,6 +112,8 @@ class Api:
     def _send(
         self, method: str, path: str, body: Any, params: Mapping[str, Any] | None
     ) -> httpx.Response:
+        if body is None and method.upper() != "GET":
+            body = {}  # the server wants application/json on every mutating request
         return self.client.request(method, self.url(path), json=body, params=params)
 
     def get(self, path: str, **params: Any) -> Any:

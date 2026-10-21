@@ -64,7 +64,7 @@ def test_login_sets_cookie_and_logout_clears(api: tuple[TestClient, AppState]) -
     assert "path=/" in cookie
     assert client.get("/api/status").status_code == 200
     assert client.get("/api/session").json() == {"auth_required": True, "authenticated": True}
-    assert client.delete("/api/session").status_code == 204
+    assert client.request("DELETE", "/api/session", json={}).status_code == 204
     assert client.get("/api/status").status_code == 401
 
 
