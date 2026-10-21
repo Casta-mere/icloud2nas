@@ -253,3 +253,14 @@ def test_personal_dir_named_shared_is_rejected(
         with pytest.raises(ValueError, match="shared"):
             repo.validate_target_dir(s, "shared/x")
         assert repo.validate_target_dir(s, "shared/x", kind="shared") == "shared/x"
+
+
+def test_set_password_publishes_account_updated(
+    onboarding: tuple[Onboarding, Store, list[Any]],
+) -> None:
+    ob, _, seen = onboarding
+    account_id = ob.create_account(
+        display_name="旭刚", apple_id="a@icloud.com", region="cn", password="old"
+    )
+    ob.set_password(account_id, "new")
+    assert seen[-1] == ("account.updated", {"account_id": account_id})

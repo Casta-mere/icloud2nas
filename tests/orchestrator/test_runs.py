@@ -70,8 +70,9 @@ def test_exit_0_updates_library_and_account(world: dict[str, Any]) -> None:
         assert lib is not None and acc is not None
         assert lib.last_success_at is not None and lib.last_run_at is not None
         assert acc.status == "ok" and acc.failures == 0 and acc.backoff_until is None
-    finished = {"run_id": run.id, "status": "ok", "library_id": world["library"]}
-    assert ("run.finished", finished) in world["seen"]
+    finished = _last(world["seen"], "run.finished")
+    assert finished["run_id"] == run.id and finished["status"] == "ok"
+    assert finished["library_id"] == world["library"]
 
 
 def test_exit_3_flags_account_for_reauth(world: dict[str, Any]) -> None:
@@ -166,7 +167,7 @@ async def test_execute_runs_the_fake_worker_and_records_progress(
         assert run is not None and run.status == "ok"
         assert run.stats["downloaded"] == 2 and run.stats["progress"]["scanned"] == 5
     topics = [t for t, _ in world["seen"]]
-    assert topics.count("run.event") == 3 and topics[-1] == "run.finished"
+    assert topics.count("run.event") == 3 and topics.index("run.finished") == 4
 
 
 async def test_progress_db_failure_does_not_drop_events(
@@ -310,3 +311,76 @@ def test_new_fused_plan_supersedes_pending_and_missing_plan_file_fails(
     assert run.status == "failed" and run.error_kind == "internal" and run.plan_file is None
     with world["store"].session() as s:
         assert len(repo.list_plans(s)) == 1
+
+
+def _last(seen: list[tuple[str, dict[str, Any]]], topic: str) -> dict[str, Any]:
+    return [p for t, p in seen if t == topic][-1]
+
+
+def _sync(world: dict[str, Any], stats: dict[str, Any]) -> Any:
+    done = {"ev": "done", "stats": stats}
+    return _finish(world, "sync", WorkerResult(0, [done], done))
+
+
+def test_run_finished_payload_is_enriched(world: dict[str, Any]) -> None:
+    world["manager"].start_run(
+        account_id=world["account"], library_id=world["library"], mode="sync", trigger="schedule"
+    )
+    assert _last(world["seen"], "run.started")["trigger"] == "schedule"
+    run_id = _last(world["seen"], "run.started")["run_id"]
+    done = {"ev": "done", "stats": {"downloaded": 5, "trashed": 1, "full": True}}
+    world["manager"].finish_run(run_id, WorkerResult(0, [done], done))
+    assert _last(world["seen"], "run.finished") == {
+        "run_id": run_id, "status": "ok", "library_id": world["library"],
+        "account_id": world["account"], "mode": "sync", "trigger": "schedule",
+        "exit_code": 0, "first_full": True, "account_failures": 0,
+    }
+    with world["store"].session() as s:
+        lib = repo.get_library(s, world["library"])
+        assert lib is not None and lib.first_full_at is not None
+        assert lib.stats["last_added"] == 5 and lib.stats["last_trashed"] == 1
+        assert lib.stats["last_success"] and lib.stats["files"] is None
+
+
+def test_first_full_only_once(world: dict[str, Any]) -> None:
+    _sync(world, {"downloaded": 1, "trashed": 0, "full": True})
+    with world["store"].session() as s:
+        lib = repo.get_library(s, world["library"])
+        assert lib is not None
+        stamp = lib.first_full_at
+    _sync(world, {"downloaded": 1, "trashed": 0, "full": True})
+    assert _last(world["seen"], "run.finished")["first_full"] is False
+    with world["store"].session() as s:
+        lib = repo.get_library(s, world["library"])
+        assert lib is not None and lib.first_full_at == stamp
+
+
+def test_incremental_sync_is_not_first_full(world: dict[str, Any]) -> None:
+    _sync(world, {"downloaded": 1, "trashed": 0, "full": False})
+    assert _last(world["seen"], "run.finished")["first_full"] is False
+    with world["store"].session() as s:
+        lib = repo.get_library(s, world["library"])
+        assert lib is not None and lib.first_full_at is None
+
+
+def test_reconcile_sets_files_and_sync_adjusts_it(world: dict[str, Any]) -> None:
+    done = {"ev": "done", "stats": {"trashed": 2, "remote_total": 10, "local_total": 10}}
+    _finish(world, "reconcile", WorkerResult(0, [done], done))
+    with world["store"].session() as s:
+        lib = repo.get_library(s, world["library"])
+        assert lib is not None and lib.stats["files"] == 10 and lib.stats["last_trashed"] == 2
+    _sync(world, {"downloaded": 3, "trashed": 1, "full": False})
+    with world["store"].session() as s:
+        lib = repo.get_library(s, world["library"])
+        assert lib is not None and lib.stats["files"] == 12
+        assert lib.stats["last_added"] == 3 and lib.stats["last_trashed"] == 1
+
+
+def test_failure_payload_counts_account_failures(world: dict[str, Any]) -> None:
+    err = {"ev": "error", "kind": "unavailable", "message": "503"}
+    _finish(world, "sync", WorkerResult(5, [err], err))
+    assert _last(world["seen"], "run.finished")["account_failures"] == 1
+    topics = [t for t, _ in world["seen"]]
+    assert "library.updated" in topics and "account.updated" in topics
+    assert _last(world["seen"], "library.updated") == {"library_id": world["library"]}
+    assert _last(world["seen"], "account.updated") == {"account_id": world["account"]}

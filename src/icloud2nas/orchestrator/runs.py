@@ -12,7 +12,7 @@ from icloud2nas.orchestrator.bus import EventBus
 from icloud2nas.orchestrator.config import Config
 from icloud2nas.orchestrator.store import repo
 from icloud2nas.orchestrator.store.db import Store
-from icloud2nas.orchestrator.store.models import Account, Run, utcnow
+from icloud2nas.orchestrator.store.models import Account, Library, Run, utcnow
 from icloud2nas.orchestrator.store.secrets import Secrets
 from icloud2nas.orchestrator.supervisor import WorkerProcess, WorkerResult
 
@@ -43,7 +43,12 @@ class RunManager:
             run.log_path = str(self.config.logs_dir / f"{run.id}.log")
             run_id = run.id
         self.bus.publish(
-            "run.started", run_id=run_id, account_id=account_id, library_id=library_id, mode=mode
+            "run.started",
+            run_id=run_id,
+            account_id=account_id,
+            library_id=library_id,
+            mode=mode,
+            trigger=trigger,
         )
         return run_id
 
@@ -147,12 +152,14 @@ class RunManager:
         error = terminal if terminal.get("ev") == "error" else {}
         account_status: str | None = None
         plan_pending: tuple[str, int] | None = None
+        first_full = False
         with self.store.session() as s:
             run = repo.get_run(s, run_id)
             assert run is not None, run_id
             account = repo.get_account(s, run.account_id)
             assert account is not None, run.account_id
             library = repo.get_library(s, run.library_id) if run.library_id else None
+            account_before = self._account_snapshot(account)
             run.ended_at = now
             run.exit_code = result.exit_code
             if library is not None:
@@ -170,6 +177,10 @@ class RunManager:
                 run.stats_json = json.dumps(stats, ensure_ascii=False)
                 if library is not None:
                     library.last_success_at = now
+                    if terminal.get("ev") == "done":
+                        first_full = self._record_library_stats(
+                            library, run.mode, terminal.get("stats", {}), now
+                        )
                 if acct:
                     account.failures = 0
                     account.backoff_until = None
@@ -225,7 +236,19 @@ class RunManager:
                     self._backoff(account)
             status = run.status
             library_id = run.library_id
-        self.bus.publish("run.finished", run_id=run_id, status=status, library_id=library_id)
+            account_changed = account_state and account_before != self._account_snapshot(account)
+            finished = {
+                "run_id": run_id,
+                "status": status,
+                "library_id": library_id,
+                "account_id": account.id,
+                "mode": run.mode,
+                "trigger": run.trigger,
+                "exit_code": run.exit_code,
+                "first_full": first_full,
+                "account_failures": account.failures,
+            }
+        self.bus.publish("run.finished", **finished)
         if account_status is not None:
             self.bus.publish("account.status", account_id=account.id, status=account_status)
         if plan_pending is not None:
@@ -235,7 +258,43 @@ class RunManager:
                 extraneous=plan_pending[1],
                 library_id=library_id,
             )
+        if library_id is not None:
+            self.bus.publish("library.updated", library_id=library_id)
+        if account_changed:
+            self.bus.publish("account.updated", account_id=account.id)
         return run
+
+    @staticmethod
+    def _account_snapshot(account: Account) -> tuple[object, ...]:
+        return (
+            account.failures,
+            account.backoff_until,
+            account.last_error,
+            account.last_auth_ok_at,
+        )
+
+    @staticmethod
+    def _record_library_stats(
+        library: Library, mode: str, stats: dict[str, Any], now: datetime
+    ) -> bool:
+        """Fold a successful run into the library's stats; True when it is the first full sync."""
+        lib_stats = library.stats
+        if mode == "reconcile":
+            lib_stats["last_trashed"] = int(stats.get("trashed", 0))
+            if "local_total" in stats:
+                lib_stats["files"] = int(stats["local_total"])
+        elif mode == "sync":
+            downloaded, trashed = int(stats.get("downloaded", 0)), int(stats.get("trashed", 0))
+            lib_stats["last_added"] = downloaded
+            lib_stats["last_trashed"] = trashed
+            files = lib_stats.get("files")
+            lib_stats["files"] = None if files is None else files + downloaded - trashed
+        lib_stats["last_success"] = now.isoformat()
+        first_full = mode == "sync" and stats.get("full") is True and library.first_full_at is None
+        if first_full:
+            library.first_full_at = now
+        library.stats_json = json.dumps(lib_stats, ensure_ascii=False)
+        return first_full
 
     @staticmethod
     def _fail(run: Run, kind: str, message: str) -> None:

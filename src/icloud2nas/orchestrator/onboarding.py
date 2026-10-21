@@ -92,6 +92,7 @@ class Onboarding:
             account.failures = 0
             account.backoff_until = None
             account.last_error = None
+        self.bus.publish("account.updated", account_id=account_id)
 
     def password_for(self, account: Account) -> str:
         return self.secrets.decrypt(account.password_enc)
