@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import posixpath
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from icloud2nas.orchestrator.store.models import (
     Account,
     Library,
+    Notification,
     ReconcilePlan,
     Run,
     Setting,
@@ -246,3 +247,29 @@ def sweep_stale_runs(s: Session, message: str) -> int:
         run.error_message = message
         run.ended_at = now
     return len(stale)
+
+
+def notification_sent_within(
+    s: Session,
+    event: str,
+    subject_key: str,
+    window: timedelta | None,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """True when a notification for (event, subject) was recorded inside the window.
+
+    ``window=None`` means "ever".
+    """
+    stmt = select(Notification.id).where(
+        Notification.event == event, Notification.subject_key == subject_key
+    )
+    if window is not None:
+        stmt = stmt.where(Notification.sent_at > (now or utcnow()) - window)
+    return s.execute(stmt.limit(1)).first() is not None
+
+
+def record_notification(
+    s: Session, event: str, subject_key: str, *, now: datetime | None = None
+) -> None:
+    s.add(Notification(event=event, subject_key=subject_key, sent_at=now or utcnow()))
