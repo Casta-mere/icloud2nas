@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import io
 import json
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -306,3 +308,14 @@ def test_superseded_plan_cannot_be_approved(
     old_id = lines[0].split("\t")[0]
     rc, out = _run(config, ["plan", "approve", old_id])
     assert rc == 1 and "plan is superseded" in out
+
+
+def test_rows_show_stored_utc_times_in_local_tz(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TZ", "Asia/Shanghai")
+    time.tzset()
+    try:
+        assert ctl._fmt(datetime(2026, 10, 21, 9, 12, tzinfo=UTC)) == "2026-10-21 17:12"
+        assert ctl._fmt(None) == "-"
+    finally:
+        monkeypatch.undo()
+        time.tzset()

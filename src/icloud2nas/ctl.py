@@ -79,7 +79,7 @@ def _fmt(value: Any) -> str:
     if value is None:
         return "-"
     if isinstance(value, datetime):
-        return value.strftime("%Y-%m-%d %H:%M")
+        return value.astimezone().strftime("%Y-%m-%d %H:%M")  # stored UTC, shown in TZ
     return str(value)
 
 
