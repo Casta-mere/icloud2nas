@@ -15,6 +15,44 @@ services:
     stdin_open: true
     tty: true
 
+  serve:
+    build:
+      context: .
+      target: dev
+    image: icloud2nas-dev
+    working_dir: /app
+    command: uv run icloud2nas-serve
+    ports:
+      - "4871:4871"
+    volumes:
+      - .:/app
+      - venv:/opt/venv
+      - uv-cache:/root/.cache/uv
+      - ./.probe:/probe
+    environment:
+      TZ: Asia/Shanghai
+      I2N_DATA_DIR: /probe/data
+      I2N_PHOTOS_DIR: /probe/photos
+      I2N_JITTER_S: "0,0"
+
+  web:
+    image: node:22-alpine
+    working_dir: /web
+    user: "${I2N_UID:-1000}:${I2N_GID:-1000}"
+    command: npm run dev -- --host 0.0.0.0
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./web:/web
+      - web-node-modules:/web/node_modules
+    environment:
+      HOME: /tmp
+      npm_config_cache: /tmp/.npm
+      VITE_API_PROXY: http://serve:4871
+    depends_on:
+      - serve
+
 volumes:
   venv:
   uv-cache:
+  web-node-modules:

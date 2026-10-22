@@ -1,6 +1,6 @@
 # HTTP API
 
-`icloud2nas-serve` (port `I2N_PORT`, default 8080) serves everything under `/api`, plus `/healthz`
+`icloud2nas-serve` (port `I2N_PORT`, default 4871) serves everything under `/api`, plus `/healthz`
 and `/metrics`. Bodies are JSON unless noted. The web UI and `icloud2nas-ctl` are clients of
 this API; nothing else touches the database or the workers.
 
@@ -19,7 +19,7 @@ invalidates earlier sessions. Without a valid cookie protected routes answer `40
 TLS is the reverse proxy's job. A forgotten password is cleared offline with
 `icloud2nas-serve --reset-admin-password` (see `docs/orchestrator.md`).
 
-`icloud2nas-ctl` reads the base URL from `I2N_URL` (default `http://127.0.0.1:8080`). On a 401
+`icloud2nas-ctl` reads the base URL from `I2N_URL` (default `http://127.0.0.1:4871`). On a 401
 (or before opening the event stream) it logs in with `I2N_ADMIN_PASSWORD`, or asks for the
 password, then retries once.
 

@@ -43,6 +43,7 @@ def config(tmp_path: Path) -> Config:
             "I2N_PHOTOS_DIR": str(tmp_path / "photos"),
             "I2N_WORKER_CMD": f"{sys.executable} {FAKE_WORKER}",
             "TZ": "Asia/Shanghai",
+            "I2N_WEB_DIST": str(tmp_path / "no-dist"),  # never pick up a real web/dist build
         }
     )
     cfg.ensure_layout()

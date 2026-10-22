@@ -1,0 +1,21 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink: #111;
+  --color-page: #eef1f6;
+  --shadow-card: 5px 5px 0 rgba(17, 17, 17, 0.9);
+  --shadow-ok: 5px 5px 0 rgba(22, 163, 74, 0.38);
+  --shadow-warn: 5px 5px 0 rgba(234, 88, 12, 0.42);
+  --shadow-fuse: 5px 5px 0 rgba(220, 38, 38, 0.35);
+  --shadow-soft: 5px 5px 0 rgba(17, 17, 17, 0.25);
+  --radius-card: 14px;
+  --font-mono: ui-monospace, Menlo, monospace;
+}
+
+@utility page-bg {
+  background:
+    radial-gradient(circle at 0% 0%, #dbeafe, transparent 45%),
+    radial-gradient(circle at 100% 0%, #fde7f3, transparent 45%), var(--color-page);
+  color: var(--color-ink);
+  min-height: 100vh;
+}

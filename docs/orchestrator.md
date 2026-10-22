@@ -36,12 +36,12 @@ reconcile finds the old files extraneous and proposes trashing them. The reconci
 plan approval stand between that proposal and your files, but expect a full re-download and a
 large pending plan; reject it if you did not mean to switch.
 
-Environment: `I2N_HOST` (listen address, `0.0.0.0`), `I2N_PORT` (8080),
+Environment: `I2N_HOST` (listen address, `0.0.0.0`), `I2N_PORT` (4871),
 `I2N_DATA_DIR` (/data), `I2N_PHOTOS_DIR` (/photos), `I2N_MAX_WORKERS`,
 `I2N_MIN_FREE_GB` (5), `I2N_DEFAULT_INTERVAL_MIN`, `I2N_DEFAULT_NIGHTLY_AT` (HH:MM, `3:00` is
 normalised to `03:00`), `I2N_JITTER_S` (`lo,hi` seconds of random delay before the scheduler's first
 tick, default `0,300`; manual requests are not delayed), `I2N_SECRET_KEY` (optional; else `/data/secret.key` is generated), `TZ`,
-`I2N_WORKER_CMD` (tests only).
+`I2N_WEB_DIST` (`web/dist`), `I2N_WORKER_CMD` (tests only).
 
 Forgot the web UI admin password: stop the service, then run
 `icloud2nas-serve --reset-admin-password` against the same data directory. It takes the daemon
@@ -61,7 +61,7 @@ the database through `icloud2nas-ctl` anyway.
 ## CLI
 
 `icloud2nas-ctl` talks to `icloud2nas-serve` over HTTP: `I2N_URL` (default
-`http://127.0.0.1:8080`), `I2N_ADMIN_PASSWORD` when an admin password is set (otherwise it asks),
+`http://127.0.0.1:4871`), `I2N_ADMIN_PASSWORD` when an admin password is set (otherwise it asks),
 `I2N_CTL_PASSWORD` for the Apple ID password of `account add|set-password` (otherwise it asks).
 
     icloud2nas-ctl account add --name 旭刚 --apple-id you@icloud.com --region cn [--dir REL]   # asks password + 2FA

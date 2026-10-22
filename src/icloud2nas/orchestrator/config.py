@@ -29,6 +29,7 @@ class Config:
     min_free_gb: float = 5.0
     default_interval_min: int = 30
     default_nightly_at: str = "03:00"
+    web_dist: Path = Path("web/dist")
 
     @property
     def db_path(self) -> Path:
@@ -77,4 +78,5 @@ class Config:
             min_free_gb=float(source.get("I2N_MIN_FREE_GB", "5")),
             default_interval_min=int(source.get("I2N_DEFAULT_INTERVAL_MIN", "30")),
             default_nightly_at=normalize_hhmm(source.get("I2N_DEFAULT_NIGHTLY_AT", "03:00")),
+            web_dist=Path(source.get("I2N_WEB_DIST", "web/dist")),
         )

@@ -13,9 +13,12 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
+from starlette.types import Scope
 
 from icloud2nas.api import (
     accounts,
@@ -58,6 +61,39 @@ def _is_page_load(request: Request) -> bool:
 def _is_json(request: Request) -> bool:
     media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
     return media_type == "application/json"
+
+
+class CachedStaticFiles(StaticFiles):
+    """Hashed build assets never change under their name: cache them for a year."""
+
+    def file_response(
+        self, full_path: str | os.PathLike[str], stat_result: os.stat_result, scope: Scope,
+        status_code: int = 200,
+    ) -> Response:
+        response = super().file_response(full_path, stat_result, scope, status_code)
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return response
+
+
+def mount_web(app: FastAPI, dist: Path) -> None:
+    """Serve the built UI with an SPA fallback; call after every router is included."""
+    index = dist / "index.html"
+    if not index.is_file():
+
+        @app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
+        async def not_built() -> PlainTextResponse:
+            return PlainTextResponse(
+                "icloud2nas API is running; the web UI is not built (see docs/web.md)"
+            )
+
+        return
+    app.mount("/assets", CachedStaticFiles(directory=dist / "assets"), name="assets")
+
+    @app.api_route("/{path:path}", methods=["GET", "HEAD"], include_in_schema=False)
+    async def spa(path: str) -> Response:
+        if path.startswith(("api/", "healthz", "metrics")):
+            return JSONResponse({"error": "not found", "detail": "Not Found"}, status_code=404)
+        return FileResponse(index, headers={"Cache-Control": "no-cache"})
 
 
 class JsonFormatter(logging.Formatter):
@@ -163,6 +199,7 @@ def create_app(
         settings.router,
     ):
         app.include_router(router)
+    mount_web(app, config.web_dist)
     return app
 
 
@@ -214,7 +251,7 @@ def serve(argv: Sequence[str]) -> int:
         uvicorn.run(
             app,
             host=env.get("I2N_HOST") or "0.0.0.0",  # noqa: S104 - container service
-            port=int(env.get("I2N_PORT") or 8080),
+            port=int(env.get("I2N_PORT") or 4871),
             log_config=None,
             timeout_graceful_shutdown=5,  # an open /api/events tab must not block SIGTERM
         )

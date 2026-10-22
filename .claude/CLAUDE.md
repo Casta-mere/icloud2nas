@@ -13,4 +13,8 @@ All AI knowledge files are centralized in [`.agent/`](../.agent/) at the project
   icloudpd is pinned; bump it only together with `check_touchpoints()` and a probe run.
 - Library files are never unlinked. Deletes go through `engine/trash.py`.
 - Never `git push` from an agent session; commit only after the owner confirms.
+- Web (`web/`): npm only inside Docker (`make web-*`; never `npm`/`node` on the host). No UI
+  component library, form library or extra state library (TanStack Query only). User-facing
+  strings only via `t()` (`web/src/i18n`, keys in both `zh.ts` and `en.ts`; an ESLint rule rejects
+  JSX text with letters). The nine layout rules are the reviewer checklist in `docs/web.md`.
 - The orchestrator talks to the worker only through docs/worker-protocol.md; never import worker/adapter modules from icloud2nas.orchestrator.

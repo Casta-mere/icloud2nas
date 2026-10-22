@@ -22,7 +22,7 @@ from icloud2nas.ctl_follow import (
 )
 from icloud2nas.ctl_follow import parse_sse as parse_sse  # re-exported for tests
 
-DEFAULT_URL = "http://127.0.0.1:8080"
+DEFAULT_URL = "http://127.0.0.1:4871"
 PASSWORD_ENV = "I2N_CTL_PASSWORD"  # the Apple ID password for `account add|set-password`
 PLAN_STATUSES = ("pending", "approved", "executed", "rejected", "superseded", "all")
 
