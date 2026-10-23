@@ -132,6 +132,22 @@ def test_serve_refuses_when_lock_held(
     assert "holds the worker lock" in capsys.readouterr().err
 
 
+def test_serve_runs_on_the_stdlib_event_loop(
+    config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # uvloop's subprocess_exec rejects user=/group=/extra_groups=, which workers need
+    import uvicorn
+
+    from icloud2nas.main import serve
+
+    for key, value in make_env(config).items():
+        monkeypatch.setenv(key, value)
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(uvicorn, "run", lambda *args, **kwargs: seen.update(kwargs))
+    assert serve([]) == 0
+    assert seen["loop"] == "asyncio"
+
+
 def test_reset_admin_password_flag(
     config: Config, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

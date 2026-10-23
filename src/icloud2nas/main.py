@@ -255,6 +255,7 @@ def serve(argv: Sequence[str]) -> int:
             host=env.get("I2N_HOST") or "0.0.0.0",  # noqa: S104 - container service
             port=int(env.get("I2N_PORT") or 4871),
             log_config=None,
+            loop="asyncio",  # uvloop rejects the user=/group= that spawn workers as their owner
             timeout_graceful_shutdown=5,  # an open /api/events tab must not block SIGTERM
         )
         return 0
