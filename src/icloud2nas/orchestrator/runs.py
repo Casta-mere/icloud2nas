@@ -66,6 +66,7 @@ class RunManager:
         timeout_s: float | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
         on_start: Callable[[WorkerProcess], None] | None = None,
+        owner: tuple[int, int] | None = None,
     ) -> WorkerResult:
         def relay(event: dict[str, Any]) -> None:
             if event.get("ev") == "progress":
@@ -87,6 +88,7 @@ class RunManager:
             log_path=self.config.logs_dir / f"{run_id}.log",
             apply_plan=apply_plan,
             on_event=relay,
+            owner=owner,
         )
         try:
             await process.start()
@@ -268,7 +270,7 @@ class RunManager:
                 "trigger": run.trigger,
                 "exit_code": run.exit_code,
                 "first_full": first_full,
-                "account_failures": account.failures,
+                "account_failures": account.failures if account_state else 0,
             }
         self.bus.publish("run.finished", **finished)
         if account_status is not None:

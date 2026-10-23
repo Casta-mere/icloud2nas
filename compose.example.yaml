@@ -1,0 +1,17 @@
+services:
+  icloud2nas:
+    image: icloud2nas:local   # build with `make image`, or point at your registry
+    container_name: icloud2nas
+    restart: unless-stopped
+    ports:
+      - "4871:4871"
+    volumes:
+      - ./data:/data
+      - ${PHOTOS_ROOT:?set PHOTOS_ROOT in .env}:/photos
+      - /etc:/host/etc:ro
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      # Single-user mode: run everything as one NAS user (both must be set).
+      # Leave unset to run as root with a per-account file owner.
+      # PUID: ${PUID}
+      # PGID: ${PGID}

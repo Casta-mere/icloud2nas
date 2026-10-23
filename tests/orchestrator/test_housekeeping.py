@@ -92,7 +92,7 @@ def photos(config: Config) -> Iterator[Path]:
 
 
 def _old_day(photos: Path, day: str) -> Path:
-    d = photos / ".trash" / "旭刚" / day
+    d = photos / "旭刚" / ".icloud2nas" / "trash" / day
     d.mkdir(parents=True)
     (d / DAY_MARKER).touch()
     (d / "a.jpg").write_bytes(b"abc")
@@ -151,6 +151,61 @@ async def test_purge_trash_uses_retention(hk: Env, photos: Path) -> None:
     assert hk.hk.refresh_trash_bytes() == 0 and hk.hk.trash_bytes == 0
 
 
+async def test_purge_removes_expired_days_and_deleted_dirs(hk: Env, photos: Path) -> None:
+    old = _old_day(photos, "2026-09-01")
+    fresh = _old_day(photos, "2026-10-15")
+    deleted_root = photos / ".icloud2nas-deleted"
+    expired = deleted_root / "幻伊镜-2026-09-01"
+    recent = deleted_root / "Ann-2026-10-14"
+    for d in (expired, recent):
+        (d / "2024").mkdir(parents=True)
+        (d / "2024" / "a.jpg").write_bytes(b"a")
+    with hk.store.session() as s:
+        repo.add_deleted_dir(s, "幻伊镜/../x", datetime(2026, 8, 1, tzinfo=UTC))  # bad path
+        repo.add_deleted_dir(s, expired.relative_to(photos).as_posix(), T0 - timedelta(days=45))
+        repo.add_deleted_dir(s, recent.relative_to(photos).as_posix(), T0 - timedelta(days=2))
+        repo.add_deleted_dir(s, ".icloud2nas-deleted/gone-2026-01-01", T0 - timedelta(days=200))
+    removed = hk.hk.purge_trash()  # retention 30 days, today 2026-10-16
+    assert sorted(removed) == sorted([old, expired])
+    assert not old.exists() and fresh.exists()
+    assert not expired.exists() and (recent / "2024" / "a.jpg").exists()
+    assert not (photos / "x").exists()
+    with hk.store.session() as s:
+        assert [r.path for r in repo.list_deleted_dirs(s)] == [
+            recent.relative_to(photos).as_posix()
+        ]
+    hk.settings.set("trash_retention_days", "0")
+    assert hk.hk.purge_trash() == []
+    assert recent.exists() and fresh.exists()
+
+
+async def test_purge_drops_an_absolute_out_of_root_row(
+    hk: Env, photos: Path, tmp_path: Path
+) -> None:
+    outside = tmp_path / "elsewhere" / ".icloud2nas-deleted" / "lib-2026-01-01"
+    outside.mkdir(parents=True)
+    (outside / "a.jpg").write_bytes(b"a")
+    with hk.store.session() as s:
+        repo.add_deleted_dir(s, str(outside), T0 - timedelta(days=200))
+    assert hk.hk.purge_trash() == []
+    assert (outside / "a.jpg").read_bytes() == b"a"
+    with hk.store.session() as s:
+        assert repo.list_deleted_dirs(s) == []
+
+
+async def test_start_migrates_the_legacy_layout_once(hk: Env, photos: Path) -> None:
+    legacy = photos / ".trash" / "旭刚" / "2026-10-01"
+    legacy.mkdir(parents=True)
+    (legacy / DAY_MARKER).touch()
+    (legacy / "a.jpg").write_bytes(b"a")
+    (photos / "旭刚").mkdir()
+    hk.hk.start()
+    hk.hk.stop()
+    moved = photos / "旭刚" / ".icloud2nas" / "trash" / "2026-10-01" / "a.jpg"
+    assert moved.read_bytes() == b"a" and not (photos / ".trash").exists()
+    assert hk.hk.migrate_legacy_layout() == []  # once per process
+
+
 async def test_refresh_trash_bytes(hk: Env, photos: Path) -> None:
     _old_day(photos, "2026-10-15")
     assert hk.hk.refresh_trash_bytes() == 3 and hk.hk.trash_bytes == 3
@@ -189,3 +244,27 @@ async def test_trash_scans_run_off_the_event_loop(hk: Env) -> None:
     stop.set()
     await task
     assert max(lags) < 0.1, lags
+
+
+async def test_purge_logs_and_skips_a_library_behind_a_symlinked_parent(
+    hk: Env, photos: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    victim = photos / "Ann" / "iCloud" / ".icloud2nas" / "trash" / "2026-09-01"
+    victim.mkdir(parents=True)
+    (victim / DAY_MARKER).touch()
+    (victim / "a.jpg").write_bytes(b"ann")
+    (photos / "Eve").symlink_to(photos / "Ann")
+    with hk.store.session() as s:
+        acc = repo.get_account(s, hk.account_id)
+        assert acc is not None
+        repo.upsert_library(
+            s, acc, kind="shared", zone_name="Eve", display_name="Eve",
+            target_dir="Eve/iCloud", interval_min=30, nightly_at="03:00",
+        )
+    old = _old_day(photos, "2026-09-01")
+    removed = hk.hk.purge_trash()  # retention 30 days, today 2026-10-16
+    assert removed == [old]  # the healthy library is still purged
+    assert (victim / "a.jpg").read_bytes() == b"ann"
+    assert any("not purging the trash" in r.message and "symlink" in r.message
+               for r in caplog.records)
+    assert hk.hk.refresh_trash_bytes() == 0  # never counted through the link either

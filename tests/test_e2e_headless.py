@@ -116,7 +116,11 @@ def test_household_two_accounts_scheduled_fused_plan_trash_and_pause(
     _idle(client, state)
 
     # the trash (as left by a worker) is browsable through the CLI
-    day_dir = state.config.photos_dir / ".trash" / "旭刚" / "2026-10-20"
+    target = next(
+        lib["target_dir"] for lib in client.get("/api/libraries").json()
+        if lib["display_name"] == "旭刚"
+    )
+    day_dir = state.config.photos_dir / target / ".icloud2nas" / "trash" / "2026-10-20"
     (day_dir / "2024/01").mkdir(parents=True)
     (day_dir / DAY_MARKER).touch()
     (day_dir / "2024/01/x.HEIC").write_bytes(b"x" * 7)

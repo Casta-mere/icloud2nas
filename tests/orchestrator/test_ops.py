@@ -10,6 +10,8 @@ from typing import Any
 
 import pytest
 
+from icloud2nas.engine.trash import DAY_MARKER, kept_dir, move_to_trash, trash_day_dir
+from icloud2nas.orchestrator import owners
 from icloud2nas.orchestrator.bus import EventBus
 from icloud2nas.orchestrator.config import Config
 from icloud2nas.orchestrator.onboarding import Onboarding
@@ -75,16 +77,23 @@ def _topics(w: dict[str, Any]) -> list[str]:
     return [t for t, _ in w["seen"]]
 
 
-def test_rename_moves_folder_and_trash(ops: dict[str, Any]) -> None:
+def test_rename_library_moves_trash_and_kept_together(ops: dict[str, Any]) -> None:
     photos: Path = ops["config"].photos_dir
-    (photos / "旭刚" / "2026").mkdir()
-    (photos / "旭刚" / "2026" / "a.jpg").write_bytes(b"a")
-    (photos / ".trash" / "旭刚" / "2026-10-01").mkdir(parents=True)
-    (photos / ".trash" / "旭刚" / "2026-10-01" / "b.jpg").write_bytes(b"b")
+    lib = photos / "旭刚"
+    (lib / "2026").mkdir()
+    (lib / "2026" / "a.jpg").write_bytes(b"a")
+    day = trash_day_dir(lib, date(2026, 10, 1))
+    day.mkdir(parents=True)
+    (day / DAY_MARKER).touch()
+    (day / "b.jpg").write_bytes(b"b")
+    (kept_dir(lib) / "k.jpg").parent.mkdir(parents=True)
+    (kept_dir(lib) / "k.jpg").write_bytes(b"k")
     ops["ops"].set_library(ops["旭刚"], target_dir="家/旭刚2")
-    assert (photos / "家" / "旭刚2" / "2026" / "a.jpg").read_bytes() == b"a"
-    assert (photos / ".trash" / "家" / "旭刚2" / "2026-10-01" / "b.jpg").read_bytes() == b"b"
-    assert not (photos / "旭刚").exists() and not (photos / ".trash" / "旭刚").exists()
+    new = photos / "家" / "旭刚2"
+    assert (new / "2026" / "a.jpg").read_bytes() == b"a"
+    assert (trash_day_dir(new, date(2026, 10, 1)) / "b.jpg").read_bytes() == b"b"
+    assert (kept_dir(new) / "k.jpg").read_bytes() == b"k"
+    assert not lib.exists() and not (photos / ".trash").exists()
     assert _lib(ops).target_dir == "家/旭刚2"
     assert "library.updated" in _topics(ops)
 
@@ -126,8 +135,15 @@ def test_rename_refused_when_destination_non_empty(ops: dict[str, Any]) -> None:
     assert _lib(ops).target_dir == "旭刚"
 
 
+def _at(name: Any, dir_fd: int | None) -> Path:
+    """The path a dir_fd-relative name stands for (via /proc), or name itself."""
+    if dir_fd is None:
+        return Path(name)
+    return (Path(os.readlink(f"/proc/self/fd/{dir_fd}")) / name).resolve()
+
+
 def test_rename_cross_device(ops: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
-    def boom(src: Any, dst: Any) -> None:
+    def boom(*_: Any, **__: Any) -> None:
         raise OSError(errno.EXDEV, "cross-device")
 
     monkeypatch.setattr(os, "rename", boom)
@@ -137,39 +153,23 @@ def test_rename_cross_device(ops: dict[str, Any], monkeypatch: pytest.MonkeyPatc
     assert (ops["config"].photos_dir / "旭刚").is_dir()
 
 
-def test_rename_refused_when_trash_destination_non_empty(ops: dict[str, Any]) -> None:
-    photos: Path = ops["config"].photos_dir
-    (photos / ".trash" / "旭刚").mkdir(parents=True)
-    (photos / ".trash" / "新").mkdir(parents=True)
-    (photos / ".trash" / "新" / "old.jpg").write_bytes(b"1")
-    (photos / "旭刚" / "a.jpg").write_bytes(b"a")
-    with pytest.raises(ValueError, match="not empty"):
-        ops["ops"].set_library(ops["旭刚"], target_dir="新")
-    assert (photos / "旭刚" / "a.jpg").exists() and not (photos / "新").exists()
-    assert _lib(ops).target_dir == "旭刚"
-
-
-def test_trash_rename_failure_rolls_library_back(
+def test_rename_uses_a_single_rename(
     ops: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     photos: Path = ops["config"].photos_dir
-    (photos / ".trash" / "旭刚").mkdir(parents=True)
     (photos / "旭刚" / "a.jpg").write_bytes(b"a")
+    move_to_trash(photos / "旭刚", photos / "旭刚" / "a.jpg", date(2026, 10, 1))
     real = os.rename
-    calls: list[int] = []
+    calls: list[tuple[Any, Any]] = []
 
-    def flaky(src: Any, dst: Any) -> None:
-        calls.append(1)
-        if len(calls) == 2:
-            raise OSError(errno.EIO, "boom")
-        real(src, dst)
+    def counting(src: Any, dst: Any, **fds: Any) -> None:
+        calls.append((_at(src, fds.get("src_dir_fd")), _at(dst, fds.get("dst_dir_fd"))))
+        real(src, dst, **fds)
 
-    monkeypatch.setattr(os, "rename", flaky)
-    with pytest.raises(ValueError, match="trash"):
-        ops["ops"].set_library(ops["旭刚"], target_dir="新")
-    assert (photos / "旭刚" / "a.jpg").read_bytes() == b"a" and not (photos / "新").exists()
-    assert (photos / ".trash" / "旭刚").is_dir()
-    assert _lib(ops).target_dir == "旭刚"
+    monkeypatch.setattr(os, "rename", counting)
+    ops["ops"].set_library(ops["旭刚"], target_dir="新")
+    assert calls == [(photos / "旭刚", photos / "新")]
+    assert list((photos / "新" / ".icloud2nas" / "trash").rglob("a.jpg"))
 
 
 def test_pause_resume_library_and_global(ops: dict[str, Any]) -> None:
@@ -233,15 +233,21 @@ def test_approve_then_reject_rules(ops: dict[str, Any]) -> None:
         assert s.get(ReconcilePlan, ids[2]).status == "pending"  # type: ignore[union-attr]
 
 
-def test_delete_account_moves_dirs_to_trash(ops: dict[str, Any]) -> None:
+def test_delete_account_trash_option_renames_to_deleted_and_records_row(
+    ops: dict[str, Any],
+) -> None:
     photos: Path = ops["config"].photos_dir
     (photos / "旭刚" / "x.jpg").write_bytes(b"x")
     with ops["store"].session() as s:
         s.add(Run(account_id=ops["旭刚_acc"], library_id=ops["旭刚"], mode="sync",
                   trigger="manual"))
     ops["ops"].delete_account(ops["旭刚_acc"], keep_dir=False)
-    assert (photos / ".trash" / "旭刚" / date.today().isoformat() / "旭刚" / "x.jpg").exists()
-    assert not (photos / "旭刚").exists()
+    dest = photos / ".icloud2nas-deleted" / f"旭刚-{date.today().isoformat()}"
+    assert (dest / "x.jpg").read_bytes() == b"x"
+    assert not (photos / "旭刚").exists() and not (photos / ".trash").exists()
+    with ops["store"].session() as s:
+        rows = [(r.path, r.deleted_at is not None) for r in repo.list_deleted_dirs(s)]
+    assert rows == [(dest.relative_to(photos).as_posix(), True)]
     assert not ops["config"].cookie_dir(ops["旭刚_acc"]).parent.exists()
     with ops["store"].session() as s:
         assert repo.get_account(s, ops["旭刚_acc"]) is None
@@ -409,17 +415,21 @@ def test_delete_account_rename_failure_moves_nothing(
     real = os.rename
     calls: list[int] = []
 
-    def flaky(src: Any, dst: Any) -> None:
+    def flaky(src: Any, dst: Any, **fds: Any) -> None:
         calls.append(1)
         if len(calls) == 2:  # the first library moved; the second fails
             raise OSError(err, os.strerror(err))
-        real(src, dst)
+        real(src, dst, **fds)
 
     monkeypatch.setattr(os, "rename", flaky)
     with pytest.raises(ValueError, match="could not move"):
         ops["ops"].delete_account(ops["旭刚_acc"], keep_dir=False)
     assert (photos / "旭刚" / "x.jpg").read_bytes() == b"x"  # moved back
     assert (photos / "shared" / "家" / "s.jpg").exists()
+    assert not (photos / ".icloud2nas-deleted").exists()
+    assert not (photos / "shared" / ".icloud2nas-deleted").exists()
+    with ops["store"].session() as s:
+        assert repo.list_deleted_dirs(s) == []
     assert ops["config"].cookie_dir(ops["旭刚_acc"]).is_dir()
     _rows_intact(ops)
 
@@ -436,3 +446,69 @@ def test_rename_to_own_parent_is_refused(ops: dict[str, Any]) -> None:
     with pytest.raises(ValueError, match="contain one another"):
         ops["ops"].set_library(ops["旭刚"], target_dir="家")
     assert _lib(ops).target_dir == "家/旭刚"
+
+
+@pytest.fixture
+def chowned(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Path, int, int]]:
+    """Privileged mode with chown recorded instead of performed."""
+    calls: list[tuple[Path, int, int]] = []
+    monkeypatch.setattr(owners, "privileged", lambda: True)
+    monkeypatch.setattr(
+        owners.os, "chown", lambda p, u, g, **_: calls.append((Path(p), u, g))
+    )
+    monkeypatch.setattr(
+        owners.os, "fchown", lambda fd, u, g: calls.append((_at(".", fd), u, g))
+    )
+    return calls
+
+
+def _set_owner(w: dict[str, Any], uid: int, gid: int) -> None:
+    with w["store"].session() as s:
+        acc = repo.get_account(s, w["旭刚_acc"])
+        assert acc is not None
+        acc.owner_uid, acc.owner_gid = uid, gid
+
+
+def test_rename_hands_created_parents_to_the_owner(
+    ops: dict[str, Any], chowned: list[tuple[Path, int, int]]
+) -> None:
+    photos: Path = ops["config"].photos_dir
+    _set_owner(ops, 1000, 10)
+    ops["ops"].set_library(ops["旭刚"], target_dir="Castamere/Photos/iCloud")
+    assert (photos / "Castamere" / "Photos" / "iCloud").is_dir()
+    assert chowned == [
+        (photos / "Castamere", 1000, 10),
+        (photos / "Castamere" / "Photos", 1000, 10),
+    ]  # the renamed folder itself keeps its owner
+
+
+def test_delete_hands_the_new_deleted_root_to_the_owner(
+    ops: dict[str, Any], chowned: list[tuple[Path, int, int]]
+) -> None:
+    photos: Path = ops["config"].photos_dir
+    _set_owner(ops, 1000, 10)
+    ops["ops"].delete_account(ops["旭刚_acc"], keep_dir=False)
+    assert chowned == [(photos / ".icloud2nas-deleted", 1000, 10)]
+
+
+def test_change_folder_refuses_a_symlinked_parent(ops: dict[str, Any]) -> None:
+    photos: Path = ops["config"].photos_dir
+    (photos / "Ann" / "iCloud").mkdir(parents=True)
+    (photos / "Eve").symlink_to(photos / "Ann")  # Eve swapped her home for a link to Ann's
+    with pytest.raises(ValueError, match="symlink"):
+        ops["ops"].set_library(ops["旭刚"], target_dir="Eve/Photos")
+    assert _lib(ops).target_dir == "旭刚" and (photos / "旭刚").is_dir()
+    assert sorted(p.name for p in (photos / "Ann").iterdir()) == ["iCloud"]
+
+
+def test_delete_account_refuses_a_symlinked_parent(ops: dict[str, Any]) -> None:
+    photos: Path = ops["config"].photos_dir
+    real = photos / "Ann"
+    (real / "家").mkdir(parents=True)
+    ops["ops"].set_library(ops["旭刚"], target_dir="Eve/家")  # a real folder at first
+    (photos / "Eve" / "家").rename(real / "家")
+    (photos / "Eve").rmdir()
+    (photos / "Eve").symlink_to(real)  # then the parent is swapped for a link
+    with pytest.raises(ValueError, match="symlink"):
+        ops["ops"].delete_account(ops["旭刚_acc"], keep_dir=False)
+    assert (real / "家").is_dir() and not (real / ".icloud2nas-deleted").exists()

@@ -69,6 +69,7 @@ describe("Settings page", () => {
     const pw = screen.getByLabelText("管理密码");
     expect(screen.getByRole("button", { name: "设置" })).toBeDisabled();
     await user.type(pw, "s3cret");
+    await user.type(screen.getByLabelText("确认密码"), "s3cret");
     await user.click(screen.getByRole("button", { name: "设置" }));
     await waitFor(() => expect(puts()).toHaveLength(1));
     expect(puts()[0]?.body).toEqual({ admin_password: "s3cret" });
@@ -78,6 +79,7 @@ describe("Settings page", () => {
     expect(calls().find((c) => c.path === "/api/session" && c.method === "POST")?.body).toEqual({ password: "s3cret" });
     expect(await screen.findByText("已设置管理密码")).toBeInTheDocument();
     expect(screen.getByLabelText("管理密码")).toHaveValue("");
+    expect(screen.getByLabelText("确认密码")).toHaveValue("");
 
     await user.click(screen.getByRole("button", { name: "清除" }));
     const dialog = await screen.findByRole("alertdialog");
@@ -92,6 +94,7 @@ describe("Settings page", () => {
     const nav = await screen.findByRole("navigation", { name: "主导航" });
     await user.click(within(nav).getByRole("link", { name: "设置" }));
     await user.type(await screen.findByLabelText("管理密码"), "s3cret");
+    await user.type(screen.getByLabelText("确认密码"), "s3cret");
     await user.click(screen.getByRole("button", { name: "设置" }));
     expect(await screen.findByText("已设置管理密码")).toBeInTheDocument();
     expect(db.session).toEqual({ auth_required: true, authenticated: true });
@@ -103,8 +106,22 @@ describe("Settings page", () => {
     given("POST", "/api/session", { error: "unauthorized", detail: "wrong password" }, 401);
     const { user } = renderWithProviders(<Settings />);
     await user.type(await screen.findByLabelText("管理密码"), "s3cret");
+    await user.type(screen.getByLabelText("确认密码"), "s3cret");
     await user.click(screen.getByRole("button", { name: "设置" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("密码已设置，但自动登录失败，请刷新后登录");
     expect(puts()[0]?.body).toEqual({ admin_password: "s3cret" });
+  });
+  test("设置 stays disabled until 确认密码 matches; a mismatch says so", async () => {
+    const { user } = renderWithProviders(<Settings />);
+    const set = await screen.findByRole("button", { name: "设置" });
+    await user.type(screen.getByLabelText("管理密码"), "s3cret");
+    expect(set).toBeDisabled();
+    await user.type(screen.getByLabelText("确认密码"), "s3cre");
+    expect(set).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("两次输入的密码不一致");
+    await user.type(screen.getByLabelText("确认密码"), "t");
+    expect(set).toBeEnabled();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(puts()).toHaveLength(0);
   });
 });

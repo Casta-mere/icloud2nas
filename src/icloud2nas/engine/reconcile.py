@@ -63,13 +63,7 @@ def read_plan(path: str | Path) -> list[str]:
     return [line for line in Path(path).read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
-def apply_paths(
-    rel_paths: list[str],
-    library_dir: str,
-    photos_root: str,
-    library_rel: str,
-    day: date | None = None,
-) -> int:
+def apply_paths(rel_paths: list[str], library_dir: str, day: date | None = None) -> int:
     """Trash each still-existing file. Missing files are skipped. Returns the number moved."""
     moved = 0
     for rel in rel_paths:
@@ -79,6 +73,6 @@ def apply_paths(
         abs_path = os.path.join(library_dir, norm)
         if not os.path.isfile(abs_path):
             continue
-        move_to_trash(photos_root, library_rel, library_dir, abs_path, day)
+        move_to_trash(library_dir, abs_path, day)
         moved += 1
     return moved

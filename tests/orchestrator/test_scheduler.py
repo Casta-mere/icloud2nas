@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -209,6 +210,7 @@ async def test_tick_runs_full_sync_and_nightly_chains_reconcile(
 ) -> None:
     store, sched, clock = world["store"], world["sched"], world["clock"]
     _set(store, world["幻伊镜"], enabled=False)
+    (config.photos_dir / "旭刚").mkdir(parents=True)  # the fake worker writes nothing
     launched = await sched.tick()
     assert launched == 1
     await asyncio.gather(*sched.tasks)
@@ -390,9 +392,11 @@ async def test_first_full_sync_stamps_tonight_and_nightly_uses_start_date(
 
 
 async def test_space_paused_libraries_recover_after_restart(
-    world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    world: dict[str, Any], config: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store, sched = world["store"], world["sched"]
+    for name in ("旭刚", "幻伊镜"):
+        (config.photos_dir / name).mkdir(parents=True)  # the fake worker writes nothing
     with store.session() as s:
         for lib in repo.list_libraries(s):
             lib.status = "space_paused"  # left over from a previous daemon
@@ -760,3 +764,161 @@ async def test_shutdown_kills_interactive_auth_sessions(
     with store.session() as s:
         run = repo.get_run(s, session.run_id)
         assert run is not None and run.status == "failed" and run.error_kind == "killed"
+
+
+def _synced(world: dict[str, Any], config: Config, name: str = "旭刚", **fields: Any) -> Any:
+    folder = config.photos_dir / name
+    _set(
+        world["store"],
+        world[name],
+        first_full_at=T0 - timedelta(days=3),
+        last_success_at=T0 - timedelta(hours=2),
+        last_nightly_on=T0.date(),
+        **fields,
+    )
+    return folder
+
+
+def _status(world: dict[str, Any], name: str = "旭刚") -> tuple[str, dict[str, Any]]:
+    with world["store"].session() as s:
+        lib = repo.get_library(s, world[name])
+        return lib.status, lib.stats
+
+
+async def test_synced_library_with_missing_folder_goes_dir_missing_and_never_runs(
+    world: dict[str, Any], config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sched, store = world["sched"], world["store"]
+    _set(store, world["幻伊镜"], enabled=False)
+    folder = _synced(world, config)
+    assert not folder.exists()
+    assert sched.due_jobs() == []
+    status, stats = _status(world)
+    assert status == "dir_missing" and stats["status_before_missing"] == "ok"
+    assert ("library.updated", {"library_id": world["旭刚"]}) in world["seen"]
+    assert await sched.tick() == 0
+    assert not sched.can_launch(DueJob(world["旭刚"], world["旭刚_acc"], "quick", "schedule"))
+    with store.session() as s:
+        assert repo.list_runs(s, library_id=world["旭刚"]) == []
+    assert not folder.exists()
+
+
+async def test_run_one_rechecks_before_prepare_spawn_and_creates_no_folder(
+    world: dict[str, Any], config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sched, store = world["sched"], world["store"]
+    folder = _synced(world, config)
+    folder.mkdir(parents=True)
+    job = DueJob(world["旭刚"], world["旭刚_acc"], "quick", "schedule")
+    run_id = await sched.launch(job)  # the folder vanishes between enqueue and launch
+    folder.rmdir()
+    called: list[object] = []
+    monkeypatch.setattr(
+        "icloud2nas.orchestrator.scheduler.owners.prepare_spawn",
+        lambda *a, **k: called.append(a),
+    )
+    await asyncio.gather(*sched.tasks)
+    assert called == [] and not folder.exists()
+    with store.session() as s:
+        run = repo.get_run(s, run_id)
+        assert run.status == "failed" and run.error_kind == "dir_missing"
+        assert repo.get_account(s, world["旭刚_acc"]).failures == 0
+    assert _status(world)[0] == "dir_missing"
+    assert sched.running_libraries == set() and sched.running_accounts == {}
+
+
+def test_folder_back_restores_status(world: dict[str, Any], config: Config) -> None:
+    sched = world["sched"]
+    _set(world["store"], world["幻伊镜"], enabled=False)
+    folder = _synced(world, config, status="paused")
+    sched.due_jobs()
+    assert _status(world)[0] == "dir_missing"
+    assert _status(world)[1]["status_before_missing"] == "paused"
+    folder.mkdir(parents=True)
+    assert sched.due_jobs() == []  # paused again, so still nothing due
+    status, stats = _status(world)
+    assert status == "paused" and "status_before_missing" not in stats
+    _set(world["store"], world["旭刚"], status="ok")
+    folder.rmdir()
+    sched.due_jobs()
+    folder.mkdir()
+    assert [j.library_id for j in sched.due_jobs()] == [world["旭刚"]]
+    assert _status(world)[0] == "ok"
+
+
+def test_space_paused_library_is_left_alone(world: dict[str, Any], config: Config) -> None:
+    _synced(world, config, status="space_paused")
+    world["sched"]._space_low = True
+    assert world["sched"]._apply_dir_state() is False
+    assert _status(world)[0] == "space_paused"
+
+
+def test_never_synced_library_still_runs(world: dict[str, Any], config: Config) -> None:
+    jobs = world["sched"].due_jobs()
+    assert {j.library_id for j in jobs} == {world["旭刚"], world["幻伊镜"]}
+    assert not (config.photos_dir / "旭刚").exists()
+
+
+def test_manual_sync_on_dir_missing_is_409_busy(world: dict[str, Any], config: Config) -> None:
+    from icloud2nas.orchestrator.ops import Busy
+
+    _synced(world, config)
+    with pytest.raises(Busy, match="library folder is missing"):
+        world["sched"].enqueue(world["sched"].request_manual(world["旭刚"], "sync"))
+    assert world["sched"].pending_manual() == []
+
+
+async def test_folder_vanishing_after_the_check_fails_the_run_without_recreating_it(
+    world: dict[str, Any], config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sched, store = world["sched"], world["store"]
+    folder = _synced(world, config)
+    folder.mkdir(parents=True)
+    real = sched._dir_vanished
+    checks: list[bool] = []
+
+    def vanish_after_check(library_id: str) -> bool:
+        result = real(library_id)
+        checks.append(result)
+        if folder.exists():
+            folder.rmdir()  # gone between the dir_missing check and prepare_spawn
+        return result
+
+    monkeypatch.setattr(sched, "_dir_vanished", vanish_after_check)
+    run_id = await sched.launch(DueJob(world["旭刚"], world["旭刚_acc"], "quick", "schedule"))
+    await asyncio.gather(*sched.tasks)
+    assert checks[0] is False and not folder.exists()
+    with store.session() as s:
+        run = repo.get_run(s, run_id)
+        assert run.status == "failed" and run.error_kind == "dir_missing"
+        assert repo.get_account(s, world["旭刚_acc"]).failures == 0
+    assert _status(world)[0] == "dir_missing"
+
+
+async def test_a_store_symlinked_to_another_library_fails_the_run_before_any_chown(
+    world: dict[str, Any], config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from icloud2nas.orchestrator import owners
+
+    sched, store = world["sched"], world["store"]
+    with store.session() as s:
+        account = repo.get_account(s, world["旭刚_acc"])
+        account.owner_uid, account.owner_gid = 1000, 10
+    monkeypatch.setattr(owners, "privileged", lambda: True)
+    chowned: list[str] = []  # real chowns would need root; record what they would touch
+    monkeypatch.setattr(owners.os, "chown", lambda p, *a, **k: chowned.append(str(p)))
+    monkeypatch.setattr(
+        owners.os, "fchown", lambda fd, *a: chowned.append(os.readlink(f"/proc/self/fd/{fd}"))
+    )
+    other = config.photos_dir / "幻伊镜" / ".icloud2nas"
+    (other / "trash").mkdir(parents=True)
+    folder = _synced(world, config)
+    folder.mkdir(parents=True)
+    (folder / ".icloud2nas").symlink_to(other)
+    run_id = await sched.launch(DueJob(world["旭刚"], world["旭刚_acc"], "quick", "schedule"))
+    await asyncio.gather(*sched.tasks, return_exceptions=True)
+    with store.session() as s:
+        run = repo.get_run(s, run_id)
+        assert run.status == "failed" and run.error_kind == "internal"
+        assert "symlink" in (run.error_message or "")
+    assert not any(p.startswith(str(other.parent)) or p.startswith(str(folder)) for p in chowned)

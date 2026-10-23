@@ -20,9 +20,9 @@ export function CodeStep({
   onCancel: () => void;
 }) {
   const t = useT();
-  const flow = useCodeFlow(accountId, { runId });
   const accounts = useAccounts();
   const status = accounts.data?.find((a) => a.id === accountId)?.status;
+  const flow = useCodeFlow(accountId, { runId, status });
   const runs = useRuns({ account_id: accountId });
   const { refetch: refetchRuns } = runs;
   const [failedRun, setFailedRun] = useState<string | null>(null);
@@ -68,7 +68,9 @@ export function CodeStep({
         attempt={flow.attempt}
         pending={flow.pending}
       />
-      {flow.authWaiting ? null : (
+      {flow.authWaiting ? (
+        <div className="mt-2 text-[12px] text-[#6b7280]">{t("resend-after-expiry")}</div>
+      ) : (
         <div className="mt-2 text-[12px] text-[#6b7280]">
           {t("code-no-receive")}
           <button

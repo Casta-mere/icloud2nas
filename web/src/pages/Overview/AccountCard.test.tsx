@@ -92,6 +92,34 @@ describe("AccountCard 2FA flow", () => {
     await waitFor(() => expect(calls().some((c) => c.path === "/api/runs" && c.search.includes(ids.huanyijing))).toBe(true));
     await waitFor(() => expect(within(card).queryByRole("button", { name: "重新发送" })).not.toBeInTheDocument());
     expect(within(card).queryByText("没收到？")).not.toBeInTheDocument();
+    expect(within(card).getByText("验证码过期后可重新发送")).toBeInTheDocument();
+  });
+
+  test("an auth run in needs_mfa (not running) does not hide 重新发送", async () => {
+    db.runs.find((r) => r.id === ids.runs[3])!.status = "needs_mfa";
+    renderWithProviders(<Overview />);
+    const card = await screen.findByRole("article", { name: "幻伊镜" });
+    expect(await within(card).findByRole("button", { name: "重新发送" })).toBeInTheDocument();
+    expect(within(card).queryByText("验证码过期后可重新发送")).not.toBeInTheDocument();
+  });
+
+  test("重新验证 whose login finishes ok without a code shows 会话仍有效 and no input", async () => {
+    db.accounts[0]!.status = "needs_reauth";
+    db.accounts[1]!.status = "ok";
+    const { user } = renderWithProviders(<Overview />);
+    const card = await screen.findByRole("article", { name: "旭刚" });
+    await user.click(within(card).getByRole("button", { name: "重新验证" }));
+    await waitFor(() => expect(calls().some((c) => c.path === `/api/accounts/${ids.xugang}/auth`)).toBe(true));
+    await waitFor(() => expect(within(card).getByRole("button", { name: "重新验证" })).toBeEnabled());
+    act(() => {
+      appEvents.dispatchEvent(
+        new CustomEvent("run.finished", {
+          detail: { run_id: "d7000000000000000000000000000007", status: "ok", mode: "auth", account_id: ids.xugang },
+        }),
+      );
+    });
+    expect(within(card).getByRole("status")).toHaveTextContent("会话仍有效，无需验证码");
+    expect(within(card).queryByRole("textbox", { name: "验证码" })).not.toBeInTheDocument();
   });
 
   test("a 400 'auth session already active' from 重新发送 reads as a hint, not the raw detail", async () => {

@@ -61,6 +61,8 @@ class Account(Base):
     backoff_until: Mapped[datetime | None] = mapped_column(UTCDateTime, default=None)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     primary_dir: Mapped[str | None] = mapped_column(String(500), default=None)
+    owner_uid: Mapped[int | None] = mapped_column(default=None)  # spec §16.3
+    owner_gid: Mapped[int | None] = mapped_column(default=None)
 
     libraries: Mapped[list[Library]] = relationship(back_populates="account")
 
@@ -144,3 +146,13 @@ class Notification(Base):
     event: Mapped[str] = mapped_column(String(40))
     subject_key: Mapped[str] = mapped_column(String(100))
     sent_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
+class DeletedDir(Base):
+    """A deleted account's library folder renamed into .icloud2nas-deleted (spec §16.1)."""
+
+    __tablename__ = "deleted_dirs"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    path: Mapped[str] = mapped_column(String(1000))  # relative to the photos root
+    deleted_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)

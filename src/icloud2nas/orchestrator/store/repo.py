@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from icloud2nas.orchestrator.store.models import (
     Account,
+    DeletedDir,
     Library,
     Notification,
     ReconcilePlan,
@@ -75,6 +76,9 @@ def validate_target_dir(
         raise ValueError("target_dir must not be empty or escape the photos root")
     if parts[0] in RESERVED_TOP_DIRS or parts[0].startswith("."):
         raise ValueError(f"target_dir must not start with {parts[0]!r} (reserved)")
+    if any(p.startswith(".") for p in parts[1:]):
+        # .icloud2nas stores and .icloud2nas-deleted folders are the tool's own; sync skips dots
+        raise ValueError("target_dir must not contain a dot-prefixed folder")
     if kind == "personal" and parts[0] == SHARED_TOP_DIR:
         raise ValueError(f"target_dir must not start with {SHARED_TOP_DIR!r} (shared libraries)")
     for other in list_libraries(s):
@@ -245,6 +249,22 @@ def supersede_pending_plans(s: Session, library_id: str) -> int:
     for plan in pending:
         plan.status = "superseded"
     return len(pending)
+
+
+def add_deleted_dir(s: Session, path: str, deleted_at: datetime | None = None) -> DeletedDir:
+    """Record a library folder renamed into .icloud2nas-deleted (path relative to photos)."""
+    row = DeletedDir(path=path, deleted_at=deleted_at or utcnow())
+    s.add(row)
+    s.flush()
+    return row
+
+
+def list_deleted_dirs(s: Session) -> list[DeletedDir]:
+    return list(s.scalars(select(DeletedDir).order_by(DeletedDir.deleted_at, DeletedDir.id)))
+
+
+def delete_deleted_dir(s: Session, deleted_dir_id: str) -> None:
+    s.execute(delete(DeletedDir).where(DeletedDir.id == deleted_dir_id))
 
 
 def get_setting(s: Session, key: str, default: str) -> str:

@@ -232,7 +232,7 @@ class Worker:
         Replaces icloudpd's --auto-delete, whose path matching ignores the name-id7 policy.
         """
         spec = self.spec
-        assert spec.target_dir and spec.photos_root
+        assert spec.target_dir
         moved = 0
         for asset in adapter.iter_recently_deleted(library):
             try:
@@ -249,9 +249,7 @@ class Worker:
                 if spec.dry_run:
                     self.logger.info("[DRY RUN] would trash %s", path)
                 else:
-                    move_to_trash(
-                        spec.photos_root, spec.library_rel, spec.target_dir, path, self.today()
-                    )
+                    move_to_trash(spec.target_dir, path, self.today())
                 moved += 1
         return moved
 
@@ -259,15 +257,13 @@ class Worker:
 
     def _reconcile(self) -> ExitCode:
         spec = self.spec
-        assert spec.target_dir and spec.photos_root
+        assert spec.target_dir
         if spec.apply_plan:
             rel_paths = read_plan(spec.apply_plan)
             moved = (
                 0
                 if spec.dry_run
-                else apply_paths(
-                    rel_paths, spec.target_dir, spec.photos_root, spec.library_rel, self.today()
-                )
+                else apply_paths(rel_paths, spec.target_dir, self.today())
             )
             self.emitter.emit("done", stats={"trashed": moved, "planned": len(rel_paths)})
             return ExitCode.OK
@@ -300,9 +296,7 @@ class Worker:
         moved = (
             0
             if spec.dry_run
-            else apply_paths(
-                plan.extraneous, spec.target_dir, spec.photos_root, spec.library_rel, self.today()
-            )
+            else apply_paths(plan.extraneous, spec.target_dir, self.today())
         )
         self.emitter.emit(
             "done",

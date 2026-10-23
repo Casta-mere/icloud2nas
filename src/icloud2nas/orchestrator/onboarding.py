@@ -8,6 +8,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+from icloud2nas.orchestrator import owners
 from icloud2nas.orchestrator.bus import EventBus
 from icloud2nas.orchestrator.config import Config, normalize_hhmm
 from icloud2nas.orchestrator.jobs import (
@@ -30,6 +31,18 @@ log = logging.getLogger(__name__)
 def safe_dir_name(name: str, fallback: str) -> str:
     cleaned = name.strip().replace("/", "_").replace("\\", "_").lstrip(".").strip()
     return cleaned or fallback
+
+
+def check_owner(owner_uid: int | None, owner_gid: int | None) -> tuple[int, int] | None:
+    """Both or neither, each an int >= 0 (ValueError otherwise)."""
+    if owner_uid is None and owner_gid is None:
+        return None
+    if owner_uid is None or owner_gid is None:
+        raise ValueError("owner_uid and owner_gid must be given together")
+    for name, value in (("owner_uid", owner_uid), ("owner_gid", owner_gid)):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"{name} must be an integer >= 0")
+    return owner_uid, owner_gid
 
 
 @dataclass
@@ -72,9 +85,14 @@ class Onboarding:
         region: str,
         password: str,
         target_dir: str | None = None,
+        owner_uid: int | None = None,
+        owner_gid: int | None = None,
     ) -> str:
+        """Create the account row; without an owner, a privileged orchestrator stores the owner
+        of the library folder's nearest existing ancestor (spec §16.3)."""
         if region not in ("cn", "com"):
             raise ValueError("region must be 'cn' or 'com'")
+        owner = check_owner(owner_uid, owner_gid)
         with self.store.session() as s:
             account = repo.create_account(
                 s,
@@ -86,8 +104,19 @@ class Onboarding:
             )
             if target_dir is not None:
                 account.primary_dir = repo.validate_target_dir(s, target_dir)
+            if owner is None and owners.privileged():
+                rel = account.primary_dir or safe_dir_name(account.display_name, account.id[:8])
+                photos = self.config.photos_dir
+                try:
+                    owner = owners.default_owner(photos / rel, photos)
+                except (OSError, ValueError):
+                    log.warning("no default owner for %r: photos root unreadable", rel)
+            if owner is not None:
+                account.owner_uid, account.owner_gid = owner
             account_id = account.id
-        self.config.cookie_dir(account_id).mkdir(parents=True, exist_ok=True)
+            spawn_owner = owners.owner_for(account)
+        owners.ensure_owned_dir(self.config.cookie_dir(account_id), spawn_owner)
+        owners.secure_account_dirs(self.config, account_id)
         return account_id
 
     def set_password(self, account_id: str, password: str) -> None:
@@ -125,6 +154,7 @@ class Onboarding:
                 self.config, account, None, interactive=True, policy=self.settings.policy()
             )
             password = self.password_for(account)
+            owner = owners.owner_for(account)
         validate_job("auth", job)
         run_id = self.runs.start_run(
             account_id=account_id, library_id=None, mode="auth", trigger=trigger
@@ -139,9 +169,10 @@ class Onboarding:
 
         process = WorkerProcess(
             self.config, run_id=run_id, mode="auth", job=job, password=password, interactive=True,
-            log_path=self.config.logs_dir / f"{run_id}.log", on_event=on_event,
+            log_path=self.config.logs_dir / f"{run_id}.log", on_event=on_event, owner=owner,
         )
         try:
+            owners.prepare_spawn(self.config, account_id, owner)
             await process.start()
         except Exception as exc:
             self.runs.finish_run(
@@ -198,6 +229,7 @@ class Onboarding:
                 self.config, account, None, interactive=False, policy=self.settings.policy()
             )
             password = self.password_for(account)
+            owner = owners.owner_for(account)
         validate_job("list", job)
         run_id = self.runs.start_run(
             account_id=account_id, library_id=None, mode="list", trigger="onboarding"
@@ -209,8 +241,21 @@ class Onboarding:
                 found["personal"] = [str(z) for z in event.get("personal", [])]
                 found["shared"] = [str(z) for z in event.get("shared", [])]
 
+        try:
+            owners.prepare_spawn(self.config, account_id, owner)
+        except OSError as exc:
+            self.runs.finish_run(
+                run_id,
+                WorkerResult(
+                    exit_code=1,
+                    events=[],
+                    terminal={"ev": "error", "kind": "spawn", "message": str(exc)},
+                ),
+            )
+            raise RuntimeError(f"list failed: {exc}") from exc
         result = await self.runs.execute(
-            run_id, mode="list", job=job, password=password, interactive=False, on_event=on_event
+            run_id, mode="list", job=job, password=password, interactive=False,
+            on_event=on_event, owner=owner,
         )
         if result.exit_code != 0 or "personal" not in found:
             terminal = result.terminal or {}

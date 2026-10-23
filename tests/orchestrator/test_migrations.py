@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from alembic import command
 from alembic.autogenerate import compare_metadata
+from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
 from sqlalchemy import inspect
 
-from icloud2nas.orchestrator.store.db import make_engine, upgrade_db
+from icloud2nas.orchestrator.store.db import MIGRATIONS_DIR, make_engine, upgrade_db
 from icloud2nas.orchestrator.store.models import Base
 
 PLAN2A_ACCOUNTS_DDL = """\
@@ -100,7 +102,7 @@ CREATE TABLE reconcile_plans (
 
 def test_fresh_db_is_upgraded_to_head(tmp_path: Path) -> None:
     engine = make_engine(tmp_path / "x.db")
-    assert upgrade_db(engine) == "0002"
+    assert upgrade_db(engine) == "0003"
     assert inspect(engine).has_table("notifications")
     assert "first_full_at" in {c["name"] for c in inspect(engine).get_columns("libraries")}
 
@@ -121,11 +123,36 @@ def test_plan2a_db_is_stamped_then_migrated(tmp_path: Path) -> None:
             " status, failures, created_at) VALUES ('a1', 'A', 'a@x.com', 'cn', x'00', 'c1',"
             " 'ok', 0, '2026-01-01 00:00:00')"
         )
-    assert upgrade_db(engine) == "0002"
+    assert upgrade_db(engine) == "0003"
     assert "primary_dir" in {c["name"] for c in inspect(engine).get_columns("accounts")}
     with engine.connect() as c:
         assert c.exec_driver_sql("SELECT apple_id FROM accounts").scalar_one() == "a@x.com"
-    assert upgrade_db(engine) == "0002"  # idempotent
+    assert upgrade_db(engine) == "0003"  # idempotent
+
+
+def test_migration_0003_upgrades_plan2c_db(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path / "x.db")
+    cfg = Config()
+    cfg.set_main_option("script_location", str(MIGRATIONS_DIR))
+    with engine.begin() as connection:
+        cfg.attributes["connection"] = connection
+        command.upgrade(cfg, "0002")  # a Plan 2c database
+    with engine.begin() as c:
+        c.exec_driver_sql(
+            "INSERT INTO accounts (id, display_name, apple_id, region, password_enc, client_id,"
+            " status, failures, created_at, primary_dir) VALUES ('a1', 'A', 'a@x.com', 'cn',"
+            " x'00', 'c1', 'ok', 0, '2026-01-01 00:00:00', '旭刚')"
+        )
+    assert not inspect(engine).has_table("deleted_dirs")
+    assert upgrade_db(engine) == "0003"
+    assert inspect(engine).has_table("deleted_dirs")
+    cols = {c["name"]: c for c in inspect(engine).get_columns("accounts")}
+    assert cols["owner_uid"]["nullable"] and cols["owner_gid"]["nullable"]
+    with engine.connect() as c:
+        row = c.exec_driver_sql(
+            "SELECT apple_id, primary_dir, owner_uid, owner_gid FROM accounts"
+        ).one()
+    assert tuple(row) == ("a@x.com", "旭刚", None, None)
 
 
 def test_models_match_head(tmp_path: Path) -> None:

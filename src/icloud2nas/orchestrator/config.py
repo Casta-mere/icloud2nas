@@ -30,6 +30,7 @@ class Config:
     default_interval_min: int = 30
     default_nightly_at: str = "03:00"
     web_dist: Path = Path("web/dist")
+    host_etc: Path = Path("/host/etc")  # the host's /etc, mounted read-only (spec §16.3)
 
     @property
     def db_path(self) -> Path:
@@ -51,6 +52,10 @@ class Config:
     def plans_dir(self) -> Path:
         return self.data_dir / "plans"
 
+    def account_plans_dir(self, account_id: str) -> Path:
+        """Where an account's reconcile workers write plans (owned by that account's user)."""
+        return self.plans_dir / account_id
+
     @property
     def accounts_dir(self) -> Path:
         return self.data_dir / "accounts"
@@ -61,6 +66,14 @@ class Config:
     def ensure_layout(self) -> None:
         for p in (self.data_dir, self.logs_dir, self.plans_dir, self.accounts_dir):
             p.mkdir(parents=True, exist_ok=True)
+
+    def secure_data(self) -> None:
+        """Run logs and the database (passwords, sessions) are root's alone: logs 0700, db 0600."""
+        private = [(self.logs_dir.parent, 0o700), (self.logs_dir, 0o700)]
+        private += [(Path(f"{self.db_path}{suffix}"), 0o600) for suffix in ("", "-wal", "-shm")]
+        for path, mode in private:
+            if path.exists() and not path.is_symlink():
+                os.chmod(path, mode)
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> Config:
@@ -79,4 +92,5 @@ class Config:
             default_interval_min=int(source.get("I2N_DEFAULT_INTERVAL_MIN", "30")),
             default_nightly_at=normalize_hhmm(source.get("I2N_DEFAULT_NIGHTLY_AT", "03:00")),
             web_dist=Path(source.get("I2N_WEB_DIST", "web/dist")),
+            host_etc=Path(source.get("I2N_HOST_ETC", "/host/etc")),
         )

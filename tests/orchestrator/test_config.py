@@ -16,6 +16,9 @@ def test_defaults_and_env_overrides(tmp_path: Path) -> None:
     assert cfg.worker_cmd[-2:] == ("-m", "icloud2nas.worker")
     assert cfg.max_workers == 2 and cfg.min_free_gb == 5.0
     assert cfg.default_interval_min == 30 and cfg.default_nightly_at == "03:00"
+    assert cfg.host_etc == Path("/host/etc")
+    assert cfg.account_plans_dir("acc1") == tmp_path / "d" / "plans" / "acc1"
+    assert Config.from_env({"I2N_HOST_ETC": "/x/etc"}).host_etc == Path("/x/etc")
 
 
 def test_worker_cmd_and_numbers_from_env(tmp_path: Path) -> None:
@@ -46,3 +49,21 @@ def test_nightly_at_is_normalised_and_validated(tmp_path: Path) -> None:
     assert normalize_hhmm("3:00") == "03:00"
     with pytest.raises(ValueError, match="25:00"):
         normalize_hhmm("25:00")
+
+
+def test_build_state_makes_logs_and_database_private(config: Config) -> None:
+    import os
+
+    from icloud2nas.api.state import build_state
+    from tests.conftest import make_env
+
+    os.chmod(config.logs_dir.parent, 0o755)
+    os.chmod(config.logs_dir, 0o755)
+    build_state(config, make_env(config))
+    assert config.logs_dir.parent.stat().st_mode & 0o777 == 0o700
+    assert config.logs_dir.stat().st_mode & 0o777 == 0o700
+    assert config.db_path.stat().st_mode & 0o777 == 0o600
+    for suffix in ("-wal", "-shm"):
+        side = Path(f"{config.db_path}{suffix}")
+        if side.exists():
+            assert side.stat().st_mode & 0o777 == 0o600, side

@@ -70,7 +70,11 @@ def test_target_dir_nesting_rule(store: Store, existing: str, candidate: str, ok
 
 
 @pytest.mark.parametrize(
-    "bad", ["/abs", "../x", "a/../../b", ".trash/x", "kept", ".hidden", "", "a/"]
+    "bad",
+    [
+        "/abs", "../x", "a/../../b", ".trash/x", "kept", ".hidden", "", "a/",
+        "a/.icloud2nas-deleted/b-2026-10-23", "a/.icloud2nas/kept",
+    ],
 )
 def test_target_dir_rejects_unsafe_values(store: Store, bad: str) -> None:
     with store.session() as s:

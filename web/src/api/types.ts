@@ -3,7 +3,7 @@
 export type AccountStatus = "new" | "awaiting_code" | "ok" | "needs_reauth" | "password_rejected";
 export type Region = "cn" | "com";
 export type LibraryKind = "personal" | "shared";
-export type LibraryStatus = "ok" | "paused" | "space_paused";
+export type LibraryStatus = "ok" | "paused" | "space_paused" | "dir_missing";
 export type RunMode = "auth" | "list" | "sync" | "reconcile";
 export type RunTrigger = "onboarding" | "reauth" | "schedule" | "nightly" | "chain" | "manual";
 export type RunStatus = "queued" | "running" | "ok" | "failed" | "needs_mfa" | "fused";
@@ -22,6 +22,9 @@ export interface Account {
   created_at: string;
   primary_dir: string | null;
   library_ids: string[];
+  owner_uid: number | null;
+  owner_gid: number | null;
+  owner_name: string | null;
 }
 
 export interface LibraryStats {
@@ -92,9 +95,9 @@ export interface TrashDay {
 }
 
 export interface TrashEntry {
-  rel: string;
-  library_id: string | null;
-  display_name: string | null;
+  library_id: string;
+  display_name: string;
+  target_dir: string;
   days: TrashDay[];
 }
 
@@ -154,6 +157,30 @@ export interface NewAccount {
   region: Region;
   password: string;
   target_dir?: string;
+  owner_uid?: number;
+  owner_gid?: number;
+}
+
+/** A NAS user a library's files can belong to (`GET /api/host-users`). */
+export interface HostUser {
+  name: string;
+  uid: number;
+  gid: number;
+  group: string;
+  home: string;
+}
+
+export interface Owner {
+  uid: number;
+  gid: number;
+}
+
+export interface HostUsers {
+  /** False in single-user mode: owners are ignored and the UI hides the select. */
+  privileged: boolean;
+  users: HostUser[];
+  /** The owner of the folder's nearest existing ancestor (only when `path` was given). */
+  suggested: Owner | null;
 }
 
 export interface LibraryPatch {

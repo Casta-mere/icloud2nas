@@ -22,6 +22,7 @@ import { SettingInput } from "./SettingInput";
 
 function cardTone(library: Library, hasPlan: boolean): CardTone {
   if (hasPlan) return "fuse";
+  if (library.status === "dir_missing") return "warn";
   if (library.status === "space_paused") return "warn";
   return library.status === "paused" ? "soft" : "ok";
 }
@@ -59,7 +60,8 @@ export function LibraryCard({ library, account, plan }: { library: Library; acco
 
   const running = (runs.data ?? []).some((r) => r.status === "running" && r.library_id === library.id);
   const chip = libraryChip(library, running, plan !== undefined);
-  const paused = library.status !== "ok";
+  const missing = library.status === "dir_missing";
+  const paused = library.status === "paused" || library.status === "space_paused";
   const files = library.stats.files;
 
   const save = async (body: LibraryPatch): Promise<Library> => patch.mutateAsync({ id: library.id, ...body });
@@ -87,12 +89,16 @@ export function LibraryCard({ library, account, plan }: { library: Library; acco
             <Chip tone={chip.tone}>{t(chip.key)}</Chip>
           </h2>
           <div className="flex flex-wrap gap-2">
-            <Button variant="ghost" disabled={run.isPending} onClick={() => run.mutate({ id: library.id, mode: "sync" })}>
+            <Button
+              variant="ghost"
+              disabled={run.isPending || missing}
+              onClick={() => run.mutate({ id: library.id, mode: "sync" })}
+            >
               {t("sync-now")}
             </Button>
             <Button
               variant="ghost"
-              disabled={run.isPending}
+              disabled={run.isPending || missing}
               onClick={() => run.mutate({ id: library.id, mode: "reconcile" })}
             >
               {t("reconcile-now")}
@@ -124,6 +130,7 @@ export function LibraryCard({ library, account, plan }: { library: Library; acco
                     <Button
                       variant="ghost"
                       className="w-full justify-start"
+                      disabled={missing}
                       onClick={() => {
                         setMenu(false);
                         pause.mutate(library.id);
@@ -137,6 +144,7 @@ export function LibraryCard({ library, account, plan }: { library: Library; acco
             </div>
           </div>
         </div>
+        {missing ? <div className="mt-1 text-xs text-[#6b7280]">{t("dir-missing-hint")}</div> : null}
         {actionError ? (
           <div role="alert" className="mt-2 text-[12px] text-[#9a3412]">
             {actionError}

@@ -113,6 +113,52 @@ describe("AddAccountWizard", () => {
     expect(screen.getByRole("textbox", { name: "Apple ID" })).toBeInTheDocument();
   });
 
+  test("step 1 has a 文件属主 row under 照片目录 that follows the folder; the POST carries owner_uid/owner_gid", async () => {
+    const { user } = renderWithProviders(<AddAccountWizard onDone={vi.fn()} />);
+    await fillStep1(user, "幻伊镜");
+    const dir = screen.getByRole("textbox", { name: "照片目录" });
+    await user.clear(dir);
+    await user.type(dir, "Today_red/Photos/iCloud");
+    const owner = await screen.findByRole("combobox", { name: "文件属主" });
+    await waitFor(() => expect(owner).toHaveDisplayValue("Today_red (1001:10 · admin)"));
+    const labels = [...document.querySelectorAll("label")].map((l) => l.textContent);
+    expect(labels.indexOf("文件属主")).toBe(labels.indexOf("照片目录") + 1);
+    await user.click(screen.getByRole("button", { name: /下一步/ }));
+    await fillStep2AndSubmit(user);
+    await waitFor(() => expect(calls().some((c) => c.method === "POST")).toBe(true));
+    expect(calls().find((c) => c.method === "POST")?.body).toMatchObject({
+      target_dir: "Today_red/Photos/iCloud",
+      owner_uid: 1001,
+      owner_gid: 10,
+    });
+  });
+
+  test("a picked owner survives 上一步 and is sent; single-user mode sends no owner", async () => {
+    const first = renderWithProviders(<AddAccountWizard onDone={vi.fn()} />);
+    await fillStep1(first.user, "Today_red");
+    const dir = screen.getByRole("textbox", { name: "照片目录" });
+    await first.user.clear(dir);
+    await first.user.type(dir, "Today_red/Photos");
+    const owner = await screen.findByRole("combobox", { name: "文件属主" });
+    await waitFor(() => expect(owner).toHaveDisplayValue("Today_red (1001:10 · admin)"));
+    await first.user.selectOptions(owner, "1000:10");
+    await first.user.click(screen.getByRole("button", { name: /下一步/ }));
+    await first.user.click(screen.getByRole("button", { name: "上一步" }));
+    await new Promise((r) => setTimeout(r, 400));
+    expect(screen.getByRole("combobox", { name: "文件属主" })).toHaveDisplayValue("Castamere (1000:10 · admin)");
+    first.unmount();
+
+    db.privileged = false;
+    const second = renderWithProviders(<AddAccountWizard onDone={vi.fn()} />);
+    await toStep2(second.user);
+    await fillStep2AndSubmit(second.user);
+    await waitFor(() => expect(calls().some((c) => c.method === "POST")).toBe(true));
+    expect(screen.queryByRole("combobox", { name: "文件属主" })).not.toBeInTheDocument();
+    const body = calls().find((c) => c.method === "POST")?.body as Record<string, unknown>;
+    expect(body).not.toHaveProperty("owner_uid");
+    expect(body).not.toHaveProperty("owner_gid");
+  });
+
   test("step 3 wrong code then right code → step 4 shows 正在发现图库, then the libraries after run.finished mode=list", async () => {
     createdAccount();
     const { user } = renderWithProviders(<AddAccountWizard onDone={vi.fn()} />);

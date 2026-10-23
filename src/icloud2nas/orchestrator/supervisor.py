@@ -18,6 +18,22 @@ log = logging.getLogger(__name__)
 TERMINAL_EVENTS = ("done", "error", "reconcile_plan")
 KILL_GRACE_S = 5.0
 STDOUT_LINE_LIMIT = 16 * 1024 * 1024  # one event line; longer is a protocol violation
+# What a worker inherits from our environment. Everything else (I2N_SECRET_KEY above all) stays
+# with the orchestrator: the worker may run as another NAS user, who can read its environ.
+ENV_ALLOW = frozenset({
+    "PATH", "TZ", "LANG", "PYTHONPATH", "VIRTUAL_ENV", "PYTHONUNBUFFERED", "PYTHONIOENCODING",
+    "PYTHONDONTWRITEBYTECODE", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy",
+    "https_proxy", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE",
+})
+ENV_ALLOW_PREFIXES = ("LC_", "FAKE_WORKER_", "I2N_WORKER_")
+
+
+def worker_env(source: dict[str, str] | os._Environ[str], home: Path) -> dict[str, str]:
+    env = {
+        k: v for k, v in source.items() if k in ENV_ALLOW or k.startswith(ENV_ALLOW_PREFIXES)
+    }
+    env["HOME"] = str(home)
+    return env
 
 
 @dataclass
@@ -42,8 +58,10 @@ class WorkerProcess:
         log_path: Path,
         apply_plan: str | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
+        owner: tuple[int, int] | None = None,
     ) -> None:
         self._config = config
+        self._owner = owner  # uid, gid to run as (spec §16.3); None runs as ourselves
         self.run_id = run_id
         self.mode = mode
         self._job = job
@@ -66,17 +84,21 @@ class WorkerProcess:
         return self._proc.pid if self._proc is not None else None
 
     async def start(self) -> None:
-        env = dict(os.environ)
+        env = worker_env(os.environ, self._config.accounts_dir / str(self._job["account_id"]))
         env["I2N_JOB"] = json.dumps(self._job, ensure_ascii=False)
         if self._password is not None:
             env["I2N_PASSWORD"] = self._password
-        else:
-            env.pop("I2N_PASSWORD", None)
+        if "client_id" in self._job:
+            env["CLIENT_ID"] = str(self._job["client_id"])
         argv = [*self._config.worker_cmd, "--mode", self.mode, "--run-id", self.run_id]
         if self._apply_plan:
             argv += ["--apply-plan", self._apply_plan]
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
+        # the run log stays ours: the worker only gets the already-open descriptor as stderr
         self._log_file = open(self._log_path, "ab")  # noqa: SIM115 - closed in wait()
+        as_owner: dict[str, Any] = {}
+        if self._owner is not None:
+            as_owner = {"user": self._owner[0], "group": self._owner[1], "extra_groups": []}
         try:
             self._proc = await asyncio.create_subprocess_exec(
                 *argv,
@@ -85,6 +107,7 @@ class WorkerProcess:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=self._log_file,
                 limit=STDOUT_LINE_LIMIT,
+                **as_owner,
             )
         except BaseException:
             self._log_file.close()
@@ -181,10 +204,11 @@ async def run_worker(
     apply_plan: str | None = None,
     on_event: Callable[[dict[str, Any]], None] | None = None,
     timeout_s: float | None = None,
+    owner: tuple[int, int] | None = None,
 ) -> WorkerResult:
     proc = WorkerProcess(
         config, run_id=run_id, mode=mode, job=job, password=password, interactive=interactive,
-        log_path=log_path, apply_plan=apply_plan, on_event=on_event,
+        log_path=log_path, apply_plan=apply_plan, on_event=on_event, owner=owner,
     )
     await proc.start()
     return await proc.wait(timeout_s)

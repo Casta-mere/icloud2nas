@@ -65,19 +65,19 @@ def test_apply_moves_existing_and_skips_missing(photos_tree: tuple[Path, Path]) 
     moved = apply_paths(
         ["2024/05/gone.HEIC", "2024/05/never-existed.HEIC"],
         str(lib),
-        str(photos),
-        "旭刚",
         date(2026, 10, 14),
     )
     assert moved == 1
     assert not (lib / "2024" / "05" / "gone.HEIC").exists()
     assert (lib / "2024" / "05" / "stay.HEIC").exists()
-    assert (photos / ".trash" / "旭刚" / "2026-10-14" / "2024" / "05" / "gone.HEIC").exists()
+    day_dir = lib / ".icloud2nas" / "trash" / "2026-10-14"
+    assert (day_dir / "2024" / "05" / "gone.HEIC").exists()
+    assert not (photos / ".trash").exists()
 
 
 def test_apply_refuses_escaping_paths(photos_tree: tuple[Path, Path]) -> None:
-    photos, lib = photos_tree
+    _, lib = photos_tree
     with pytest.raises(ValueError):
-        apply_paths(["../other.HEIC"], str(lib), str(photos), "旭刚")
+        apply_paths(["../other.HEIC"], str(lib))
     with pytest.raises(ValueError):
-        apply_paths(["/etc/passwd"], str(lib), str(photos), "旭刚")
+        apply_paths(["/etc/passwd"], str(lib))

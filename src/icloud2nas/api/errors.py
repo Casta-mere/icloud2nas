@@ -11,6 +11,10 @@ from icloud2nas.orchestrator.lock import LockHeld
 from icloud2nas.orchestrator.ops import Busy
 
 
+class OwnerFixed(Exception):
+    """An account's file owner cannot change after it was added (the API answers 409)."""
+
+
 def _reply(status: int, error: str, exc: Exception) -> JSONResponse:
     return JSONResponse({"error": error, "detail": str(exc)}, status_code=status)
 
@@ -28,6 +32,10 @@ def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(LockHeld)
     async def busy(_: Request, exc: Exception) -> JSONResponse:
         return _reply(409, "busy", exc)
+
+    @app.exception_handler(OwnerFixed)
+    async def owner_fixed(_: Request, exc: Exception) -> JSONResponse:
+        return _reply(409, "owner fixed", exc)
 
     @app.exception_handler(IntegrityError)
     async def exists(_: Request, exc: Exception) -> JSONResponse:

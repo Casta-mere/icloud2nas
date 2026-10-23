@@ -3,7 +3,7 @@
 Mirror a household's iCloud Photos libraries to a NAS. Multiple Apple IDs, one
 copy of each shared library, trash-first deletes, nightly reconcile.
 
-**Status:** worker, orchestrator, HTTP API and web UI (Plans 1–2c). Packaging follows.
+**Status:** worker, orchestrator, HTTP API and web UI (Plans 1–2c). Deploy with the runtime image: see [docs/deploy.md](docs/deploy.md).
 
 The web UI has five pages: Overview (accounts and recent runs, with a code box when Apple asks for a
 verification code), Accounts (add, rename, change password, delete), Libraries (per-library sync

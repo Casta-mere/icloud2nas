@@ -24,6 +24,7 @@ from icloud2nas.api import (
     accounts,
     auth,
     events,
+    hostusers,
     libraries,
     plans,
     runs,
@@ -191,6 +192,7 @@ def create_app(
     app.include_router(auth.router)
     for router in (
         accounts.router,
+        hostusers.router,
         libraries.router,
         runs.router,
         plans.router,

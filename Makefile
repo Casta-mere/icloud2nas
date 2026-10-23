@@ -1,7 +1,7 @@
 RUN := docker compose run --rm dev
 WEB := docker compose run --rm --no-deps web
 
-.PHONY: build sync test lint typecheck check shell web-install web-check web-test web-build web-dev
+.PHONY: build sync test lint typecheck check shell web-install web-check web-test web-build web-dev image
 
 build:
 	docker compose build dev
@@ -39,3 +39,6 @@ web-build:
 
 web-dev:
 	docker compose up web serve
+
+image:
+	docker build --target runtime -t icloud2nas:local .

@@ -8,6 +8,7 @@ export function libraryChip(
   running: boolean,
   hasPendingPlan: boolean,
 ): { tone: ChipTone; key: Key } {
+  if (library.status === "dir_missing") return { tone: "fuse", key: "lib-dir-missing" };
   if (running) return { tone: "ok", key: "lib-running" };
   if (library.status === "paused") return { tone: "neutral", key: "lib-paused" };
   if (library.status === "space_paused") return { tone: "warn", key: "lib-space-paused" };

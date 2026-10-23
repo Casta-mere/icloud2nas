@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import json
 import logging
 import random
 import shutil
@@ -12,6 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from icloud2nas.orchestrator import owners
 from icloud2nas.orchestrator.bus import EventBus
 from icloud2nas.orchestrator.config import Config
 from icloud2nas.orchestrator.jobs import build_job, validate_job
@@ -115,10 +117,57 @@ class Scheduler:
         self.bus.publish(topic, min_free_gb=self.settings.get("min_free_gb"))
         return ok
 
+    def _folder_exists(self, library: Library) -> bool:
+        return (self.config.photos_dir / library.target_dir).is_dir()
+
+    @staticmethod
+    def _transition_dir_state(library: Library, exists: bool) -> bool:
+        """Move a synced library into or out of dir_missing; True when its status changed.
+
+        space_paused is never touched (space state wins; the folder is checked again once space
+        recovers). A library that never finished a full sync is unaffected.
+        """
+        if library.first_full_at is None:
+            return False
+        stats = library.stats
+        if not exists and library.status in ("ok", "paused"):
+            stats["status_before_missing"] = library.status
+            library.stats_json = json.dumps(stats, ensure_ascii=False)
+            library.status = "dir_missing"
+            return True
+        if exists and library.status == "dir_missing":
+            before = stats.pop("status_before_missing", "ok")
+            library.stats_json = json.dumps(stats, ensure_ascii=False)
+            library.status = before if before in ("ok", "paused") else "ok"
+            return True
+        return False
+
+    def _apply_dir_state(self, library_id: str | None = None) -> bool:
+        """Sync dir_missing with the disk (all libraries, or one); True when it is blocked."""
+        changed: list[str] = []
+        blocked = False
+        with self.store.session() as s:
+            libraries = (
+                repo.list_libraries(s)
+                if library_id is None
+                else [lib for lib in [repo.get_library(s, library_id)] if lib is not None]
+            )
+            for library in libraries:
+                if library.first_full_at is None:
+                    continue
+                if self._transition_dir_state(library, self._folder_exists(library)):
+                    changed.append(library.id)
+                blocked = blocked or library.status == "dir_missing"
+        for changed_id in changed:
+            self.bus.publish("library.updated", library_id=changed_id)
+        return blocked
+
     def due_jobs(self, now: datetime | None = None) -> list[DueJob]:
         now = now or self.clock()
         if self.paused() or not self._apply_space_state():
+            self._apply_dir_state()
             return []
+        self._apply_dir_state()  # after space recovery, so a recovered library is checked too
         now_local = local_now(now, self.config.tz)
         jobs: list[tuple[int, datetime, DueJob]] = []
         with self.store.session() as s:
@@ -171,6 +220,10 @@ class Scheduler:
                 raise ValueError("library is disabled")
             if account is None or account.status != "ok":
                 raise ValueError("account is not ok")
+        if self._apply_dir_state(job.library_id):
+            from icloud2nas.orchestrator.ops import Busy  # ops imports this module
+
+            raise Busy("library folder is missing")
         if not self.free_space_ok():
             raise RuntimeError("space low")
         key = (job.library_id, job.kind, job.plan_id)
@@ -218,6 +271,8 @@ class Scheduler:
                 return "its account is gone"
             if job.kind != "apply_plan" and account.status != "ok":
                 return f"its account is {account.status}"  # apply_plan never authenticates
+        if self._apply_dir_state(job.library_id):
+            return "its library folder is missing"
         return None
 
     async def wait_idle(self, library_id: str) -> None:
@@ -247,6 +302,7 @@ class Scheduler:
             job.library_id not in self.running_libraries
             and not self.account_busy(job.account_id)
             and len(self.running_libraries) < self.settings.get("max_workers")
+            and not self._apply_dir_state(job.library_id)
         )
 
     async def launch(self, job: DueJob) -> str:
@@ -282,6 +338,9 @@ class Scheduler:
         *,
         apply_plan: str | None = None,
     ) -> int:
+        if self._dir_vanished(job.library_id):
+            # decided before prepare_spawn, which would create the folder and re-download into it
+            return self._fail_dir_missing(run_id)
         try:
             with self.store.session() as s:
                 account = repo.get_account(s, job.account_id)
@@ -296,7 +355,16 @@ class Scheduler:
                     policy=self.settings.policy(),
                 )
                 password = None if apply_plan else self.onboarding.password_for(account)
+                owner = owners.owner_for(account)
+                library_dir = self.config.photos_dir / library.target_dir
+                synced = library.first_full_at is not None
             validate_job(mode, spec)
+            owners.prepare_spawn(
+                self.config, job.account_id, owner, library_dir, require_library=synced
+            )
+        except owners.LibraryMissing:  # vanished after the check above: same outcome
+            self._dir_vanished(job.library_id)
+            return self._fail_dir_missing(run_id)
         except Exception as exc:
             self.runs.finish_run(
                 run_id,
@@ -321,10 +389,39 @@ class Scheduler:
                 apply_plan=apply_plan,
                 timeout_s=RUN_TIMEOUT_S,
                 on_start=register,
+                owner=owner,
             )
         finally:
             self.active.pop(run_id, None)
         return result.exit_code
+
+    def _fail_dir_missing(self, run_id: str) -> int:
+        self.runs.finish_run(
+            run_id,
+            WorkerResult(
+                exit_code=1,
+                events=[],
+                terminal={
+                    "ev": "error",
+                    "kind": "dir_missing",
+                    "message": "library folder is missing; not re-downloading into a new one",
+                },
+            ),
+            account_state=False,
+        )
+        return 1
+
+    def _dir_vanished(self, library_id: str) -> bool:
+        """True when a synced library's folder is gone (status updated, event published)."""
+        with self.store.session() as s:
+            library = repo.get_library(s, library_id)
+            if library is None or library.first_full_at is None:
+                return False
+            missing = not self._folder_exists(library)
+            changed = self._transition_dir_state(library, not missing)
+        if changed:
+            self.bus.publish("library.updated", library_id=library_id)
+        return missing
 
     async def _run_chain(self, job: DueJob, run_id: str, owner: str) -> None:
         started_on = local_now(self.clock(), self.config.tz).date()  # the night this run belongs to

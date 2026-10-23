@@ -64,4 +64,17 @@ describe("Overview", () => {
     renderWithProviders(<Overview />);
     expect(await screen.findByRole("link", { name: "添加账号" })).toHaveAttribute("href", "/accounts");
   });
+  test("a dir_missing library shows the 找不到文件夹 chip on its account card", async () => {
+    db.libraries[0]!.status = "dir_missing";
+    renderWithProviders(<Overview />);
+    const card = await screen.findByRole("article", { name: "旭刚" });
+    expect(await within(card).findByText("找不到文件夹")).toBeInTheDocument();
+  });
+  test("a libraries error does not hide the account cards or the code input", async () => {
+    given("GET", "/api/libraries", { error: "internal", detail: "database is locked" }, 500);
+    renderWithProviders(<Overview />);
+    const card = await screen.findByRole("article", { name: "幻伊镜" });
+    expect(within(card).getByRole("textbox", { name: "验证码" })).toBeInTheDocument();
+    expect(screen.getByRole("article", { name: "旭刚" })).toBeInTheDocument();
+  });
 });

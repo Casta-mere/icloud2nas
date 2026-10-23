@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import os
+from typing import Any
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from icloud2nas.api.state import AppState
+from icloud2nas.orchestrator import owners
 from icloud2nas.orchestrator.store import repo
 from icloud2nas.orchestrator.store.models import Account
+from icloud2nas.orchestrator.supervisor import WorkerProcess
 from tests.api.conftest import onboard, set_scenario, wait_for
 
 API = tuple[TestClient, AppState]
@@ -141,7 +146,8 @@ def test_delete_account_keep_dir_flag(api: API) -> None:
     assert gone.status_code == 204
     assert client.get(f"/api/accounts/{account_id}").status_code == 404
     assert not (state.config.photos_dir / "Ann").exists()
-    assert list((state.config.photos_dir / ".trash").rglob("a.jpg"))
+    assert list((state.config.photos_dir / ".icloud2nas-deleted").rglob("a.jpg"))
+    assert not (state.config.photos_dir / ".trash").exists()
 
 
 def test_delete_account_keeps_dir_by_default(api: API) -> None:
@@ -202,3 +208,96 @@ def test_blank_display_name_rejected(api: API) -> None:
     response = client.patch(f"/api/accounts/{account_id}", json={"display_name": "  "})
     assert response.status_code == 400
     assert client.get(f"/api/accounts/{account_id}").json()["display_name"] == "旭刚"
+
+
+def _owner(client: TestClient, account_id: str) -> tuple[object, object, object]:
+    body = client.get(f"/api/accounts/{account_id}").json()
+    return body["owner_uid"], body["owner_gid"], body["owner_name"]
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="spawning workers as another user needs root")
+def test_create_account_defaults_owner_from_folder(api: API) -> None:
+    client, state = api
+    home = state.config.photos_dir / "Today_red"
+    home.mkdir()
+    os.chown(home, 1001, 10)
+    account_id, _ = onboard(client, target_dir="Today_red/Photos/iCloud")
+    assert _owner(client, account_id) == (1001, 10, None)  # no /host/etc: no name
+    account_dir = state.config.accounts_dir / account_id
+    assert (account_dir.stat().st_uid, account_dir.stat().st_gid) == (1001, 10)
+    with state.store.session() as s:
+        runs = repo.list_runs(s, account_id=account_id)
+        assert runs and all(r.status == "ok" for r in runs)  # the workers ran as 1001
+
+
+def test_owner_given_on_create_and_patch_both_or_neither(
+    api: API, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _ = api
+    monkeypatch.setattr(owners, "privileged", lambda: False)
+    account_id, _ = onboard(client, owner_uid=1003, owner_gid=100)
+    assert _owner(client, account_id) == (1003, 100, None)
+    one = client.patch(f"/api/accounts/{account_id}", json={"owner_uid": 1000})
+    assert one.status_code == 400 and one.json()["error"] == "invalid"
+    neg = client.patch(f"/api/accounts/{account_id}", json={"owner_uid": -1, "owner_gid": 10})
+    assert neg.status_code == 400
+    same = client.patch(f"/api/accounts/{account_id}", json={"owner_uid": 1003, "owner_gid": 100})
+    assert same.status_code == 200  # repeating the stored owner is a no-op
+    assert (same.json()["owner_uid"], same.json()["owner_gid"]) == (1003, 100)
+    bad = client.post(
+        "/api/accounts",
+        json={"display_name": "y", "apple_id": "y@icloud.com", "region": "cn",
+              "password": "pw", "owner_gid": 10},
+    )
+    assert bad.status_code == 400
+
+
+def test_single_user_mode_ignores_owner(api: API, monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _ = api
+    monkeypatch.setattr(owners, "privileged", lambda: False)
+    spawned: list[tuple[int, int] | None] = []
+    real_init = WorkerProcess.__init__
+
+    def spy(self: WorkerProcess, *args: Any, **kwargs: Any) -> None:
+        spawned.append(kwargs.get("owner"))
+        real_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(WorkerProcess, "__init__", spy)
+    account_id, _ = onboard(client, owner_uid=1003, owner_gid=100)
+    assert _owner(client, account_id)[:2] == (1003, 100)  # stored, shown, not used
+    assert spawned and all(owner is None for owner in spawned)
+    created = client.post(
+        "/api/accounts",
+        json={"display_name": "z", "apple_id": "z@icloud.com", "region": "cn", "password": "pw",
+              "target_dir": "Z"},
+    )
+    assert created.status_code == 201
+    assert _owner(client, created.json()["id"]) == (None, None, None)  # no default either
+
+
+
+@pytest.mark.parametrize("privileged", [True, False])
+def test_owner_cannot_change_after_the_account_is_added(
+    api: API, monkeypatch: pytest.MonkeyPatch, privileged: bool
+) -> None:
+    client, state = api
+    monkeypatch.setattr(owners, "privileged", lambda: False)  # the fake worker runs as us
+    account_id, _ = onboard(client, owner_uid=1003, owner_gid=100)
+    unset_id, _ = onboard(client, name="幻伊镜", apple_id="b@icloud.com", target_dir="B")
+    with state.store.session() as s:  # an account added before owners existed
+        legacy = repo.get_account(s, unset_id)
+        legacy.owner_uid = legacy.owner_gid = None
+    monkeypatch.setattr(owners, "privileged", lambda: privileged)
+    chowned: list[object] = []
+    monkeypatch.setattr(owners, "chown_tree", lambda *a, **k: chowned.append(a))
+    for target, before in ((account_id, (1003, 100, None)), (unset_id, (None, None, None))):
+        refused = client.patch(
+            f"/api/accounts/{target}",
+            json={"display_name": "new", "owner_uid": 1000, "owner_gid": 10},
+        )
+        assert refused.status_code == 409, refused.text
+        assert refused.json()["error"] == "owner fixed"
+        assert "cannot be changed" in refused.json()["detail"]
+        assert _owner(client, target) == before
+        assert client.get(f"/api/accounts/{target}").json()["display_name"] != "new"
+    assert chowned == []

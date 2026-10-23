@@ -7,13 +7,22 @@ import errno
 import logging
 import os
 import shutil
+import stat
 from datetime import date
 from pathlib import Path
 from typing import Literal
 
 from sqlalchemy.orm import Session
 
-from icloud2nas.engine.trash import TRASH_DIRNAME, trash_day_dir, trash_directory
+from icloud2nas.engine.trash import (
+    DELETED_DIRNAME,
+    OnCreate,
+    open_dir,
+    open_existing_dir,
+    restore_library_dir,
+    trash_library_dir,
+)
+from icloud2nas.orchestrator import owners
 from icloud2nas.orchestrator.bus import EventBus
 from icloud2nas.orchestrator.config import Config, normalize_hhmm
 from icloud2nas.orchestrator.onboarding import Onboarding
@@ -47,13 +56,39 @@ def _same_device(src: Path, dest: Path) -> bool:
     return os.stat(src).st_dev == os.stat(ancestor).st_dev
 
 
-def _rename(src: Path, dest: Path) -> None:
+def _owner_hook(owner: tuple[int, int] | None) -> OnCreate | None:
+    """An on_create that fchowns each folder we make to owner (None: leave them as made)."""
+    if owner is None:
+        return None
+    held = owner
+
+    def made(fd: int, shown: Path) -> None:
+        owners.chown_fd(fd, shown, held)
+
+    return made
+
+
+def _rename_below(photos: Path, src: Path, dest: Path, owner: tuple[int, int] | None) -> None:
+    """Rename the folder src to dest, both parents reached from the photos root one O_NOFOLLOW
+    component at a time (a NAS user owning a parent cannot swap in a link); parents made for
+    dest are fchowned to owner. A symlinked component, or src being a link, is a ValueError.
+    """
+    src_fd = open_existing_dir(photos, src.parent)
     try:
-        os.rename(src, dest)
-    except OSError as exc:
-        if exc.errno != errno.EXDEV:
-            raise
-        raise ValueError(CROSS_DEVICE) from None
+        st = os.stat(src.name, dir_fd=src_fd, follow_symlinks=False)
+        if not stat.S_ISDIR(st.st_mode):
+            raise ValueError(f"{str(src)!r} is a symlink or not a folder; refusing to move it")
+        dest_fd = open_dir(photos, dest.parent, create=True, on_create=_owner_hook(owner))
+        try:
+            os.rename(src.name, dest.name, src_dir_fd=src_fd, dst_dir_fd=dest_fd)
+        except OSError as exc:
+            if exc.errno != errno.EXDEV:
+                raise
+            raise ValueError(CROSS_DEVICE) from None
+        finally:
+            os.close(dest_fd)
+    finally:
+        os.close(src_fd)
 
 
 class Ops:
@@ -107,7 +142,10 @@ class Ops:
                     )
                 if library_id in self.scheduler.running_libraries:
                     raise Busy("library has a running job")
-                self._move_library_dirs(old_dir, new_dir)  # before the row: failure keeps it
+                account = repo.get_account(s, library.account_id)
+                owner = owners.owner_for(account) if account is not None else None
+                # before the row: failure keeps it
+                self._move_library_dirs(old_dir, new_dir, owner)
             if display_name is not None:
                 library.display_name = display_name.strip()
             library.target_dir = new_dir
@@ -119,27 +157,17 @@ class Ops:
                 library.nightly_at = nightly
         self.bus.publish("library.updated", library_id=library_id)
 
-    def _move_library_dirs(self, old: str, new: str) -> None:
+    def _move_library_dirs(self, old: str, new: str, owner: tuple[int, int] | None) -> None:
+        """One rename of the library folder; its .icloud2nas trash and kept travel with it.
+
+        The rename keeps the folder's owner; parents we create are handed to the library owner.
+        """
         photos = self.config.photos_dir
         src, dest = photos / old, photos / new
-        trash_src, trash_dest = photos / TRASH_DIRNAME / old, photos / TRASH_DIRNAME / new
-        move_lib, move_trash = src.exists(), trash_src.exists()
-        if move_lib:  # pre-check both moves so neither can fail half-way
-            self._check_destination(src, dest, new)
-        if move_trash:
-            self._check_destination(trash_src, trash_dest, f"{TRASH_DIRNAME}/{new}")
-        if move_lib:
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            _rename(src, dest)
-        if not move_trash:
+        if not src.exists():
             return
-        try:
-            trash_dest.parent.mkdir(parents=True, exist_ok=True)
-            _rename(trash_src, trash_dest)
-        except (OSError, ValueError) as exc:
-            if move_lib:
-                os.rename(dest, src)  # backstop: never leave the library folder orphaned
-            raise ValueError(f"could not move the trash folder: {exc}") from exc
+        self._check_destination(src, dest, new)
+        _rename_below(photos, src, dest, owner)
 
     @staticmethod
     def _check_destination(src: Path, dest: Path, label: str) -> None:
@@ -248,40 +276,49 @@ class Ops:
     def delete_account(self, account_id: str, *, keep_dir: bool) -> None:
         self.check_idle(account_id)
         with self.store.session() as s:
-            if repo.get_account(s, account_id) is None:
+            account = repo.get_account(s, account_id)
+            if account is None:
                 raise KeyError(account_id)
+            owner = owners.owner_for(account)
             dirs = [lib.target_dir for lib in repo.libraries_of_account(s, account_id)]
-        if not keep_dir:
-            self._trash_library_dirs(dirs)
+        trashed = [] if keep_dir else self._trash_library_dirs(dirs, owner)
         self.scheduler.drop_manual(account_id=account_id)
         shutil.rmtree(self.config.cookie_dir(account_id).parent, ignore_errors=True)
+        shutil.rmtree(self.config.account_plans_dir(account_id), ignore_errors=True)
         with self.store.session() as s:
             repo.delete_account_cascade(s, account_id)
+            photos = self.config.photos_dir
+            for dest in trashed:
+                repo.add_deleted_dir(s, dest.relative_to(photos).as_posix())
         self.bus.publish("account.updated", account_id=account_id, deleted=True)
 
-    def _trash_library_dirs(self, dirs: list[str]) -> None:
-        """Move every folder to the trash by rename, or none of them: no copying, no half state."""
+    def _trash_library_dirs(self, dirs: list[str], owner: tuple[int, int] | None) -> list[Path]:
+        """Rename every folder into <parent>/.icloud2nas-deleted, or none of them (spec §16.1)."""
         photos = self.config.photos_dir
         today = date.today()
         present = [rel for rel in dirs if (photos / rel).exists()]
         for rel in present:  # check all before moving any
             src = photos / rel
-            if os.path.ismount(src) or not _same_device(src, trash_day_dir(photos, rel, today)):
+            if os.path.ismount(src) or not _same_device(src, src.parent / DELETED_DIRNAME / "x"):
                 raise ValueError(f"{rel!r}: {CROSS_DEVICE}")
         moved: list[tuple[Path, Path]] = []
         for rel in present:
             try:
-                dest = trash_directory(photos, rel, today, allow_copy=False)
-            except OSError as exc:
+                # the .icloud2nas-deleted it makes is fchowned to the owner
+                dest = trash_library_dir(
+                    photos / rel, today, photos=photos, on_create=_owner_hook(owner)
+                )
+            except (OSError, ValueError) as exc:
                 for home, trashed in reversed(moved):  # put back what already moved
                     try:
-                        os.rename(trashed, home)
-                    except OSError:
+                        restore_library_dir(trashed, home, photos=photos)
+                    except (OSError, ValueError):
                         log.exception("could not move %s back to %s", trashed, home)
-                reason = CROSS_DEVICE if exc.errno == errno.EXDEV else exc.strerror or str(exc)
+                reason = exc.strerror or str(exc) if isinstance(exc, OSError) else str(exc)
                 raise ValueError(f"could not move {rel!r} to the trash: {reason}") from exc
             if dest is not None:
                 moved.append((photos / rel, dest))
+        return [dest for _, dest in moved]
 
     def _release(self, account_id: str, owner: str) -> None:
         self._discovering.discard(account_id)

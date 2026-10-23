@@ -9,8 +9,11 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from icloud2nas.api.auth import require_session
+from icloud2nas.api.errors import OwnerFixed
 from icloud2nas.api.serializers import account_json, resolve_account
 from icloud2nas.api.state import AppState
+from icloud2nas.orchestrator import owners
+from icloud2nas.orchestrator.onboarding import check_owner
 from icloud2nas.orchestrator.ops import Busy
 from icloud2nas.orchestrator.store import repo
 
@@ -23,11 +26,15 @@ class AccountCreate(BaseModel):
     region: str
     password: str
     target_dir: str | None = None
+    owner_uid: int | None = None
+    owner_gid: int | None = None
 
 
 class AccountPatch(BaseModel):
     display_name: str | None = None
     password: str | None = None
+    owner_uid: int | None = None
+    owner_gid: int | None = None
 
 
 class CodeBody(BaseModel):
@@ -40,20 +47,22 @@ def _state(request: Request) -> AppState:
 
 
 def _account(state: AppState, account_id: str) -> dict[str, Any]:
+    names = owners.owner_names(state.config.host_etc)
     with state.store.session() as s:
         account = repo.get_account(s, account_id)
         if account is None:
             raise KeyError(account_id)
         ids = [lib.id for lib in repo.libraries_of_account(s, account_id)]
-        return account_json(account, ids)
+        return account_json(account, ids, names)
 
 
 @router.get("")
 async def list_accounts(request: Request) -> list[dict[str, Any]]:
     state = _state(request)
+    names = owners.owner_names(state.config.host_etc)
     with state.store.session() as s:
         return [
-            account_json(a, [lib.id for lib in repo.libraries_of_account(s, a.id)])
+            account_json(a, [lib.id for lib in repo.libraries_of_account(s, a.id)], names)
             for a in repo.list_accounts(s)
         ]
 
@@ -67,6 +76,8 @@ async def create_account(body: AccountCreate, request: Request) -> dict[str, str
         region=body.region,
         password=body.password,
         target_dir=body.target_dir,
+        owner_uid=body.owner_uid,
+        owner_gid=body.owner_gid,
     )
     state.bus.publish("account.updated", account_id=account_id)
     run_id = await state.ops.start_auth(account_id)
@@ -87,6 +98,17 @@ async def patch_account(account_id: str, body: AccountPatch, request: Request) -
     display_name = body.display_name.strip() if body.display_name is not None else None
     if display_name is not None and not display_name:
         raise ValueError("display_name must not be blank")
+    owner = check_owner(body.owner_uid, body.owner_gid)
+    if owner is not None:  # set once when the account is added (spec §16.3); never changed
+        with state.store.session() as s:
+            account = repo.get_account(s, resolved)
+            if account is None:
+                raise KeyError(resolved)
+            if (account.owner_uid, account.owner_gid) != owner:
+                raise OwnerFixed(
+                    "the file owner is set when the account is added and cannot be changed; "
+                    "delete the account and add it again to use another owner"
+                )
     if body.password is not None:
         state.ops.check_idle(resolved)  # fail before the stored password changes
     if display_name is not None:

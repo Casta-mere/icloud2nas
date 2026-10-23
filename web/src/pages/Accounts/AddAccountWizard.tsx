@@ -11,6 +11,7 @@ import { Chip } from "../../ui/Chip";
 import { FormRow } from "../../ui/FormRow";
 import { CodeStep } from "./CodeStep";
 import { DiscoverStep } from "./DiscoverStep";
+import { AUTO_OWNER, OwnerSelect, type OwnerChoice } from "./OwnerSelect";
 
 type Step = 1 | 2 | 3 | 4;
 const STEPS: [Step, Key][] = [
@@ -31,6 +32,7 @@ export function AddAccountWizard({ onDone }: { onDone: () => void }) {
   const [name, setName] = useState("");
   const [dirInput, setDirInput] = useState<string | null>(null);
   const [region, setRegion] = useState<Region>("cn");
+  const [owner, setOwner] = useState<OwnerChoice>(AUTO_OWNER);
   const [appleId, setAppleId] = useState("");
   const [password, setPassword] = useState("");
   const [created, setCreated] = useState<{ id: string; run_id: string } | null>(null);
@@ -50,7 +52,7 @@ export function AddAccountWizard({ onDone }: { onDone: () => void }) {
         : conflict
           ? t("dir-nests", { name: conflict.display_name })
           : null);
-  const step1Valid = name.trim() !== "" && rel !== null && !conflict && !serverDirError;
+  const step1Valid = name.trim() !== "" && rel !== null && !conflict && !serverDirError && owner.valid;
   const verified = useCallback(() => setStep((s) => (s === 3 ? 4 : s)), []);
 
   const submit2 = (e: FormEvent) => {
@@ -59,7 +61,15 @@ export function AddAccountWizard({ onDone }: { onDone: () => void }) {
     setAppleError(null);
     setFormError(null);
     create.mutate(
-      { display_name: name.trim(), apple_id: appleId.trim(), region, password, target_dir: rel },
+      {
+        display_name: name.trim(),
+        apple_id: appleId.trim(),
+        region,
+        password,
+        target_dir: rel,
+        // hidden in single-user mode, so then never set
+        ...(owner.owner ? { owner_uid: owner.owner.uid, owner_gid: owner.owner.gid } : {}),
+      },
       {
         onSuccess: (r) => {
           setCreated(r);
@@ -124,6 +134,7 @@ export function AddAccountWizard({ onDone }: { onDone: () => void }) {
               }}
             />
           </FormRow>
+          <OwnerSelect folderRel={rel} value={owner} onChange={setOwner} />
           <FormRow label={t("region")} alignTop>
             <div role="radiogroup" aria-label={t("region")} className="grid gap-1.5 text-[13px]">
               {(["cn", "com"] as const).map((r) => (

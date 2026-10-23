@@ -30,6 +30,15 @@ launches at once instead of waiting up to `tick` (15 s); this includes the start
 only holds back scheduled jobs. A queued manual request is dropped (with a log line) when its
 library or account is deleted, the library is disabled, or the account stops being `ok`.
 
+A library that has completed a full sync (`first_full_at` set) whose folder under the photos root
+is gone (a changed NAS mount, a moved or deleted directory) is parked as `dir_missing`: the
+scheduler never launches it, manual requests are refused with 409, and a run already queued is
+rechecked right before the worker would be prepared (which would otherwise create the folder), so
+nothing is ever re-downloaded into a new empty folder. The previous status (`ok` or `paused`) is
+kept in `stats.status_before_missing` and restored automatically once the folder exists again.
+`space_paused` wins over it (the folder is checked again after space recovers), and a library that
+never finished a full sync is unaffected.
+
 Changing `folder_structure` or `file_match_policy` on libraries that already hold photos is not
 a migration: the next syncs download everything again under the new paths/names, and the next
 reconcile finds the old files extraneous and proposes trashing them. The reconcile fuse and the
@@ -41,7 +50,8 @@ Environment: `I2N_HOST` (listen address, `0.0.0.0`), `I2N_PORT` (4871),
 `I2N_MIN_FREE_GB` (5), `I2N_DEFAULT_INTERVAL_MIN`, `I2N_DEFAULT_NIGHTLY_AT` (HH:MM, `3:00` is
 normalised to `03:00`), `I2N_JITTER_S` (`lo,hi` seconds of random delay before the scheduler's first
 tick, default `0,300`; manual requests are not delayed), `I2N_SECRET_KEY` (optional; else `/data/secret.key` is generated), `TZ`,
-`I2N_WEB_DIST` (`web/dist`), `I2N_WORKER_CMD` (tests only).
+`I2N_WEB_DIST` (`web/dist`), `I2N_HOST_ETC` (`/host/etc`, the host's `/etc` mounted read-only for
+the file-owner list), `I2N_WORKER_CMD` (tests only).
 
 Forgot the web UI admin password: stop the service, then run
 `icloud2nas-serve --reset-admin-password` against the same data directory. It takes the daemon
@@ -75,7 +85,7 @@ the database through `icloud2nas-ctl` anyway.
     icloud2nas-ctl plan show ID | plan approve ID | plan reject ID
     icloud2nas-ctl pause | resume | status
     icloud2nas-ctl settings get | settings set KEY VALUE
-    icloud2nas-ctl trash list | trash day REL DAY | trash delete REL DAY | trash keep REL DAY PATH…
+    icloud2nas-ctl trash list | trash day LIBRARY DAY | trash delete LIBRARY DAY | trash keep LIBRARY DAY PATH…
 
 `account add|reauth|set-password` follow the login on the event stream (prompting for 2FA codes
 and re-prompting on a wrong one), then wait for library discovery and print the libraries.

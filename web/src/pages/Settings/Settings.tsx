@@ -6,6 +6,7 @@ import { useT } from "../../i18n";
 import { Button } from "../../ui/Button";
 import { Card } from "../../ui/Card";
 import { FormRow } from "../../ui/FormRow";
+import { QueryState } from "../../ui/QueryState";
 import { Toggle } from "../../ui/Toggle";
 import { AdminPassword } from "./AdminPassword";
 import { FieldRow } from "./FieldRow";
@@ -32,7 +33,7 @@ export function Settings() {
   const [draft, setDraft] = useState<Partial<Record<DataKey, string>>>({});
   const [serverError, setServerError] = useState<{ key: string; detail: string } | null>(null);
 
-  if (!settings.data) return null;
+  if (!settings.data) return <QueryState queries={[settings]} />;
   const { values, admin_password_set, public_url_fallback } = settings.data;
   const base = fromValues(values);
   const valueOf = (k: DataKey) => draft[k] ?? base[k];

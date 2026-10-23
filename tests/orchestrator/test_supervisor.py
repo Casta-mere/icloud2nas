@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -117,11 +120,14 @@ async def test_crash_without_events_and_garbage_lines(
 
 async def test_timeout_kills_the_worker(config: Config, monkeypatch: pytest.MonkeyPatch) -> None:
     _scenario(monkeypatch, sync={"events": [{"ev": "started"}, {"sleep": 30}], "exit": 0})
+    started = asyncio.Event()
     proc = WorkerProcess(
         config, run_id="t1", mode="sync", job=JOB, password="pw", interactive=False,
         log_path=config.logs_dir / "t1.log",
+        on_event=lambda e: started.set() if e["ev"] == "started" else None,
     )
     await proc.start()
+    await asyncio.wait_for(started.wait(), 20)  # the timeout below starts once it is running
     result = await proc.wait(timeout_s=0.5)
     assert result.killed and result.exit_code != 0 and result.terminal is None
     assert result.killed_by == "timeout"
@@ -178,3 +184,76 @@ async def test_wait_is_idempotent_and_send_code_after_close_raises(config: Confi
     first = await proc.wait(timeout_s=10)
     second = await proc.wait(timeout_s=10)
     assert first is second and first.exit_code == 0
+
+
+class _Spawned(Exception):
+    """Raised by the fake create_subprocess_exec once it has recorded its kwargs."""
+
+
+async def _spawn_kwargs(
+    config: Config, monkeypatch: pytest.MonkeyPatch, owner: tuple[int, int] | None
+) -> dict[str, Any]:
+    seen: dict[str, Any] = {}
+
+    async def fake_exec(*argv: str, **kwargs: Any) -> Any:
+        seen.update(kwargs)
+        raise _Spawned
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    proc = WorkerProcess(
+        config, run_id="u1", mode="sync", job=JOB, password="pw", interactive=False,
+        log_path=config.logs_dir / "u1.log", owner=owner,
+    )
+    with pytest.raises(_Spawned):
+        await proc.start()
+    return seen
+
+
+async def test_worker_spawned_as_owner(config: Config, monkeypatch: pytest.MonkeyPatch) -> None:
+    kwargs = await _spawn_kwargs(config, monkeypatch, (1000, 10))
+    assert kwargs["user"] == 1000 and kwargs["group"] == 10 and kwargs["extra_groups"] == []
+    kwargs = await _spawn_kwargs(config, monkeypatch, None)
+    assert not {"user", "group", "extra_groups"} & set(kwargs)
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="switching uid needs root")
+async def test_worker_really_switches_uid(config: Config) -> None:
+    shared = Path(tempfile.mkdtemp(prefix="i2n-uid-"))  # pytest's tmp_path is 0700 root-only
+    shared.chmod(0o755)
+    script = shared / "whoami-worker.sh"
+    script.write_text(
+        '#!/bin/sh\nprintf \'{"ev":"done","stats":{"uid":%s,"gid":%s,"groups":"%s"}}\\n\' '
+        '"$(id -u)" "$(id -g)" "$(id -G)"\n',
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    nobody = Config(
+        data_dir=config.data_dir, photos_dir=config.photos_dir, worker_cmd=(str(script),),
+        tz=config.tz,
+    )
+    try:
+        result = await run_worker(
+            nobody, run_id="id1", mode="sync", job=JOB, password=None, interactive=False,
+            log_path=config.logs_dir / "id1.log", owner=(65534, 65534), timeout_s=10,
+        )
+    finally:
+        shutil.rmtree(shared)
+    assert result.exit_code == 0 and result.terminal is not None
+    assert result.terminal["stats"] == {"uid": 65534, "gid": 65534, "groups": "65534"}
+    assert (config.logs_dir / "id1.log").stat().st_uid == 0  # the run log stays ours
+
+
+async def test_worker_env_is_an_allowlist(
+    config: Config, calls_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("I2N_SECRET_KEY", "fernet-key-for-every-password")
+    monkeypatch.setenv("SOME_SECRET", "hunter2")
+    monkeypatch.setenv("LC_ALL", "C.UTF-8")
+    await run_worker(
+        config, run_id="e1", mode="sync", job=JOB, password="pw", interactive=False,
+        log_path=config.logs_dir / "e1.log",
+    )
+    env = json.loads(calls_file.read_text(encoding="utf-8"))["env"]
+    assert "I2N_SECRET_KEY" not in env and "SOME_SECRET" not in env
+    assert {"PATH", "TZ", "LC_ALL", "I2N_JOB", "I2N_PASSWORD", "FAKE_WORKER_CALLS"} <= set(env)
+    assert env["HOME"] == str(config.accounts_dir / "acc1")

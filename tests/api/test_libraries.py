@@ -67,3 +67,21 @@ def test_library_patch_target_dir_conflicts(api: API, monkeypatch: pytest.Monkey
     wait_for(client, lambda c: library_id in state.scheduler.running_libraries)
     busy = client.patch(f"/api/libraries/{library_id}", json={"target_dir": "Moved"})
     assert busy.status_code == 409 and busy.json()["error"] == "busy"
+
+
+def test_manual_sync_on_dir_missing_is_409(api: API) -> None:
+    from datetime import UTC, datetime
+
+    from icloud2nas.orchestrator.store import repo
+
+    client, state = api
+    account_id, library_id = onboard(client)
+    wait_for(client, lambda c: _ok(c, account_id))
+    with state.store.session() as s:
+        lib = repo.get_library(s, library_id)
+        lib.first_full_at = datetime.now(UTC)
+    for path in ("sync", "reconcile"):
+        resp = client.post(f"/api/libraries/{library_id}/{path}", json={})
+        assert resp.status_code == 409
+        assert resp.json() == {"error": "busy", "detail": "library folder is missing"}
+    assert client.get(f"/api/libraries/{library_id}").json()["status"] == "dir_missing"

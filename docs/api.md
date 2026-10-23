@@ -55,25 +55,51 @@ ambiguous prefix is a `400`, no match a `404`.
 ## Accounts
 
 Account object: `id, display_name, apple_id, region, status, failures, backoff_until,
-last_auth_ok_at, last_error, created_at, primary_dir, library_ids`. `status` is one of
-`new, awaiting_code, ok, needs_reauth, password_rejected`.
+last_auth_ok_at, last_error, created_at, primary_dir, library_ids, owner_uid, owner_gid,
+owner_name`. `status` is one of `new, awaiting_code, ok, needs_reauth, password_rejected`.
+
+File owner (spec §16.3): `owner_uid`/`owner_gid` are the NAS user and group the account's workers
+run as, and that the folders the service creates for its libraries (`.icloud2nas/…`, new parent
+folders of a moved library, `.icloud2nas-deleted`, the account's cookie and plan folders) are
+chowned to. `owner_name` is the host user name for `owner_uid` (from `/host/etc/passwd`), else
+null. When the service runs as root and a new account names no owner, the owner of the library
+folder's nearest existing ancestor (never above the photos root) is stored. When it does not run
+as root (single-user mode, `PUID`/`PGID` set) owners are still accepted, stored and returned, but
+ignored: every worker runs as the service's own user and nothing is chowned. A changed owner
+takes effect at the next worker start; existing library files are not re-chowned.
 
 | Method | Path | Body | Response | Errors |
 |---|---|---|---|---|
 | GET | `/api/accounts` | | `[account]` | |
-| POST | `/api/accounts` | `{display_name, apple_id, region: cn\|com, password, target_dir?}` | 201 `{id, run_id}`; the interactive login starts at once and libraries are discovered after a successful login | 400 invalid, 409 Apple ID exists |
+| POST | `/api/accounts` | `{display_name, apple_id, region: cn\|com, password, target_dir?, owner_uid?, owner_gid?}` (owner: both or neither, integers >= 0) | 201 `{id, run_id}`; the interactive login starts at once and libraries are discovered after a successful login | 400 invalid, 409 Apple ID exists |
 | GET | `/api/accounts/{id}` | | account | 404 |
-| PATCH | `/api/accounts/{id}` | `{display_name?, password?}` | account; with `password` it re-authenticates and adds `run_id` | 400, 404, 409 busy |
-| DELETE | `/api/accounts/{id}?keep_dir=true\|false` | | 204; `keep_dir=false` moves the photo folders to the trash, by rename only and all or none | 400 a folder is on another filesystem / a mount point / cannot be renamed (nothing moved, account kept), 404, 409 busy |
+| PATCH | `/api/accounts/{id}` | `{display_name?, password?, owner_uid?, owner_gid?}` | account; with `password` it re-authenticates and adds `run_id` | 400 (incl. only one of `owner_uid`/`owner_gid`), 404, 409 busy |
+| DELETE | `/api/accounts/{id}?keep_dir=true\|false` | | 204; `keep_dir=false` renames each library folder to `<parent>/.icloud2nas-deleted/<name>-<YYYY-MM-DD>` (rename only, all or none) and records it in `deleted_dirs`; it is removed for good once the trash retention expires | 400 a folder is on another filesystem / a mount point / cannot be renamed (nothing moved, account kept), 404, 409 busy |
 | POST | `/api/accounts/{id}/auth` | | 202 `{run_id}` (re-login, 2FA again) | 404, 409 busy |
 | POST | `/api/accounts/{id}/code` | `{code}` | 204 | 409 no login is waiting for a code |
 | POST | `/api/accounts/{id}/refresh` | | `{personal: [zone], shared: [zone]}`; re-discovers libraries without a login | 404, 409 busy, 502 worker failed |
 
+## Host users
+
+| Method | Path | Body | Response | Errors |
+|---|---|---|---|---|
+| GET | `/api/host-users?path=<rel>` | | `{privileged, users: [{name, uid, gid, group, home}], suggested: {uid, gid} \| null}` | 400 `path` absolute or escaping the photos root |
+
+`users` are the host's human users (uid 1000–59999, home under `/home`) read from the read-only
+`/host/etc` mount (`I2N_HOST_ETC`); `[]` when it is not mounted. `group` is the name of the
+primary group (the gid as text when `/host/etc/group` lacks it). `privileged` is false in
+single-user mode (the UI then hides the owner select). `suggested` is the default owner for a
+library folder `path` (photos-relative): the owner of its nearest existing ancestor, never above
+the photos root; null without `path`.
+
 ## Libraries
 
 Library object: `id, account_id, kind (personal|shared), zone_name, display_name, target_dir,
-enabled, status (ok|paused|space_paused), interval_min, nightly_at, last_run_at,
-last_success_at, first_full_at, stats`.
+enabled, status (ok|paused|space_paused|dir_missing), interval_min, nightly_at, last_run_at,
+last_success_at, first_full_at, stats`. `dir_missing`: the library has completed a full sync but
+its folder is gone; it never runs (manual sync/reconcile answer 409
+`{"error":"busy","detail":"library folder is missing"}`) and returns to its previous status on
+its own once the folder exists again.
 
 | Method | Path | Body | Response | Errors |
 |---|---|---|---|---|
@@ -110,14 +136,18 @@ Plan object: `id, library_id, run_id, created_at, extraneous_count, plan_file, s
 
 ## Trash
 
-Keyed by the library's relative directory (`rel`), so trash of deleted libraries stays reachable.
+Each library keeps its own trash and kept area inside its folder:
+`<target_dir>/.icloud2nas/trash/<YYYY-MM-DD>/<rel>` and `<target_dir>/.icloud2nas/kept/<rel>`.
+The routes are keyed by library (`library=` takes an id, an unambiguous id prefix or the display
+name). A Plan 2 layout (`/photos/.trash/<rel>/…`, `/photos/kept/<rel>/…`) is moved into the
+libraries at startup; trash of unknown folders is left in place and logged.
 
 | Method | Path | Body | Response | Errors |
 |---|---|---|---|---|
-| GET | `/api/trash` | | `[{rel, library_id, display_name, days: [{day, files, bytes}]}]` | |
-| GET | `/api/trash/{day}?rel=` | | `[{rel, size}]` | 400 bad day / rel, 404 |
-| DELETE | `/api/trash/{day}?rel=` | | `{deleted}` files removed for good | 400, 404, 409 the library owning `rel` is running |
-| POST | `/api/trash/{day}/keep?rel=` | `{paths}` | `{kept: [path]}`; moved to `kept/<rel>/` | 400 (path escapes the day), 404, 409 the library owning `rel` is running |
+| GET | `/api/trash` | | `[{library_id, display_name, target_dir, days: [{day, files, bytes}]}]`, one entry per library | |
+| GET | `/api/trash/{day}?library=` | | `[{rel, size}]` | 400 bad day / no such day, 404 unknown library, 422 `library` missing |
+| DELETE | `/api/trash/{day}?library=` | | `{deleted}` files removed for good | 400, 404, 409 the library is running |
+| POST | `/api/trash/{day}/keep?library=` | `{paths}` | `{kept: [path]}`; moved to `<target_dir>/.icloud2nas/kept/` | 400 (path escapes the day), 404, 409 the library is running |
 
 ## Settings and notifications
 

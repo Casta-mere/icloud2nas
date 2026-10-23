@@ -4,6 +4,7 @@ import { useAccounts, useLibraries, usePlans, useRuns } from "../../api/queries"
 import type { Account } from "../../api/types";
 import { useT } from "../../i18n";
 import { Empty } from "../../ui/Empty";
+import { QueryState } from "../../ui/QueryState";
 import { AccountCard } from "./AccountCard";
 import { LogDrawer } from "./LogDrawer";
 import { RecentRuns } from "./RecentRuns";
@@ -24,7 +25,8 @@ export function Overview() {
   const plans = usePlans();
   const [openId, setOpenId] = useState<string | null>(null);
 
-  if (!accounts.data) return null;
+  // libraries only fill the cards in: their failure must not hide an account waiting for a code
+  if (!accounts.data) return <QueryState queries={[accounts]} />;
   if (accounts.data.length === 0) {
     return (
       <div className="text-center">

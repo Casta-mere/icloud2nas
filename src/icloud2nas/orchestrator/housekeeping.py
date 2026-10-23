@@ -1,4 +1,4 @@
-"""Periodic housekeeping: trash purge, run/log retention, trash size cache."""
+"""Periodic housekeeping: trash purge, run/log retention, trash size cache, legacy migration."""
 
 from __future__ import annotations
 
@@ -6,11 +6,16 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import Callable
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from icloud2nas.engine.trash import purge_expired, trash_bytes
+from icloud2nas.engine.trash import (
+    migrate_legacy,
+    purge_expired,
+    remove_deleted_dir,
+    trash_bytes,
+)
 from icloud2nas.orchestrator.bus import EventBus
 from icloud2nas.orchestrator.config import Config
 from icloud2nas.orchestrator.scheduler import local_now
@@ -42,12 +47,58 @@ class Housekeeping:
         self.trash_bytes = 0
         self._last_purge: date | None = None
         self._unsubscribe: Callable[[], None] | None = None
+        self._migrated = False
+
+    def _library_dirs(self) -> list[Path]:
+        with self.store.session() as s:
+            rels = [lib.target_dir for lib in repo.list_libraries(s)]
+        return [self.config.photos_dir / rel for rel in rels]
 
     def purge_trash(self) -> list[Path]:
+        """Expired trash days of every library, then expired deleted-library folders."""
         today = local_now(self.clock(), self.config.tz).date()
-        return purge_expired(
-            self.config.photos_dir, int(self.settings.get("trash_retention_days")), today
-        )
+        retention = int(self.settings.get("trash_retention_days"))
+        removed: list[Path] = []
+        for library_dir in self._library_dirs():
+            try:
+                removed += purge_expired(
+                    library_dir, retention, today, photos=self.config.photos_dir
+                )
+            except ValueError as exc:  # a symlinked library or store: never purge through it
+                log.warning("not purging the trash of %s: %s", library_dir, exc)
+        if retention <= 0:
+            return removed
+        cutoff = today - timedelta(days=retention)
+        with self.store.session() as s:
+            rows = [(r.id, r.path, r.deleted_at) for r in repo.list_deleted_dirs(s)]
+        for row_id, rel, deleted_at in rows:
+            if local_now(deleted_at, self.config.tz).date() >= cutoff:
+                continue
+            path = self.config.photos_dir / rel
+            try:
+                if remove_deleted_dir(path, self.config.photos_dir):
+                    removed.append(path)
+            except ValueError:
+                log.warning("deleted_dirs row %s has a bad path %r; dropping it", row_id, rel)
+            with self.store.session() as s:
+                repo.delete_deleted_dir(s, row_id)
+        return removed
+
+    def migrate_legacy_layout(self) -> list[str]:
+        """Move Plan 2's /photos/.trash and /photos/kept into the libraries (once per process)."""
+        if self._migrated:
+            return []
+        self._migrated = True
+        with self.store.session() as s:
+            rels = [lib.target_dir for lib in repo.list_libraries(s)]
+        try:
+            lines = migrate_legacy(self.config.photos_dir, rels)
+        except OSError:
+            log.exception("legacy trash migration failed")
+            return []
+        for line in lines:
+            (log.warning if line.startswith("warning:") else log.info)("%s", line)
+        return lines
 
     def prune_runs(self) -> int:
         with self.store.session() as s:
@@ -58,10 +109,11 @@ class Housekeeping:
         return len(paths)
 
     def refresh_trash_bytes(self) -> int:
-        self.trash_bytes = trash_bytes(self.config.photos_dir)
+        self.trash_bytes = trash_bytes(self._library_dirs(), photos=self.config.photos_dir)
         return self.trash_bytes
 
     def start(self) -> None:
+        self.migrate_legacy_layout()  # before run_forever's first purge
         if self._unsubscribe is None:
             self._unsubscribe = self.bus.subscribe(self._on_event)
 

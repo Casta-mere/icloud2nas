@@ -183,4 +183,15 @@ describe("LibraryCard", () => {
     expect(await screen.findByText("还没有图库")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "添加账号" })).toHaveAttribute("href", "/accounts");
   });
+  test("dir_missing: 找不到文件夹 chip, the mount hint under the header, 立即同步/立即对账 disabled", async () => {
+    db.libraries[0]!.status = "dir_missing";
+    renderPage();
+    const el = await card("旭刚");
+    expect(within(el).getByText("找不到文件夹")).toBeInTheDocument();
+    expect(within(el).getByText("检查挂载或修改目录")).toBeInTheDocument();
+    expect(within(el).getByRole("button", { name: "立即同步" })).toBeDisabled();
+    expect(within(el).getByRole("button", { name: "立即对账" })).toBeDisabled();
+    const other = await card("幻伊镜");
+    expect(within(other).getByRole("button", { name: "立即同步" })).toBeEnabled();
+  });
 });

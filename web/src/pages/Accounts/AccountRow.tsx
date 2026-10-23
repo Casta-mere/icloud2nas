@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { ApiError } from "../../api/client";
-import { usePatchAccount, useRefreshAccount } from "../../api/queries";
+import { useHostUsers, usePatchAccount, useRefreshAccount } from "../../api/queries";
 import type { Account, EventPayloads } from "../../api/types";
 import { appEvents } from "../../events/useEventStream";
 import { useT, type Key } from "../../i18n";
@@ -34,14 +34,16 @@ export function AccountRow({ account, onDelete }: { account: Account; onDelete: 
   const t = useT();
   const patch = usePatchAccount();
   const refresh = useRefreshAccount();
+  const host = useHostUsers();
   const [menu, setMenu] = useState(false);
   const [editing, setEditing] = useState<Editing>("none");
   const [name, setName] = useState(account.display_name);
   const [password, setPassword] = useState("");
   const [nameError, setNameError] = useState<string | null>(null);
   const [codeOpen, setCodeOpen] = useState(false);
+  const [reauthing, setReauthing] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
-  const flow = useCodeFlow(account.id, { onNeedCode: () => setCodeOpen(true) });
+  const flow = useCodeFlow(account.id, { onNeedCode: () => setCodeOpen(true), status: account.status });
 
   useEffect(() => {
     if (!menu) return;
@@ -62,11 +64,24 @@ export function AccountRow({ account, onDelete }: { account: Account; onDelete: 
   useEffect(() => {
     const onFinished = (e: Event) => {
       const p = (e as CustomEvent<EventPayloads["run.finished"]>).detail;
-      if (p.mode === "auth" && p.account_id === account.id) setCodeOpen(false);
+      if (p.mode === "auth" && p.account_id === account.id) {
+        setCodeOpen(false);
+        setReauthing(false);
+      }
     };
     appEvents.addEventListener("run.finished", onFinished);
     return () => appEvents.removeEventListener("run.finished", onFinished);
   }, [account.id]);
+
+  // 重新验证 opens the code panel only once the login really waits for a code
+  useEffect(() => {
+    if (reauthing && account.status === "awaiting_code") setCodeOpen(true);
+  }, [reauthing, account.status]);
+
+  // the login ended without a code (seen even when its run.finished was missed)
+  useEffect(() => {
+    if (flow.sessionStillValid) setReauthing(false);
+  }, [flow.sessionStillValid]);
 
   const chip = statusChip(account.status);
   const pick = (what: Editing) => {
@@ -97,14 +112,28 @@ export function AccountRow({ account, onDelete }: { account: Account; onDelete: 
           if (r.run_id) flow.track(r.run_id);
           setEditing("none");
           setPassword("");
-          setCodeOpen(true);
+          // like 重新验证: the code box opens only once Apple asks for a code
+          setReauthing(true);
         },
       },
     );
   };
 
-  // the code panel opens only once `/auth` accepted the login (or `need_mfa` arrives)
-  const reauth = () => flow.resend(() => setCodeOpen(true));
+  // the code panel opens when the account turns awaiting_code (or `need_mfa` arrives), never before
+  const reauth = () => {
+    setReauthing(false);
+    flow.resend(() => setReauthing(true));
+  };
+  // fixed when the account was added (spec §16.3): shown, never edited here
+  const ownerIds = `${account.owner_uid ?? ""}:${account.owner_gid ?? ""}`;
+  const ownerText =
+    account.owner_uid !== null
+      ? account.owner_name
+        ? `${account.owner_name} (${ownerIds})`
+        : ownerIds
+      : host.data?.privileged
+        ? t("owner-unset-root")
+        : null;
   const actionError = message(patch.error) ?? flow.actionError ?? message(refresh.error);
 
   return (
@@ -117,6 +146,7 @@ export function AccountRow({ account, onDelete }: { account: Account; onDelete: 
           </div>
           <div className="truncate text-[12px] text-[#6b7280] tabular-nums">
             <span className="font-mono">{account.apple_id}</span> · {account.region}
+            {ownerText ? ` · ${ownerText}` : ""}
             {account.last_auth_ok_at ? ` · ${t("last-login", { time: fmtDateTime(account.last_auth_ok_at) })}` : ""}
           </div>
         </div>
@@ -217,6 +247,12 @@ export function AccountRow({ account, onDelete }: { account: Account; onDelete: 
         <div className="mt-2">
           <div className="text-[13px] text-[#374151]">{t("mfa-sent")}</div>
           <CodeInput onSubmit={flow.sendCode} error={flow.error} attempt={flow.attempt} pending={flow.pending} />
+        </div>
+      ) : null}
+
+      {flow.sessionStillValid && !codeOpen ? (
+        <div role="status" className="mt-2 text-[12px] text-[#166534]">
+          {t("session-still-valid")}
         </div>
       ) : null}
 

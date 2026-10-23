@@ -13,6 +13,7 @@ export function AdminPassword({ isSet }: { isSet: boolean }) {
   const t = useT();
   const put = useSetAdminPassword();
   const [pw, setPw] = useState("");
+  const [again, setAgain] = useState("");
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState("");
   const fail = (e: Error) => setError(e instanceof ApiError ? e.detail : e.message);
@@ -22,6 +23,7 @@ export function AdminPassword({ isSet }: { isSet: boolean }) {
     put.mutate(pw, {
       onSuccess: ({ loginFailed }) => {
         setPw("");
+        setAgain("");
         if (loginFailed) setError(t("password-set-login-failed"));
       },
       onError: fail,
@@ -33,26 +35,42 @@ export function AdminPassword({ isSet }: { isSet: boolean }) {
     put.mutate("", { onError: fail });
   };
 
+  const mismatch = again !== "" && again !== pw;
+  const canSet = pw !== "" && again === pw && !put.isPending;
+
   return (
     <>
       <FormRow
         label={t("field-admin-password")}
-        alignTop
         htmlFor="admin-password"
         hint={isSet ? t("admin-password-set") : t("admin-password-unset")}
-        error={error}
+      >
+        <input
+          id="admin-password"
+          type="password"
+          autoComplete="new-password"
+          value={pw}
+          onChange={(e) => setPw(e.target.value)}
+          className={INPUT}
+        />
+      </FormRow>
+      <FormRow
+        label={t("confirm-password")}
+        alignTop
+        htmlFor="admin-password-again"
+        error={mismatch ? t("password-mismatch") : error}
       >
         <div className="grid gap-2">
           <input
-            id="admin-password"
+            id="admin-password-again"
             type="password"
             autoComplete="new-password"
-            value={pw}
-            onChange={(e) => setPw(e.target.value)}
+            value={again}
+            onChange={(e) => setAgain(e.target.value)}
             className={INPUT}
           />
           <div className="flex flex-wrap gap-2">
-            <Button variant="ghost" disabled={pw === "" || put.isPending} onClick={set}>
+            <Button variant="ghost" disabled={!canSet} onClick={set}>
               {t("admin-password-set-btn")}
             </Button>
             {isSet && (

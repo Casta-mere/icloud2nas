@@ -9,3 +9,7 @@ __pycache__
 .pytest_cache
 web/node_modules
 web/dist
+.superpowers
+.env
+data
+.claude

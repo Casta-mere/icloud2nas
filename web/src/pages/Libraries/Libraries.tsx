@@ -3,6 +3,7 @@ import { useAccounts, useLibraries, usePlans } from "../../api/queries";
 import type { Plan } from "../../api/types";
 import { useT } from "../../i18n";
 import { Empty } from "../../ui/Empty";
+import { QueryState } from "../../ui/QueryState";
 import { LibraryCard } from "./LibraryCard";
 
 export function Libraries() {
@@ -11,7 +12,9 @@ export function Libraries() {
   const accounts = useAccounts();
   const plans = usePlans("all");
 
-  if (!libraries.data || !accounts.data) return null;
+  if (!libraries.data || !accounts.data) {
+    return <QueryState queries={[libraries, accounts]} />;
+  }
   const personal = libraries.data.filter((l) => l.kind === "personal");
   if (personal.length === 0) {
     return (

@@ -390,3 +390,19 @@ def test_failure_payload_counts_account_failures(world: dict[str, Any]) -> None:
     assert "library.updated" in topics and "account.updated" in topics
     assert _last(world["seen"], "library.updated") == {"library_id": world["library"]}
     assert _last(world["seen"], "account.updated") == {"account_id": world["account"]}
+
+
+def test_unattributed_run_publishes_zero_account_failures(world: dict[str, Any]) -> None:
+    with world["store"].session() as s:
+        acc = repo.get_account(s, world["account"])
+        assert acc is not None
+        acc.failures = 3
+    run_id = world["manager"].start_run(
+        account_id=world["account"], library_id=world["library"], mode="sync", trigger="manual"
+    )
+    err = {"ev": "error", "kind": "dir_missing", "message": "folder is missing"}
+    world["manager"].finish_run(run_id, WorkerResult(1, [err], err), account_state=False)
+    assert _last(world["seen"], "run.finished")["account_failures"] == 0
+    with world["store"].session() as s:
+        acc = repo.get_account(s, world["account"])
+        assert acc is not None and acc.failures == 3

@@ -210,7 +210,8 @@ def test_sync_downloads_then_trashes_recently_deleted(
     assert events[-1]["ev"] == "done"
     assert events[-1]["stats"] == {"downloaded": 2, "trashed": 1, "full": False}
     assert not deleted_path.exists() and kept_path.exists()
-    assert list((photos / ".trash" / "旭刚").rglob("IMG_7_*.HEIC"))
+    assert list((lib / ".icloud2nas" / "trash").rglob("IMG_7_*.HEIC"))
+    assert not (photos / ".trash").exists()
 
 
 def test_sync_dry_run_trashes_nothing(
@@ -254,7 +255,7 @@ def test_sync_uses_requested_shared_library(
         "sync", _sync_job(photos, shared_lib, library_zone="SharedSync-Z")
     )
     assert rc == 0 and not deleted_path.exists()
-    assert list((photos / ".trash" / "shared" / "家庭").rglob("IMG_S_*.HEIC"))
+    assert list((shared_lib / ".icloud2nas" / "trash").rglob("IMG_S_*.HEIC"))
 
 
 def test_reconcile_trashes_extraneous_and_writes_plan(

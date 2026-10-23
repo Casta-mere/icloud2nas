@@ -44,7 +44,7 @@ export function AccountCard({
 }) {
   const t = useT();
   const [forceCode, setForceCode] = useState(false);
-  const flow = useCodeFlow(account.id, { onNeedCode: () => setForceCode(true) });
+  const flow = useCodeFlow(account.id, { onNeedCode: () => setForceCode(true), status: account.status });
 
   const showCode =
     account.status === "awaiting_code" || (forceCode && account.status === "needs_reauth");
@@ -76,7 +76,9 @@ export function AccountCard({
               attempt={flow.attempt}
               pending={flow.pending}
             />
-            {flow.authWaiting ? null : (
+            {flow.authWaiting ? (
+              <div className="mt-2 text-[12px] text-[#6b7280]">{t("resend-after-expiry")}</div>
+            ) : (
               <div className="mt-2 text-[12px] text-[#6b7280]">
                 {t("code-no-receive")}
                 <button
@@ -106,6 +108,12 @@ export function AccountCard({
             <Link to="/accounts" className="mt-1 inline-block font-bold underline">
               {t("password-rejected-link")}
             </Link>
+          </div>
+        ) : null}
+
+        {flow.sessionStillValid && !showCode ? (
+          <div role="status" className="mt-2 text-[12px] text-[#166534]">
+            {t("session-still-valid")}
           </div>
         ) : null}
 

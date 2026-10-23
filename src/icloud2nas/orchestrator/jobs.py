@@ -59,7 +59,7 @@ def build_job(
         "client_id": account.client_id,
         "cookie_dir": str(config.cookie_dir(account.id)),
         "photos_root": str(config.photos_dir),
-        "plan_dir": str(config.plans_dir),
+        "plan_dir": str(config.account_plans_dir(account.id)),
         "interactive": interactive,
         "full": full,
         "dry_run": dry_run,

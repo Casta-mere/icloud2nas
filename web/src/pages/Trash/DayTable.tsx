@@ -14,13 +14,13 @@ const GRID = "grid grid-cols-[28px_minmax(0,1fr)_auto] items-center gap-x-2";
 
 export function DayTable({ entry, day }: { entry: TrashEntry; day: string }) {
   const t = useT();
-  const files = useTrashDay(day, entry.rel);
+  const files = useTrashDay(day, entry.library_id);
   const keep = useKeepFiles();
   const del = useDeleteDay();
   const [checked, setChecked] = useState<ReadonlySet<string>>(new Set());
   const [confirming, setConfirming] = useState(false);
 
-  const name = entry.display_name ?? entry.rel;
+  const name = entry.display_name;
   const meta = entry.days.find((d) => d.day === day);
   const rows = files.data ?? [];
   const shown = rows.slice(0, ROW_CAP);
@@ -35,10 +35,10 @@ export function DayTable({ entry, day }: { entry: TrashEntry; day: string }) {
     });
 
   const onKeep = () =>
-    keep.mutate({ day, rel: entry.rel, paths: [...checked] }, { onSuccess: () => setChecked(new Set()) });
+    keep.mutate({ day, library: entry.library_id, paths: [...checked] }, { onSuccess: () => setChecked(new Set()) });
   const onDelete = () => {
     setConfirming(false);
-    del.mutate({ day, rel: entry.rel });
+    del.mutate({ day, library: entry.library_id });
   };
 
   return (
@@ -84,7 +84,7 @@ export function DayTable({ entry, day }: { entry: TrashEntry; day: string }) {
           <div className="py-1.5 text-xs text-[#6b7280]">{t("plan-more", { n: rows.length - shown.length })}</div>
         ) : null}
       </div>
-      <p className="mt-2.5 text-xs text-[#6b7280]">{t("kept-explainer", { rel: entry.rel })}</p>
+      <p className="mt-2.5 text-xs text-[#6b7280]">{t("kept-explainer", { rel: entry.target_dir })}</p>
       <Confirm
         open={confirming}
         danger

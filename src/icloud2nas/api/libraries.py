@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from icloud2nas.api.auth import require_session
 from icloud2nas.api.serializers import library_json, resolve_library
 from icloud2nas.api.state import AppState
+from icloud2nas.orchestrator.ops import Busy
 from icloud2nas.orchestrator.store import repo
 
 router = APIRouter(prefix="/api/libraries", dependencies=[Depends(require_session)])
@@ -70,6 +71,8 @@ def _queue(request: Request, library_id: str, mode: str) -> JSONResponse:
     resolved = resolve_library(state, library_id)
     try:
         state.ops.request_run(resolved, "sync" if mode == "sync" else "reconcile")
+    except Busy:
+        raise  # the Busy handler answers 409 with its own detail (e.g. folder missing)
     except RuntimeError:
         return JSONResponse({"error": "busy", "detail": "space low"}, status_code=409)
     return JSONResponse({"queued": True}, status_code=202)

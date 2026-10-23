@@ -50,6 +50,7 @@ def build_state(
     config.ensure_layout()
     engine = make_engine(config.db_path)
     upgrade_db(engine)
+    config.secure_data()
     store = Store(engine)
     settings = Settings(store)
     settings.seed_from_env(

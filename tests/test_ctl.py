@@ -336,20 +336,24 @@ def test_settings_status_pause_and_trash_commands(api: API, tmp_path: Path) -> N
     assert "paused\tTrue" in ctl_run(client, ["status"])[1]
     assert "paused: false" in ctl_run(client, ["resume"])[1]
 
-    trashed = state.config.photos_dir / ".trash" / "旭刚" / "2026-10-20" / "2024" / "a.HEIC"
+    _, library_id = onboard(client)
+    target = client.get(f"/api/libraries/{library_id}").json()["target_dir"]
+    day_dir = state.config.photos_dir / target / ".icloud2nas" / "trash" / "2026-10-20"
+    trashed = day_dir / "2024" / "a.HEIC"
     trashed.parent.mkdir(parents=True)
-    (state.config.photos_dir / ".trash" / "旭刚" / "2026-10-20" / DAY_MARKER).touch()
+    (day_dir / DAY_MARKER).touch()
     trashed.write_bytes(b"x" * 10)
     rc, out = ctl_run(client, ["trash", "list"])
     assert rc == 0 and "旭刚\t2026-10-20\t1\t10" in out
-    rc, out = ctl_run(client, ["trash", "day", "旭刚", "2026-10-20"])
+    rc, out = ctl_run(client, ["trash", "day", library_id[:8], "2026-10-20"])
     assert rc == 0 and "2024/a.HEIC\t10" in out
     rc, out = ctl_run(client, ["trash", "keep", "旭刚", "2026-10-20", "2024/a.HEIC"])
     assert rc == 0 and "kept 2024/a.HEIC" in out
+    assert (day_dir.parent.parent / "kept" / "2024" / "a.HEIC").exists()
     assert "2026-10-20\t0\t0" in ctl_run(client, ["trash", "list"])[1]
     rc, out = ctl_run(client, ["trash", "delete", "旭刚", "2026-10-20"])
     assert rc == 0 and out.startswith("deleted ")
-    assert ctl_run(client, ["trash", "list"])[1] == ""
+    assert "2026-10-20" not in ctl_run(client, ["trash", "list"])[1]
     assert ctl_run(client, ["trash", "delete", "旭刚", "2026-10-20"])[0] == 1  # already gone
     rc, out = ctl_run(client, ["trash", "day", "旭刚", "not-a-day"])
     assert rc == 1 and out.startswith("error: ")

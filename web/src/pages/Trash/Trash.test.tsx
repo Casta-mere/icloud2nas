@@ -1,17 +1,17 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, test } from "vitest";
-import { calls, given } from "../../test/msw";
+import { calls, db, given, ids } from "../../test/msw";
 import { renderWithProviders } from "../../test/render";
 import { Trash } from "./Trash";
 
 describe("Trash page", () => {
-  test("tree lists libraries first then orphan rels with 已删除, and selects the newest day by default", async () => {
+  test("tree lists every library with trash and selects the newest day by default", async () => {
     renderWithProviders(<Trash />);
     const tree = await screen.findByRole("navigation", { name: "图库 / 日期" });
     const headers = within(tree)
       .getAllByRole("heading")
       .map((h) => h.textContent);
-    expect(headers).toEqual(["旭刚", "幻伊镜", "old-lib已删除"]);
+    expect(headers).toEqual(["旭刚", "幻伊镜"]);
     const selected = within(tree)
       .getAllByRole("button")
       .filter((b) => b.hasAttribute("data-selected"));
@@ -22,7 +22,7 @@ describe("Trash page", () => {
     expect(await screen.findByText("2026/10/IMG_0001.HEIC")).toBeInTheDocument();
   });
 
-  test("checking two rows enables 移到保留区 (2) and posts {paths} with rel/day in the query", async () => {
+  test("checking two rows enables 移到保留区 (2) and posts {paths} with library/day in the query", async () => {
     const { user } = renderWithProviders(<Trash />);
     const keep = await screen.findByRole("button", { name: "移到保留区 (0)" });
     expect(keep).toBeDisabled();
@@ -34,7 +34,7 @@ describe("Trash page", () => {
     await waitFor(() => expect(calls().some((c) => c.method === "POST")).toBe(true));
     const post = calls().find((c) => c.method === "POST");
     expect(post?.path).toBe("/api/trash/2026-10-21/keep");
-    expect(decodeURIComponent(post?.search ?? "")).toBe("?rel=旭刚");
+    expect(decodeURIComponent(post?.search ?? "")).toBe(`?library=${ids.libXugang}`);
     expect(post?.body).toEqual({ paths: ["2026/10/IMG_0001.HEIC", "2026/10/IMG_0003.MOV"] });
     await waitFor(() => expect(screen.getByRole("button", { name: "移到保留区 (0)" })).toBeDisabled());
   });
@@ -48,7 +48,7 @@ describe("Trash page", () => {
     await waitFor(() => expect(screen.getByText("旭刚 · 2026-10-19")).toBeInTheDocument());
     const del = calls().find((c) => c.method === "DELETE");
     expect(del?.path).toBe("/api/trash/2026-10-21");
-    expect(decodeURIComponent(del?.search ?? "")).toBe("?rel=旭刚");
+    expect(decodeURIComponent(del?.search ?? "")).toBe(`?library=${ids.libXugang}`);
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   });
 
@@ -61,5 +61,21 @@ describe("Trash page", () => {
     expect(await screen.findByText("library is running")).toBeInTheDocument();
     expect(screen.getByText("旭刚 · 2026-10-21")).toBeInTheDocument();
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+  test("the day's files are requested by library id; the footer points at the library's .icloud2nas/kept", async () => {
+    renderWithProviders(<Trash />);
+    await screen.findByText("2026/10/IMG_0001.HEIC");
+    const get = calls().find((c) => c.method === "GET" && c.path === "/api/trash/2026-10-21");
+    expect(decodeURIComponent(get?.search ?? "")).toBe(`?library=${ids.libXugang}`);
+    expect(screen.getByText(/保留区在图库文件夹里的 \.icloud2nas\/kept/)).toHaveTextContent("/photos/旭刚/.icloud2nas/kept");
+  });
+
+  test("the prompt line shows the retention, and 不会自动清理 when it is 0", async () => {
+    const first = renderWithProviders(<Trash />);
+    expect(await screen.findByText(/保留 30 天/)).toBeInTheDocument();
+    first.unmount();
+    db.settings.values.trash_retention_days = 0;
+    renderWithProviders(<Trash />);
+    expect(await screen.findByText(/\$ trash · .* · 不会自动清理/)).toBeInTheDocument();
   });
 });

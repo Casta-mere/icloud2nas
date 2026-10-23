@@ -270,18 +270,18 @@ def cmd_trash(api: Api, args: argparse.Namespace, out: TextIO) -> int:
     if args.action == "list":
         for entry in api.get("/api/trash"):
             for day in entry["days"]:
-                _row(out, entry["rel"], day["day"], day["files"], day["bytes"])
+                _row(out, entry["display_name"], day["day"], day["files"], day["bytes"])
         return 0
     path = f"/api/trash/{quote(args.day, safe='')}"
     if args.action == "day":
-        for f in api.get(path, rel=args.rel):
+        for f in api.get(path, library=args.library):
             _row(out, f["rel"], f["size"])
     elif args.action == "delete":
-        deleted = api.call("DELETE", path, params={"rel": args.rel}).json()["deleted"]
+        deleted = api.call("DELETE", path, params={"library": args.library}).json()["deleted"]
         out.write(f"deleted {deleted}\n")
     else:
         body = {"paths": args.paths}
-        kept = api.call("POST", path + "/keep", params={"rel": args.rel}, json=body)
+        kept = api.call("POST", path + "/keep", params={"library": args.library}, json=body)
         for rel in kept.json()["kept"]:
             out.write(f"kept {rel}\n")
     return 0
@@ -353,7 +353,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     trash.add_parser("list")
     for name in ("day", "delete", "keep"):
         t = trash.add_parser(name)
-        t.add_argument("rel")
+        t.add_argument("library", metavar="LIBRARY")
         t.add_argument("day")
         if name == "keep":
             t.add_argument("paths", nargs="+", metavar="PATH")

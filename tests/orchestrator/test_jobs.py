@@ -35,7 +35,7 @@ def test_build_job_for_primary_and_shared(config: Config, store: Store) -> None:
         assert job["cookie_dir"] == str(config.cookie_dir(acc.id))
         assert job["photos_root"] == str(config.photos_dir)
         assert job["target_dir"] == str(config.photos_dir / "旭刚")
-        assert job["plan_dir"] == str(config.plans_dir)
+        assert job["plan_dir"] == str(config.plans_dir / acc.id)
         assert job["library_zone"] is None and job["full"] is True and job["interactive"] is False
         assert job["until_found"] == 50 and job["mfa_timeout_s"] == 600
         assert job["index_wait_s"] == 300

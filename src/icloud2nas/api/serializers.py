@@ -41,7 +41,10 @@ def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
 
 
-def account_json(a: Account, library_ids: list[str]) -> dict[str, Any]:
+def account_json(
+    a: Account, library_ids: list[str], names: dict[int, str] | None = None
+) -> dict[str, Any]:
+    """`names` maps host uids to user names (owners.owner_names) for `owner_name`."""
     return {
         "id": a.id,
         "display_name": a.display_name,
@@ -55,6 +58,9 @@ def account_json(a: Account, library_ids: list[str]) -> dict[str, Any]:
         "created_at": _iso(a.created_at),
         "primary_dir": a.primary_dir,
         "library_ids": library_ids,
+        "owner_uid": a.owner_uid,
+        "owner_gid": a.owner_gid,
+        "owner_name": (names or {}).get(a.owner_uid) if a.owner_uid is not None else None,
     }
 
 

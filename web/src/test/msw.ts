@@ -2,6 +2,7 @@ import { http, HttpResponse, type HttpResponseResolver } from "msw";
 import { setupServer } from "msw/node";
 import type {
   Account,
+  HostUser,
   Library,
   Plan,
   PlanDetail,
@@ -44,6 +45,9 @@ const accounts = (): Account[] => [
     created_at: "2026-10-14T02:00:00+00:00",
     primary_dir: "旭刚",
     library_ids: [ids.libXugang],
+    owner_uid: 1000,
+    owner_gid: 10,
+    owner_name: "Castamere",
   },
   {
     id: ids.huanyijing,
@@ -58,6 +62,9 @@ const accounts = (): Account[] => [
     created_at: "2026-10-21T12:00:00+00:00",
     primary_dir: "幻伊镜",
     library_ids: [ids.libHuanyijing],
+    owner_uid: 1001,
+    owner_gid: 10,
+    owner_name: "Today_red",
   },
 ];
 
@@ -173,25 +180,19 @@ const plans = (): Plan[] => [
 
 const trash = (): TrashEntry[] => [
   {
-    rel: "旭刚",
     library_id: ids.libXugang,
     display_name: "旭刚",
+    target_dir: "旭刚",
     days: [
       { day: "2026-10-21", files: 3, bytes: 12_582_912 },
       { day: "2026-10-19", files: 14, bytes: 2_147_483_648 },
     ],
   },
   {
-    rel: "幻伊镜",
     library_id: ids.libHuanyijing,
     display_name: "幻伊镜",
+    target_dir: "幻伊镜",
     days: [{ day: "2026-10-20", files: 5, bytes: 52_428_800 }],
-  },
-  {
-    rel: "old-lib",
-    library_id: null,
-    display_name: null,
-    days: [{ day: "2026-10-02", files: 2, bytes: 1_048_576 }],
   },
 ];
 
@@ -230,6 +231,11 @@ const status = (): Status => ({
   started_at: "2026-10-21T08:00:00+00:00",
 });
 
+const hostUsers = (): HostUser[] => [
+  { name: "Castamere", uid: 1000, gid: 10, group: "admin", home: "/home/Castamere" },
+  { name: "Today_red", uid: 1001, gid: 10, group: "admin", home: "/home/Today_red" },
+];
+
 function freshDb() {
   return {
     accounts: accounts(),
@@ -241,6 +247,9 @@ function freshDb() {
     status: status(),
     session: { auth_required: false, authenticated: false },
     adminPassword: ADMIN_PASSWORD,
+    /** `GET /api/host-users`: false = single-user mode. */
+    privileged: true,
+    hostUsers: hostUsers(),
   };
 }
 
@@ -372,7 +381,22 @@ const handlers = [
     guarded(async ({ params, request }) => {
       const account = find(db.accounts, params.id);
       if (!account) return err(404, "not found", "unknown account");
-      const body = (await request.json()) as { display_name?: string; password?: string };
+      const body = (await request.json()) as {
+        display_name?: string;
+        password?: string;
+        owner_uid?: number;
+        owner_gid?: number;
+      };
+      if ((body.owner_uid === undefined) !== (body.owner_gid === undefined)) {
+        return err(400, "invalid", "owner_uid and owner_gid go together");
+      }
+      // the owner is fixed once the account is added; repeating it is a no-op (like the server)
+      if (
+        body.owner_uid !== undefined &&
+        (body.owner_uid !== account.owner_uid || body.owner_gid !== account.owner_gid)
+      ) {
+        return err(409, "owner fixed", "the file owner is set when the account is added and cannot be changed");
+      }
       if (body.display_name) account.display_name = body.display_name;
       return HttpResponse.json(
         body.password ? { ...account, run_id: "d6000000000000000000000000000006" } : account,
@@ -409,6 +433,25 @@ const handlers = [
     guarded(() => HttpResponse.json({ personal: ["PrimarySync"], shared: [] })),
   ),
 
+  route(
+    "get",
+    "/api/host-users",
+    guarded(({ request }) => {
+      const path = new URL(request.url).searchParams.get("path");
+      if (path !== null && (path.startsWith("/") || path.split("/").includes(".."))) {
+        return err(400, "invalid", "path must stay inside the photos root");
+      }
+      // the nearest existing ancestor of `<name>/…` is that user's home
+      const first = path?.split("/")[0];
+      const user = db.hostUsers.find((u) => u.name === first);
+      return HttpResponse.json({
+        privileged: db.privileged,
+        users: db.hostUsers,
+        suggested: user ? { uid: user.uid, gid: user.gid } : null,
+      });
+    }),
+  ),
+
   route("get", "/api/libraries", guarded(() => HttpResponse.json(db.libraries))),
   route("get", 
     "/api/libraries/:id",
@@ -432,8 +475,18 @@ const handlers = [
       return HttpResponse.json(library);
     }),
   ),
-  route("post", "/api/libraries/:id/sync", guarded(() => HttpResponse.json({ queued: true }, { status: 202 }))),
-  route("post", "/api/libraries/:id/reconcile", guarded(() => HttpResponse.json({ queued: true }, { status: 202 }))),
+  ...(["sync", "reconcile"] as const).map((mode) =>
+    route(
+      "post",
+      `/api/libraries/:id/${mode}`,
+      guarded(({ params }) => {
+        if (find(db.libraries, params.id)?.status === "dir_missing") {
+          return err(409, "busy", "library folder is missing");
+        }
+        return HttpResponse.json({ queued: true }, { status: 202 });
+      }),
+    ),
+  ),
   route("post", 
     "/api/libraries/:id/pause",
     guarded(({ params }) => {
@@ -526,8 +579,8 @@ const handlers = [
   route("delete", 
     "/api/trash/:day",
     guarded(({ params, request }) => {
-      const rel = new URL(request.url).searchParams.get("rel");
-      const entry = db.trash.find((e) => e.rel === rel);
+      const library = new URL(request.url).searchParams.get("library");
+      const entry = db.trash.find((e) => e.library_id === library);
       const day = entry?.days.find((d) => d.day === params.day);
       if (!entry || !day) return err(404, "not found", "no such trash day");
       entry.days = entry.days.filter((d) => d !== day);

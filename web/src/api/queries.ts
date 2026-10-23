@@ -1,4 +1,5 @@
 import {
+  keepPreviousData,
   useMutation,
   useQuery,
   useQueryClient,
@@ -8,6 +9,7 @@ import {
 import { request, requestText } from "./client";
 import type {
   Account,
+  HostUsers,
   Library,
   LibraryPatch,
   NewAccount,
@@ -36,10 +38,11 @@ export const keys = {
   plans: (status: PlanStatus | "all" = "pending") => ["plans", status] as const,
   plan: (id: string) => ["plans", "detail", id] as const,
   trash: ["trash"] as const,
-  trashDay: (day: string, rel: string) => ["trash", day, rel] as const,
+  trashDay: (day: string, library: string) => ["trash", day, library] as const,
   settings: ["settings"] as const,
   status: ["status"] as const,
   session: ["session"] as const,
+  hostUsers: (path: string | null) => ["host-users", path] as const,
 };
 
 const enc = encodeURIComponent;
@@ -107,10 +110,20 @@ export const usePlanDetail = (id: string) =>
 export const useTrash = () =>
   useQuery({ queryKey: keys.trash, queryFn: () => request<TrashEntry[]>("GET", "/api/trash") });
 
-export const useTrashDay = (day: string, rel: string) =>
+export const useTrashDay = (day: string, library: string) =>
   useQuery({
-    queryKey: keys.trashDay(day, rel),
-    queryFn: () => request<TrashFile[]>("GET", `/api/trash/${enc(day)}${query({ rel })}`),
+    queryKey: keys.trashDay(day, library),
+    queryFn: () => request<TrashFile[]>("GET", `/api/trash/${enc(day)}${query({ library })}`),
+  });
+
+/** NAS users for the file-owner select; with `path`, also the owner suggested for that folder. */
+export const useHostUsers = (path: string | null = null) =>
+  useQuery({
+    queryKey: keys.hostUsers(path),
+    queryFn: () => request<HostUsers>("GET", `/api/host-users${query({ path: path ?? undefined })}`),
+    staleTime: 60_000,
+    // keep the select on screen while the next folder's suggestion loads
+    placeholderData: keepPreviousData,
   });
 
 export const useSettings = () =>
@@ -141,7 +154,14 @@ export const useCreateAccount = () =>
 
 export const usePatchAccount = () =>
   useAction(
-    ({ id, ...body }: { id: string; display_name?: string; password?: string }) =>
+    ({
+      id,
+      ...body
+    }: {
+      id: string;
+      display_name?: string;
+      password?: string; // the owner is fixed once the account is added: no owner_* here
+    }) =>
       request<Account & { run_id?: string }>("PATCH", `/api/accounts/${enc(id)}`, body),
     (vars) => (vars.password ? [keys.accounts, keys.runsAll, keys.status] : [keys.accounts]),
   );
@@ -213,15 +233,15 @@ export const useRejectPlan = () =>
 
 export const useKeepFiles = () =>
   useAction(
-    ({ day, rel, paths }: { day: string; rel: string; paths: string[] }) =>
-      request<{ kept: string[] }>("POST", `/api/trash/${enc(day)}/keep${query({ rel })}`, { paths }),
+    ({ day, library, paths }: { day: string; library: string; paths: string[] }) =>
+      request<{ kept: string[] }>("POST", `/api/trash/${enc(day)}/keep${query({ library })}`, { paths }),
     [keys.trash],
   );
 
 export const useDeleteDay = () =>
   useAction(
-    ({ day, rel }: { day: string; rel: string }) =>
-      request<{ deleted: number }>("DELETE", `/api/trash/${enc(day)}${query({ rel })}`),
+    ({ day, library }: { day: string; library: string }) =>
+      request<{ deleted: number }>("DELETE", `/api/trash/${enc(day)}${query({ library })}`),
     [keys.trash],
   );
 

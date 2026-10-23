@@ -118,6 +118,7 @@ def main() -> int:
                         "job": job,
                         "has_password": bool(os.environ.get("I2N_PASSWORD")),
                         "apply_plan": args.apply_plan,
+                        "env": dict(os.environ),
                     },
                     ensure_ascii=False,
                 )
