@@ -32,7 +32,7 @@ def onboarding(config: Config) -> tuple[Onboarding, Store, list[tuple[str, dict[
 @pytest.mark.parametrize(
     ("name", "expected"),
     [
-        ("旭刚", "旭刚"),
+        ("小明", "小明"),
         (" a/b\\c ", "a_b_c"),
         ("..hidden", "hidden"),
         ("", "fallbk"),
@@ -48,7 +48,7 @@ def test_create_account_encrypts_and_prepares_cookie_dir(
 ) -> None:
     ob, store, _ = onboarding
     account_id = ob.create_account(
-        display_name="旭刚", apple_id="a@icloud.com", region="cn", password="s3cret"
+        display_name="小明", apple_id="a@icloud.com", region="cn", password="s3cret"
     )
     with store.session() as s:
         acc = repo.get_account(s, account_id)
@@ -73,7 +73,7 @@ async def test_auth_with_code_relay_then_library_discovery(
         }),
     )
     account_id = ob.create_account(
-        display_name="旭刚", apple_id="a@icloud.com", region="cn", password="pw"
+        display_name="小明", apple_id="a@icloud.com", region="cn", password="pw"
     )
     session = await ob.start_auth(account_id)
     with pytest.raises(ValueError):
@@ -93,7 +93,7 @@ async def test_auth_with_code_relay_then_library_discovery(
     assert personal == ["PrimarySync"] and shared == ["SharedSync-9"]
     with store.session() as s:
         libs = {lib.zone_name: lib for lib in repo.list_libraries(s)}
-        assert libs["PrimarySync"].enabled is True and libs["PrimarySync"].target_dir == "旭刚"
+        assert libs["PrimarySync"].enabled is True and libs["PrimarySync"].target_dir == "小明"
         assert libs["PrimarySync"].interval_min == 30 and libs["PrimarySync"].nightly_at == "03:00"
         assert libs["SharedSync-9"].enabled is False and libs["SharedSync-9"].kind == "shared"
         assert libs["SharedSync-9"].target_dir == "shared/SharedSync-9"
@@ -151,7 +151,7 @@ async def test_refresh_keeps_a_user_disable_and_existing_dir(
 ) -> None:
     ob, store, _ = onboarding
     account_id = ob.create_account(
-        display_name="旭刚", apple_id="d@icloud.com", region="cn", password="pw"
+        display_name="小明", apple_id="d@icloud.com", region="cn", password="pw"
     )
     await ob.refresh_libraries(account_id)  # default list scenario: PrimarySync only
     with store.session() as s:
@@ -229,9 +229,9 @@ async def test_second_account_with_same_shared_zone_keeps_personal_library(
                                          "shared": ["SharedSync-9"]},
                                         {"ev": "done", "stats": {}}], "exit": 0}}),
     )
-    first = ob.create_account(display_name="旭刚", apple_id="h@icloud.com", region="cn",
+    first = ob.create_account(display_name="小明", apple_id="h@icloud.com", region="cn",
                               password="pw")
-    second = ob.create_account(display_name="幻伊镜", apple_id="i@icloud.com", region="cn",
+    second = ob.create_account(display_name="小红", apple_id="i@icloud.com", region="cn",
                                password="pw")
     await ob.refresh_libraries(first)
     personal, shared = await ob.refresh_libraries(second)
@@ -260,7 +260,7 @@ def test_set_password_publishes_account_updated(
 ) -> None:
     ob, _, seen = onboarding
     account_id = ob.create_account(
-        display_name="旭刚", apple_id="a@icloud.com", region="cn", password="old"
+        display_name="小明", apple_id="a@icloud.com", region="cn", password="old"
     )
     ob.set_password(account_id, "new")
     assert seen[-1] == ("account.updated", {"account_id": account_id})
@@ -278,9 +278,9 @@ async def test_create_account_with_target_dir_feeds_refresh(
     with store.session() as s:
         assert repo.get_account_by_apple_id(s, "z@icloud.com") is None
     account_id = ob.create_account(
-        display_name="旭刚", apple_id="a@icloud.com", region="cn", password="pw",
-        target_dir="家/旭刚",
+        display_name="小明", apple_id="a@icloud.com", region="cn", password="pw",
+        target_dir="家/小明",
     )
     await ob.refresh_libraries(account_id)
     with store.session() as s:
-        assert [lib.target_dir for lib in repo.list_libraries(s)] == ["家/旭刚"]
+        assert [lib.target_dir for lib in repo.list_libraries(s)] == ["家/小明"]

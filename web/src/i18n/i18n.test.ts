@@ -14,7 +14,7 @@ test("zh and en have identical key sets", () => {
 });
 
 test("t replaces placeholders", () => {
-  expect(t("last-login", { time: "旭刚" })).toContain("旭刚");
+  expect(t("last-login", { time: "小明" })).toContain("小明");
 });
 
 test("default language follows navigator.language", () => {

@@ -36,7 +36,7 @@ def set_scenario(monkeypatch: pytest.MonkeyPatch, scenario: dict[str, Any]) -> N
 
 
 def onboard(
-    client: TestClient, name: str = "旭刚", apple_id: str = "a@icloud.com", **extra: Any
+    client: TestClient, name: str = "小明", apple_id: str = "a@icloud.com", **extra: Any
 ) -> tuple[str, str]:
     """Create an account against the default fake worker; returns (account_id, library_id)."""
     response = client.post(

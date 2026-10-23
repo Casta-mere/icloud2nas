@@ -10,10 +10,10 @@ import { Settings } from "./Settings/Settings";
 import { Trash } from "./Trash/Trash";
 
 const PAGES: [string, () => ReactElement, string, string][] = [
-  ["Overview", () => <Overview />, "/api/accounts", "旭刚"],
-  ["Accounts", () => <Accounts />, "/api/accounts", "旭刚"],
-  ["Libraries", () => <Libraries />, "/api/libraries", "旭刚"],
-  ["Trash", () => <Trash />, "/api/trash", "旭刚 · 2026-10-21"],
+  ["Overview", () => <Overview />, "/api/accounts", "小明"],
+  ["Accounts", () => <Accounts />, "/api/accounts", "小明"],
+  ["Libraries", () => <Libraries />, "/api/libraries", "小明"],
+  ["Trash", () => <Trash />, "/api/trash", "小明 · 2026-10-21"],
   ["Settings", () => <Settings />, "/api/settings", "通知"],
 ];
 

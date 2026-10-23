@@ -17,7 +17,7 @@ from tests.api.conftest import PASSWORD, onboard, set_scenario, wait_for
 from tests.conftest import ctl_run
 
 API = tuple[TestClient, AppState]
-ADD = ["account", "add", "--name", "旭刚", "--apple-id", "a@icloud.com", "--region", "cn"]
+ADD = ["account", "add", "--name", "小明", "--apple-id", "a@icloud.com", "--region", "cn"]
 FUSED_PLAN = {
     "ev": "reconcile_plan", "remote_total": 100, "local_total": 130, "extraneous": 30,
     "missing": 0, "fused": True,
@@ -77,7 +77,7 @@ def test_account_add_with_2fa_over_http(
     rc, out = ctl_run(client, ["account", "list"])
     assert rc == 0 and "a@icloud.com" in out and "\tok\t" in out
     rc, out = ctl_run(client, ["library", "list"])
-    assert rc == 0 and "旭刚" in out and "PrimarySync" in out and "xugang-photos" in out
+    assert rc == 0 and "小明" in out and "PrimarySync" in out and "xugang-photos" in out
     assert "\tTrue\t" in out
     modes = [json.loads(ln)["argv"][1] for ln in calls.read_text(encoding="utf-8").splitlines()]
     assert modes == ["auth", "list"]
@@ -110,7 +110,7 @@ def test_run_sync_streams_events_and_exit_code(
                              {"ev": "error", "kind": "unavailable", "message": "503"}],
                   "exit": 5}},
     )
-    rc, out = ctl_run(client, ["run", "sync", "旭刚"])  # by display name
+    rc, out = ctl_run(client, ["run", "sync", "小明"])  # by display name
     assert rc == 5 and "[error]" in out
     rc, out = ctl_run(client, ["runs", "--library", library_id, "--limit", "5"])
     assert rc == 0
@@ -316,7 +316,7 @@ def test_account_reauth_and_set_password(api: API, monkeypatch: pytest.MonkeyPat
     client, _ = api
     account_id, _ = onboard(client)
     wait_for(client, lambda c: c.get(f"/api/accounts/{account_id}").json()["status"] == "ok")
-    rc, out = ctl_run(client, ["account", "reauth", "旭刚"])
+    rc, out = ctl_run(client, ["account", "reauth", "小明"])
     assert rc == 0, out
     assert "[started]" in out
     rc, out = ctl_run(client, ["account", "set-password", account_id[:8]], password="new")
@@ -344,18 +344,18 @@ def test_settings_status_pause_and_trash_commands(api: API, tmp_path: Path) -> N
     (day_dir / DAY_MARKER).touch()
     trashed.write_bytes(b"x" * 10)
     rc, out = ctl_run(client, ["trash", "list"])
-    assert rc == 0 and "旭刚\t2026-10-20\t1\t10" in out
+    assert rc == 0 and "小明\t2026-10-20\t1\t10" in out
     rc, out = ctl_run(client, ["trash", "day", library_id[:8], "2026-10-20"])
     assert rc == 0 and "2024/a.HEIC\t10" in out
-    rc, out = ctl_run(client, ["trash", "keep", "旭刚", "2026-10-20", "2024/a.HEIC"])
+    rc, out = ctl_run(client, ["trash", "keep", "小明", "2026-10-20", "2024/a.HEIC"])
     assert rc == 0 and "kept 2024/a.HEIC" in out
     assert (day_dir.parent.parent / "kept" / "2024" / "a.HEIC").exists()
     assert "2026-10-20\t0\t0" in ctl_run(client, ["trash", "list"])[1]
-    rc, out = ctl_run(client, ["trash", "delete", "旭刚", "2026-10-20"])
+    rc, out = ctl_run(client, ["trash", "delete", "小明", "2026-10-20"])
     assert rc == 0 and out.startswith("deleted ")
     assert "2026-10-20" not in ctl_run(client, ["trash", "list"])[1]
-    assert ctl_run(client, ["trash", "delete", "旭刚", "2026-10-20"])[0] == 1  # already gone
-    rc, out = ctl_run(client, ["trash", "day", "旭刚", "not-a-day"])
+    assert ctl_run(client, ["trash", "delete", "小明", "2026-10-20"])[0] == 1  # already gone
+    rc, out = ctl_run(client, ["trash", "day", "小明", "not-a-day"])
     assert rc == 1 and out.startswith("error: ")
 
 

@@ -18,6 +18,6 @@ test("bytes and durations", () => {
 });
 
 test("names fall back to the id prefix and 已删除", () => {
-  expect(libraryName(db.libraries, ids.libXugang)).toBe("旭刚");
+  expect(libraryName(db.libraries, ids.libXugang)).toBe("小明");
   expect(accountName([], "0123456789abcdef")).toMatch(/^01234567 · /);
 });

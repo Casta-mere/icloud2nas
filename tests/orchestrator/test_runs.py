@@ -26,14 +26,14 @@ def world(config: Config) -> dict[str, Any]:
     bus.subscribe(lambda t, p: seen.append((t, p)))
     with store.session() as s:
         acc = repo.create_account(
-            s, display_name="旭刚", apple_id="a@icloud.com", region="cn",
+            s, display_name="小明", apple_id="a@icloud.com", region="cn",
             password_enc=Secrets.from_config(config).encrypt("pw"),
             client_id="11111111-1111-1111-1111-111111111111",
         )
         acc.status = "ok"
         lib = repo.upsert_library(
-            s, acc, kind="personal", zone_name="PrimarySync", display_name="旭刚",
-            target_dir="旭刚", interval_min=30, nightly_at="03:00",
+            s, acc, kind="personal", zone_name="PrimarySync", display_name="小明",
+            target_dir="小明", interval_min=30, nightly_at="03:00",
         )
         lib.enabled = True
         ids = {"account": acc.id, "library": lib.id}

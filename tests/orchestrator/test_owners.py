@@ -20,16 +20,16 @@ from icloud2nas.orchestrator.store.models import Account
 PASSWD = """\
 root:x:0:0:root:/root:/bin/bash
 daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin
-Castamere:x:1000:10::/home/Castamere:/bin/sh
-Today_red:x:1001:10::/home/Today_red:/bin/sh
-WY:x:1003:100::/home/WY:/bin/sh
+Alice:x:1000:10::/home/Alice:/bin/sh
+Bob:x:1001:10::/home/Bob:/bin/sh
+Carol:x:1003:100::/home/Carol:/bin/sh
 thunder:x:1004:100::/var/lib/xunlei:/bin/false
 earlyoom:x:61876:61876::/home/earlyoom:/usr/sbin/nologin
 broken line without colons
 """
 GROUP = """\
 root:x:0:
-admin:x:10:Castamere,Today_red
+admin:x:10:Alice,Bob
 """
 
 
@@ -71,9 +71,9 @@ def chowns(monkeypatch: pytest.MonkeyPatch) -> Chowns:
 def test_read_host_users_filters_system_accounts(tmp_path: Path) -> None:
     users = read_host_users(_host_etc(tmp_path))
     assert users == [
-        HostUser("Castamere", 1000, 10, "admin", "/home/Castamere"),
-        HostUser("Today_red", 1001, 10, "admin", "/home/Today_red"),
-        HostUser("WY", 1003, 100, "100", "/home/WY"),
+        HostUser("Alice", 1000, 10, "admin", "/home/Alice"),
+        HostUser("Bob", 1001, 10, "admin", "/home/Bob"),
+        HostUser("Carol", 1003, 100, "100", "/home/Carol"),
     ]
 
 
@@ -89,8 +89,8 @@ def test_default_owner_walks_up_to_existing_ancestor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     photos = tmp_path / "photos"
-    (photos / "Today_red").mkdir(parents=True)
-    owners_by_path = {photos: (0, 0), photos / "Today_red": (1001, 10)}
+    (photos / "Bob").mkdir(parents=True)
+    owners_by_path = {photos: (0, 0), photos / "Bob": (1001, 10)}
     real_stat = os.stat
 
     def fake_stat(path: str | Path, *args: object, **kwargs: object) -> os.stat_result:
@@ -101,7 +101,7 @@ def test_default_owner_walks_up_to_existing_ancestor(
         return os.stat_result(fields)
 
     monkeypatch.setattr(owners.os, "stat", fake_stat)
-    assert default_owner(photos / "Today_red" / "Photos" / "iCloud", photos) == (1001, 10)
+    assert default_owner(photos / "Bob" / "Photos" / "iCloud", photos) == (1001, 10)
     assert default_owner(photos / "nobody" / "x", photos) == (0, 0)
     assert default_owner(photos, photos) == (0, 0)
 
@@ -250,7 +250,7 @@ def test_read_host_users_ignores_non_ascii_digits(tmp_path: Path) -> None:
         f.write("odd:x:\u0661\u0660\u0660\u0661:10::/home/odd:/bin/sh\n")
     with (etc / "group").open("a", encoding="utf-8") as f:
         f.write("weird:x:\u0661\u0660:\n")
-    assert [u.name for u in read_host_users(etc)] == ["Castamere", "Today_red", "WY"]
+    assert [u.name for u in read_host_users(etc)] == ["Alice", "Bob", "Carol"]
 
 
 def test_chmod_never_follows_a_symlink(tmp_path: Path) -> None:
@@ -271,12 +271,12 @@ def test_chmod_never_follows_a_symlink(tmp_path: Path) -> None:
 def test_prepare_spawn_never_recreates_a_synced_library(
     config: Config, chowns: Chowns
 ) -> None:
-    library = config.photos_dir / "Castamere" / "Photos" / "iCloud"
+    library = config.photos_dir / "Alice" / "Photos" / "iCloud"
     with pytest.raises(owners.LibraryMissing):
         prepare_spawn(config, "acc1", (1000, 10), library, require_library=True)
     with pytest.raises(owners.LibraryMissing):
         prepare_spawn(config, "acc1", None, library, require_library=True)
-    assert not (config.photos_dir / "Castamere").exists()
+    assert not (config.photos_dir / "Alice").exists()
     library.mkdir(parents=True)
     prepare_spawn(config, "acc1", (1000, 10), library, require_library=True)
     assert (library / ".icloud2nas" / "trash").is_dir()
@@ -295,10 +295,10 @@ def test_prepare_store_never_makes_a_required_library(tmp_path: Path, chowns: Ch
 def test_prepare_spawn_refuses_a_store_symlinked_to_another_library(
     config: Config, chowns: Chowns
 ) -> None:
-    other = config.photos_dir / "Today_red" / "iCloud" / ".icloud2nas"
+    other = config.photos_dir / "Bob" / "iCloud" / ".icloud2nas"
     (other / "trash").mkdir(parents=True)
     before = {p: (p.stat().st_uid, p.stat().st_gid) for p in (other, other / "trash")}
-    library = config.photos_dir / "Castamere" / "iCloud"
+    library = config.photos_dir / "Alice" / "iCloud"
     library.mkdir(parents=True)
     (library / ".icloud2nas").symlink_to(other)
     for required in (True, False):
@@ -314,8 +314,8 @@ def test_prepare_spawn_refuses_a_symlinked_parent_above_the_library(
 ) -> None:
     real = config.photos_dir / "elsewhere"
     (real / "iCloud").mkdir(parents=True)
-    (config.photos_dir / "Castamere").symlink_to(real)
-    library = config.photos_dir / "Castamere" / "iCloud"
+    (config.photos_dir / "Alice").symlink_to(real)
+    library = config.photos_dir / "Alice" / "iCloud"
     for required in (True, False):
         with pytest.raises(ValueError, match="symlink"):
             prepare_spawn(config, "acc1", (1000, 10), library, require_library=required)

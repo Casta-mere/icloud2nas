@@ -61,9 +61,9 @@ def test_sync_requires_absolute_dirs_inside_photos_root() -> None:
     ok = JobSpec.load(
         "sync",
         "r",
-        json.dumps({**BASE, "photos_root": "/photos", "target_dir": "/photos/旭刚/"}),
+        json.dumps({**BASE, "photos_root": "/photos", "target_dir": "/photos/小明/"}),
     )
-    assert ok.library_rel == "旭刚"
+    assert ok.library_rel == "小明"
     assert ok.until_found == 50 and ok.full is False
     with pytest.raises(ValueError):
         JobSpec.load("sync", "r", json.dumps({**BASE, "photos_root": "/photos"}))

@@ -35,7 +35,7 @@ def test_list_days_and_day(photos_tree: tuple[Path, Path]) -> None:
     assert (days[1].files, days[1].bytes) == (2, 7)
     files = list_day(lib, date(2026, 10, 1), photos=photos)
     assert [(f.rel, f.size) for f in files] == [("2024/05/x.HEIC", 5), ("y.jpg", 2)]
-    other = photos / "幻伊镜"
+    other = photos / "小红"
     assert list_days(other, photos=photos) == []
     _day(other, "2026-10-02", {"a": b"123"})
     assert trash_bytes([lib, other, photos / "absent"], photos=photos) == 11
@@ -81,7 +81,7 @@ def test_library_dir_is_validated(photos_tree: tuple[Path, Path]) -> None:
     # a store that is a symlink out of the library must not be followed
     (lib / ".icloud2nas").mkdir()
     (lib / ".icloud2nas" / "trash").symlink_to(photos / "x")
-    for bad in (lib, Path("relative/lib"), photos / "a" / ".." / "旭刚"):
+    for bad in (lib, Path("relative/lib"), photos / "a" / ".." / "小明"):
         with pytest.raises(ValueError, match=r"."):
             delete_day(bad, day, photos=photos)
         with pytest.raises(ValueError, match=r"."):
@@ -129,20 +129,20 @@ def test_migrate_legacy_moves_root_trash_and_kept_without_loss(
     photos, lib = photos_tree
     shared = photos / "shared" / "家庭"
     shared.mkdir(parents=True)
-    _legacy_day(photos, "旭刚", "2026-10-01", {"2024/a.HEIC": b"a", "b.jpg": b"b"})
-    _legacy_day(photos, "旭刚", "2026-10-02", {"2024/a.HEIC": b"a2"})
+    _legacy_day(photos, "小明", "2026-10-01", {"2024/a.HEIC": b"a", "b.jpg": b"b"})
+    _legacy_day(photos, "小明", "2026-10-02", {"2024/a.HEIC": b"a2"})
     _legacy_day(photos, "shared/家庭", "2026-10-03", {"s.jpg": b"s"})
     _legacy_day(photos, "old-lib", "2026-09-01", {"o.jpg": b"o"})  # an unknown rel
     # a day already present in the new layout: the legacy one merges into it
     _day(lib, "2026-10-02", {"2024/a.HEIC": b"new"})
-    (photos / "kept" / "旭刚" / "2024").mkdir(parents=True)
-    (photos / "kept" / "旭刚" / "2024" / "k.HEIC").write_bytes(b"k")
+    (photos / "kept" / "小明" / "2024").mkdir(parents=True)
+    (photos / "kept" / "小明" / "2024" / "k.HEIC").write_bytes(b"k")
     (photos / "kept" / "old-lib").mkdir(parents=True)
     (photos / "kept" / "old-lib" / "x.jpg").write_bytes(b"x")
     (lib / ".icloud2nas" / "kept").mkdir(parents=True)
     (lib / ".icloud2nas" / "kept" / "already.jpg").write_bytes(b"z")
 
-    lines = migrate_legacy(photos, ["旭刚", "shared/家庭", "幻伊镜"])
+    lines = migrate_legacy(photos, ["小明", "shared/家庭", "小红"])
     assert lines  # something was logged
 
     new_lib_trash = _count(lib / ".icloud2nas" / "trash")
@@ -155,19 +155,19 @@ def test_migrate_legacy_moves_root_trash_and_kept_without_loss(
     # unknown rels stay exactly where they were; known ones leave no trace behind
     assert (photos / ".trash" / "old-lib" / "2026-09-01" / "o.jpg").read_bytes() == b"o"
     assert (photos / "kept" / "old-lib" / "x.jpg").read_bytes() == b"x"
-    assert not (photos / ".trash" / "旭刚").exists()
+    assert not (photos / ".trash" / "小明").exists()
     assert not (photos / ".trash" / "shared").exists()
-    assert not (photos / "kept" / "旭刚").exists()
+    assert not (photos / "kept" / "小明").exists()
     assert any("old-lib" in line for line in lines)
     # idempotent
-    assert migrate_legacy(photos, ["旭刚", "shared/家庭"]) == [
+    assert migrate_legacy(photos, ["小明", "shared/家庭"]) == [
         line for line in lines if "old-lib" in line
     ]
 
 
 def test_migrate_legacy_without_legacy_dirs_is_a_no_op(photos_tree: tuple[Path, Path]) -> None:
     photos, lib = photos_tree
-    assert migrate_legacy(photos, ["旭刚"]) == []
+    assert migrate_legacy(photos, ["小明"]) == []
     assert not (lib / ".icloud2nas").exists()
 
 
@@ -189,16 +189,16 @@ def test_migrate_legacy_leaves_cross_device_trees(
     from icloud2nas.engine import trash
 
     photos, lib = photos_tree
-    _legacy_day(photos, "旭刚", "2026-10-01", {"a.jpg": b"a"})
+    _legacy_day(photos, "小明", "2026-10-01", {"a.jpg": b"a"})
 
     def exdev(*_: object, **__: object) -> None:
         raise OSError(errno.EXDEV, os.strerror(errno.EXDEV))
 
     monkeypatch.setattr(trash.os, "rename", exdev)
-    lines = migrate_legacy(photos, ["旭刚"])
+    lines = migrate_legacy(photos, ["小明"])
     monkeypatch.undo()
     assert any("cross-device" in line for line in lines)
-    assert (photos / ".trash" / "旭刚" / "2026-10-01" / "a.jpg").read_bytes() == b"a"
+    assert (photos / ".trash" / "小明" / "2026-10-01" / "a.jpg").read_bytes() == b"a"
     assert _count(lib) == (0, 0)
 
 
@@ -208,14 +208,14 @@ def test_migrate_legacy_survives_a_file_vs_folder_collision(
     photos, lib = photos_tree
     other = photos / "Ann"
     other.mkdir()
-    _legacy_day(photos, "旭刚", "2026-10-01", {"2024/a.jpg": b"a"})
+    _legacy_day(photos, "小明", "2026-10-01", {"2024/a.jpg": b"a"})
     _legacy_day(photos, "Ann", "2026-10-01", {"b.jpg": b"b"})
     clash = _day(lib, "2026-10-01", {})
     (clash / "2024").write_bytes(b"a file where the legacy tree has a folder")
-    lines = migrate_legacy(photos, ["旭刚", "Ann"])
-    assert any(line.startswith("warning:") and "2026-10-01" in line and "旭刚" in line
+    lines = migrate_legacy(photos, ["小明", "Ann"])
+    assert any(line.startswith("warning:") and "2026-10-01" in line and "小明" in line
                for line in lines)
-    assert (photos / ".trash" / "旭刚" / "2026-10-01" / "2024" / "a.jpg").read_bytes() == b"a"
+    assert (photos / ".trash" / "小明" / "2026-10-01" / "2024" / "a.jpg").read_bytes() == b"a"
     moved = other / ".icloud2nas" / "trash" / "2026-10-01" / "b.jpg"
     assert moved.read_bytes() == b"b"  # the next tree still migrated
 
@@ -268,13 +268,13 @@ def test_migrate_legacy_refuses_a_symlinked_store(photos_tree: tuple[Path, Path]
     photos, lib = photos_tree
     outside = _outside(photos)
     (lib / ".icloud2nas").symlink_to(outside)
-    _legacy_day(photos, "旭刚", "2026-10-01", {"a.jpg": b"a"})
-    (photos / "kept" / "旭刚").mkdir(parents=True)
-    (photos / "kept" / "旭刚" / "k.jpg").write_bytes(b"k")
-    lines = migrate_legacy(photos, ["旭刚"])
+    _legacy_day(photos, "小明", "2026-10-01", {"a.jpg": b"a"})
+    (photos / "kept" / "小明").mkdir(parents=True)
+    (photos / "kept" / "小明" / "k.jpg").write_bytes(b"k")
+    lines = migrate_legacy(photos, ["小明"])
     assert list(outside.iterdir()) == []
-    assert (photos / ".trash" / "旭刚" / "2026-10-01" / "a.jpg").read_bytes() == b"a"
-    assert (photos / "kept" / "旭刚" / "k.jpg").read_bytes() == b"k"
+    assert (photos / ".trash" / "小明" / "2026-10-01" / "a.jpg").read_bytes() == b"a"
+    assert (photos / "kept" / "小明" / "k.jpg").read_bytes() == b"k"
     assert sum("symlink" in line for line in lines) == 2
 
 
@@ -286,11 +286,11 @@ def test_migrate_legacy_refuses_a_symlink_inside_an_existing_kept(
     kept = lib / ".icloud2nas" / "kept"
     kept.mkdir(parents=True)
     (kept / "2024").symlink_to(outside)
-    (photos / "kept" / "旭刚" / "2024").mkdir(parents=True)
-    (photos / "kept" / "旭刚" / "2024" / "k.jpg").write_bytes(b"k")
-    lines = migrate_legacy(photos, ["旭刚"])
+    (photos / "kept" / "小明" / "2024").mkdir(parents=True)
+    (photos / "kept" / "小明" / "2024" / "k.jpg").write_bytes(b"k")
+    lines = migrate_legacy(photos, ["小明"])
     assert list(outside.iterdir()) == []
-    assert (photos / "kept" / "旭刚" / "2024" / "k.jpg").read_bytes() == b"k"
+    assert (photos / "kept" / "小明" / "2024" / "k.jpg").read_bytes() == b"k"
     assert any(line.startswith("warning:") and "symlink" in line for line in lines)
 
 

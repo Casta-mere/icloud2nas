@@ -40,11 +40,11 @@ def test_host_users_endpoint_privileged_flag(
     body = client.get("/api/host-users").json()
     assert body["privileged"] is True and body["suggested"] is None
     assert body["users"] == [
-        {"name": "Castamere", "uid": 1000, "gid": 10, "group": "admin",
-         "home": "/home/Castamere"},
-        {"name": "Today_red", "uid": 1001, "gid": 10, "group": "admin",
-         "home": "/home/Today_red"},
-        {"name": "WY", "uid": 1003, "gid": 100, "group": "100", "home": "/home/WY"},
+        {"name": "Alice", "uid": 1000, "gid": 10, "group": "admin",
+         "home": "/home/Alice"},
+        {"name": "Bob", "uid": 1001, "gid": 10, "group": "admin",
+         "home": "/home/Bob"},
+        {"name": "Carol", "uid": 1003, "gid": 100, "group": "100", "home": "/home/Carol"},
     ]
     monkeypatch.setattr(owners, "privileged", lambda: False)
     assert client.get("/api/host-users").json()["privileged"] is False
@@ -52,9 +52,9 @@ def test_host_users_endpoint_privileged_flag(
 
 def test_host_users_suggests_the_folder_owner(host_api: API) -> None:
     client, state = host_api
-    (state.config.photos_dir / "WY").mkdir()
-    st = os.stat(state.config.photos_dir / "WY")
-    body = client.get("/api/host-users", params={"path": "WY/Photos/iCloud"}).json()
+    (state.config.photos_dir / "Carol").mkdir()
+    st = os.stat(state.config.photos_dir / "Carol")
+    body = client.get("/api/host-users", params={"path": "Carol/Photos/iCloud"}).json()
     assert body["suggested"] == {"uid": st.st_uid, "gid": st.st_gid}
     assert client.get("/api/host-users", params={"path": "../etc"}).status_code == 400
     assert client.get("/api/host-users", params={"path": "/etc"}).status_code == 400
@@ -71,7 +71,7 @@ def test_account_json_names_the_owner(host_api: API, monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(owners, "privileged", lambda: False)
     account_id, _ = onboard(client, owner_uid=1001, owner_gid=10)
     body = client.get(f"/api/accounts/{account_id}").json()
-    assert body["owner_name"] == "Today_red"
+    assert body["owner_name"] == "Bob"
     listed = client.get("/api/accounts").json()
-    assert listed[0]["owner_name"] == "Today_red"
+    assert listed[0]["owner_name"] == "Bob"
 

@@ -21,7 +21,7 @@ const patches = () => calls().filter((c) => c.method === "PATCH");
 describe("LibraryCard", () => {
   test("info rows and form rows share the label column", async () => {
     renderPage();
-    const el = await card("旭刚");
+    const el = await card("小明");
     const labels = [...el.querySelectorAll("label")];
     const texts = labels.map((l) => l.textContent);
     for (const want of ["账号", "位置", "文件", "启用", "间隔", "夜间", "目录", "显示名"]) {
@@ -35,7 +35,7 @@ describe("LibraryCard", () => {
 
   test("间隔 blur patches {interval_min: 15}; 夜间 '3:00' is sent as typed and the normalised '03:00' is shown", async () => {
     const { user } = renderPage();
-    const el = await card("旭刚");
+    const el = await card("小明");
     const interval = within(el).getByRole("spinbutton", { name: "间隔" });
     await user.clear(interval);
     await user.type(interval, "15");
@@ -54,7 +54,7 @@ describe("LibraryCard", () => {
 
   test("unchanged fields do not patch; Enter commits once", async () => {
     const { user } = renderPage();
-    const el = await card("旭刚");
+    const el = await card("小明");
     const name = within(el).getByRole("textbox", { name: "显示名" });
     await user.click(name);
     await user.tab();
@@ -68,7 +68,7 @@ describe("LibraryCard", () => {
 
   test("a 400 shows the detail under the field and reverts it", async () => {
     const { user } = renderPage();
-    const el = await card("旭刚");
+    const el = await card("小明");
     const nightly = within(el).getByRole("textbox", { name: "夜间" });
     await user.clear(nightly);
     await user.type(nightly, "25:99");
@@ -79,7 +79,7 @@ describe("LibraryCard", () => {
 
   test("启用 toggle patches immediately", async () => {
     const { user } = renderPage();
-    const el = await card("旭刚");
+    const el = await card("小明");
     await user.click(within(el).getByRole("switch", { name: "启用" }));
     await waitFor(() => expect(patches()).toHaveLength(1));
     expect(patches()[0]?.body).toEqual({ enabled: false });
@@ -87,7 +87,7 @@ describe("LibraryCard", () => {
 
   test("目录 change asks for confirmation, then patches; 409 shows the detail under the field and reverts the value", async () => {
     const { user } = renderPage();
-    const el = await card("旭刚");
+    const el = await card("小明");
     const dir = within(el).getByRole("textbox", { name: "目录" });
     expect(within(el).getByText("改名会连文件夹一起搬")).toBeInTheDocument();
     await user.clear(dir);
@@ -99,19 +99,19 @@ describe("LibraryCard", () => {
     given("PATCH", "/api/libraries/:id", { error: "busy", detail: "a run is active" }, 409);
     await user.click(within(dialog).getByRole("button", { name: "改名" }));
     expect(await within(el).findByText("a run is active")).toBeInTheDocument();
-    expect(dir).toHaveValue("旭刚");
+    expect(dir).toHaveValue("小明");
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   });
 
   test("目录 confirmed patches only target_dir; cancelling reverts without a request", async () => {
     const { user } = renderPage();
-    const el = await card("旭刚");
+    const el = await card("小明");
     const dir = within(el).getByRole("textbox", { name: "目录" });
     await user.clear(dir);
     await user.type(dir, "甲");
     await user.tab();
     await user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "取消" }));
-    expect(dir).toHaveValue("旭刚");
+    expect(dir).toHaveValue("小明");
     expect(patches()).toHaveLength(0);
     await user.clear(dir);
     await user.type(dir, "乙");
@@ -125,14 +125,14 @@ describe("LibraryCard", () => {
     const running: Run = { ...db.runs[1]!, id: "f".repeat(32), status: "running", library_id: ids.libXugang };
     db.runs = [running, ...db.runs];
     renderPage();
-    const el = await card("旭刚");
+    const el = await card("小明");
     expect(await within(el).findByText("同步进行中，暂不能改目录")).toBeInTheDocument();
     expect(within(el).getByRole("textbox", { name: "目录" })).toBeDisabled();
   });
 
   test("立即同步 posts /sync with {} and the chip shows 同步中 after run.started", async () => {
     const { user } = renderPage();
-    const el = await card("旭刚");
+    const el = await card("小明");
     expect(within(el).queryByText("同步中")).not.toBeInTheDocument();
     await user.click(within(el).getByRole("button", { name: "立即同步" }));
     await waitFor(() => expect(calls().some((c) => c.path.endsWith("/sync"))).toBe(true));
@@ -153,14 +153,14 @@ describe("LibraryCard", () => {
   test("a rejected sync shows the detail under the actions", async () => {
     given("POST", "/api/libraries/:id/reconcile", { error: "busy", detail: "space low" }, 409);
     const { user } = renderPage();
-    const el = await card("旭刚");
+    const el = await card("小明");
     await user.click(within(el).getByRole("button", { name: "立即对账" }));
     expect(await within(el).findByText("space low")).toBeInTheDocument();
   });
 
   test("⋯ menu pauses", async () => {
     const { user } = renderPage();
-    const el = await card("旭刚");
+    const el = await card("小明");
     await user.click(within(el).getByRole("button", { name: "更多" }));
     await user.click(within(el).getByRole("button", { name: "暂停" }));
     await waitFor(() => expect(calls().some((c) => c.path.endsWith("/pause"))).toBe(true));
@@ -170,7 +170,7 @@ describe("LibraryCard", () => {
   test("space_paused disables 继续 with its hint", async () => {
     db.libraries[0]!.status = "space_paused";
     const { user } = renderPage();
-    const el = await card("旭刚");
+    const el = await card("小明");
     expect(within(el).getByText("空间不足")).toBeInTheDocument();
     await user.click(within(el).getByRole("button", { name: "更多" }));
     expect(within(el).getByRole("button", { name: "继续" })).toBeDisabled();
@@ -186,12 +186,12 @@ describe("LibraryCard", () => {
   test("dir_missing: 找不到文件夹 chip, the mount hint under the header, 立即同步/立即对账 disabled", async () => {
     db.libraries[0]!.status = "dir_missing";
     renderPage();
-    const el = await card("旭刚");
+    const el = await card("小明");
     expect(within(el).getByText("找不到文件夹")).toBeInTheDocument();
     expect(within(el).getByText("检查挂载或修改目录")).toBeInTheDocument();
     expect(within(el).getByRole("button", { name: "立即同步" })).toBeDisabled();
     expect(within(el).getByRole("button", { name: "立即对账" })).toBeDisabled();
-    const other = await card("幻伊镜");
+    const other = await card("小红");
     expect(within(other).getByRole("button", { name: "立即同步" })).toBeEnabled();
   });
 });

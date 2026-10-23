@@ -21,7 +21,7 @@ BASE = {
     "client_id": "11111111-1111-1111-1111-111111111111",
     "cookie_dir": "/data/accounts/acc1/cookies",
     "photos_root": "/photos",
-    "target_dir": "/photos/旭刚",
+    "target_dir": "/photos/小明",
 }
 
 
@@ -50,7 +50,7 @@ def test_global_config_is_non_interactive_webui_parameter() -> None:
 def test_user_config_fixed_download_settings() -> None:
     cfg = adapter.build_user_config(_spec())
     assert cfg.username == "a@icloud.com" and cfg.password is None
-    assert cfg.directory == "/photos/旭刚" and cfg.cookie_directory == BASE["cookie_dir"]
+    assert cfg.directory == "/photos/小明" and cfg.cookie_directory == BASE["cookie_dir"]
     assert list(cfg.sizes) == [AssetVersionSize.ORIGINAL]
     assert cfg.live_photo_size is LivePhotoVersionSize.ORIGINAL
     assert cfg.auto_delete is False and cfg.xmp_sidecar is False

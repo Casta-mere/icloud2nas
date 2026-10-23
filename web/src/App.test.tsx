@@ -12,7 +12,7 @@ test("renders the brand once the session is known", async () => {
 
 test("no 退出登录 when no admin password is set", async () => {
   renderWithProviders(<App />);
-  await screen.findByRole("article", { name: "旭刚" });
+  await screen.findByRole("article", { name: "小明" });
   expect(screen.queryByRole("button", { name: "退出登录" })).not.toBeInTheDocument();
 });
 
@@ -20,7 +20,7 @@ test("退出登录 deletes the session, drops the cache and shows the login card
   requireAuth();
   db.session.authenticated = true;
   const { user, queryClient } = renderWithProviders(<App />);
-  await screen.findByRole("article", { name: "旭刚" });
+  await screen.findByRole("article", { name: "小明" });
   expect(queryClient.getQueryData(keys.accounts)).toBeDefined();
   // both bars carry it (CSS shows one per width)
   expect(within(screen.getByTestId("phone-bar")).getByRole("button", { name: "退出登录" })).toBeInTheDocument();
@@ -29,5 +29,5 @@ test("退出登录 deletes the session, drops the cache and shows the login card
   expect(await screen.findByLabelText("管理密码")).toBeInTheDocument();
   expect(calls().some((c) => c.method === "DELETE" && c.path === "/api/session")).toBe(true);
   await waitFor(() => expect(queryClient.getQueryData(keys.accounts)).toBeUndefined());
-  expect(screen.queryByRole("article", { name: "旭刚" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("article", { name: "小明" })).not.toBeInTheDocument();
 });

@@ -20,7 +20,7 @@ JOB = {
     "client_id": "11111111-1111-1111-1111-111111111111",
     "cookie_dir": "/tmp/cookies",
     "photos_root": "/photos",
-    "target_dir": "/photos/旭刚",
+    "target_dir": "/photos/小明",
     "plan_dir": "/data/plans",
     "interactive": False,
     "full": False,
@@ -53,7 +53,7 @@ async def test_sync_run_passes_job_and_password_and_collects_events(
     assert result.terminal["stats"] == {"downloaded": 1, "trashed": 0, "full": False}
     call = json.loads(calls_file.read_text(encoding="utf-8"))
     assert call["argv"] == ["--mode", "sync", "--run-id", "r1"]
-    assert call["job"]["target_dir"] == "/photos/旭刚" and call["has_password"] is True
+    assert call["job"]["target_dir"] == "/photos/小明" and call["has_password"] is True
     assert log.exists()
 
 

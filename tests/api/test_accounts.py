@@ -45,7 +45,7 @@ def test_create_account_starts_auth_and_code_completes_onboarding(
     response = client.post(
         "/api/accounts",
         json={
-            "display_name": "旭刚",
+            "display_name": "小明",
             "apple_id": "a@icloud.com",
             "region": "cn",
             "password": "pw",
@@ -164,10 +164,10 @@ def test_prefix_ids_resolve(api: API) -> None:
     client, _ = api
     account_id, library_id = onboard(client)
     assert client.get("/api/accounts/a@icloud.com").json()["id"] == account_id
-    assert client.get("/api/accounts/旭刚").json()["id"] == account_id
+    assert client.get("/api/accounts/小明").json()["id"] == account_id
     assert client.get(f"/api/accounts/{account_id[:8]}").json()["id"] == account_id
     assert client.get(f"/api/libraries/{library_id[:8]}").json()["id"] == library_id
-    assert client.get("/api/libraries/旭刚").json()["id"] == library_id
+    assert client.get("/api/libraries/小明").json()["id"] == library_id
     assert client.get("/api/accounts/zzzz").status_code == 404
 
 
@@ -207,7 +207,7 @@ def test_blank_display_name_rejected(api: API) -> None:
     account_id, _ = onboard(client)
     response = client.patch(f"/api/accounts/{account_id}", json={"display_name": "  "})
     assert response.status_code == 400
-    assert client.get(f"/api/accounts/{account_id}").json()["display_name"] == "旭刚"
+    assert client.get(f"/api/accounts/{account_id}").json()["display_name"] == "小明"
 
 
 def _owner(client: TestClient, account_id: str) -> tuple[object, object, object]:
@@ -218,10 +218,10 @@ def _owner(client: TestClient, account_id: str) -> tuple[object, object, object]
 @pytest.mark.skipif(os.geteuid() != 0, reason="spawning workers as another user needs root")
 def test_create_account_defaults_owner_from_folder(api: API) -> None:
     client, state = api
-    home = state.config.photos_dir / "Today_red"
+    home = state.config.photos_dir / "Bob"
     home.mkdir()
     os.chown(home, 1001, 10)
-    account_id, _ = onboard(client, target_dir="Today_red/Photos/iCloud")
+    account_id, _ = onboard(client, target_dir="Bob/Photos/iCloud")
     assert _owner(client, account_id) == (1001, 10, None)  # no /host/etc: no name
     account_dir = state.config.accounts_dir / account_id
     assert (account_dir.stat().st_uid, account_dir.stat().st_gid) == (1001, 10)
@@ -283,7 +283,7 @@ def test_owner_cannot_change_after_the_account_is_added(
     client, state = api
     monkeypatch.setattr(owners, "privileged", lambda: False)  # the fake worker runs as us
     account_id, _ = onboard(client, owner_uid=1003, owner_gid=100)
-    unset_id, _ = onboard(client, name="幻伊镜", apple_id="b@icloud.com", target_dir="B")
+    unset_id, _ = onboard(client, name="小红", apple_id="b@icloud.com", target_dir="B")
     with state.store.session() as s:  # an account added before owners existed
         legacy = repo.get_account(s, unset_id)
         legacy.owner_uid = legacy.owner_gid = None

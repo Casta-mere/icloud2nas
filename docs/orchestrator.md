@@ -74,7 +74,7 @@ the database through `icloud2nas-ctl` anyway.
 `http://127.0.0.1:4871`), `I2N_ADMIN_PASSWORD` when an admin password is set (otherwise it asks),
 `I2N_CTL_PASSWORD` for the Apple ID password of `account add|set-password` (otherwise it asks).
 
-    icloud2nas-ctl account add --name 旭刚 --apple-id you@icloud.com --region cn [--dir REL]   # asks password + 2FA
+    icloud2nas-ctl account add --name 小明 --apple-id you@icloud.com --region cn [--dir REL]   # asks password + 2FA
     icloud2nas-ctl account list | reauth ID | set-password ID | refresh ID | delete ID [--delete-dir]
     icloud2nas-ctl library list
     icloud2nas-ctl library set ID [--enable|--disable] [--interval 30] [--nightly 03:00] [--dir REL] [--name N]

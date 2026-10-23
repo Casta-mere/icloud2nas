@@ -141,7 +141,7 @@ def test_migration_0003_upgrades_plan2c_db(tmp_path: Path) -> None:
         c.exec_driver_sql(
             "INSERT INTO accounts (id, display_name, apple_id, region, password_enc, client_id,"
             " status, failures, created_at, primary_dir) VALUES ('a1', 'A', 'a@x.com', 'cn',"
-            " x'00', 'c1', 'ok', 0, '2026-01-01 00:00:00', '旭刚')"
+            " x'00', 'c1', 'ok', 0, '2026-01-01 00:00:00', '小明')"
         )
     assert not inspect(engine).has_table("deleted_dirs")
     assert upgrade_db(engine) == "0003"
@@ -152,7 +152,7 @@ def test_migration_0003_upgrades_plan2c_db(tmp_path: Path) -> None:
         row = c.exec_driver_sql(
             "SELECT apple_id, primary_dir, owner_uid, owner_gid FROM accounts"
         ).one()
-    assert tuple(row) == ("a@x.com", "旭刚", None, None)
+    assert tuple(row) == ("a@x.com", "小明", None, None)
 
 
 def test_models_match_head(tmp_path: Path) -> None:

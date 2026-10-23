@@ -1,6 +1,6 @@
 [project]
 name = "icloud2nas"
-version = "0.0.1"
+version = "0.1.0"
 description = "Mirror a household's iCloud Photos libraries to a NAS"
 readme = "README.md"
 license = { text = "MIT" }

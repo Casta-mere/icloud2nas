@@ -48,7 +48,7 @@ def test_trash_api_keyed_by_library(api: API) -> None:
     assert listing == [
         {
             "library_id": library_id,
-            "display_name": "旭刚",
+            "display_name": "小明",
             "target_dir": lib.relative_to(state.config.photos_dir).as_posix(),
             "days": [{"day": "2026-10-02", "files": 2, "bytes": 3}],
         }
@@ -56,14 +56,14 @@ def test_trash_api_keyed_by_library(api: API) -> None:
     files = client.get("/api/trash/2026-10-02", params={"library": library_id}).json()
     assert files == [{"rel": "a/b.jpg", "size": 2}, {"rel": "c.jpg", "size": 1}]
     # the old rel parameter is gone
-    old = client.get("/api/trash/2026-10-02", params={"rel": "旭刚"})
+    old = client.get("/api/trash/2026-10-02", params={"rel": "小明"})
     assert old.status_code in (400, 422)
     assert _delete_rel(client).status_code in (400, 422)
     assert client.get("/api/trash/2026-10-02", params={"library": "nope"}).status_code == 404
 
 
 def _delete_rel(client: TestClient) -> Response:
-    return client.request("DELETE", "/api/trash/2026-10-02", params={"rel": "旭刚"}, json={})
+    return client.request("DELETE", "/api/trash/2026-10-02", params={"rel": "小明"}, json={})
 
 
 def test_trash_day_delete_and_keep(api: API) -> None:

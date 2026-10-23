@@ -11,13 +11,13 @@ describe("Trash page", () => {
     const headers = within(tree)
       .getAllByRole("heading")
       .map((h) => h.textContent);
-    expect(headers).toEqual(["旭刚", "幻伊镜"]);
+    expect(headers).toEqual(["小明", "小红"]);
     const selected = within(tree)
       .getAllByRole("button")
       .filter((b) => b.hasAttribute("data-selected"));
     expect(selected).toHaveLength(1);
     expect(selected[0]).toHaveTextContent("2026-10-21");
-    expect(await screen.findByText("旭刚 · 2026-10-21")).toBeInTheDocument();
+    expect(await screen.findByText("小明 · 2026-10-21")).toBeInTheDocument();
     expect(screen.getByText("3 个文件 · 12.0 MB")).toBeInTheDocument();
     expect(await screen.findByText("2026/10/IMG_0001.HEIC")).toBeInTheDocument();
   });
@@ -45,7 +45,7 @@ describe("Trash page", () => {
     const dialog = await screen.findByRole("alertdialog");
     expect(calls().some((c) => c.method === "DELETE")).toBe(false);
     await user.click(within(dialog).getByRole("button", { name: "永久删除整天" }));
-    await waitFor(() => expect(screen.getByText("旭刚 · 2026-10-19")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("小明 · 2026-10-19")).toBeInTheDocument());
     const del = calls().find((c) => c.method === "DELETE");
     expect(del?.path).toBe("/api/trash/2026-10-21");
     expect(decodeURIComponent(del?.search ?? "")).toBe(`?library=${ids.libXugang}`);
@@ -59,7 +59,7 @@ describe("Trash page", () => {
     const dialog = await screen.findByRole("alertdialog");
     await user.click(within(dialog).getByRole("button", { name: "永久删除整天" }));
     expect(await screen.findByText("library is running")).toBeInTheDocument();
-    expect(screen.getByText("旭刚 · 2026-10-21")).toBeInTheDocument();
+    expect(screen.getByText("小明 · 2026-10-21")).toBeInTheDocument();
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   });
   test("the day's files are requested by library id; the footer points at the library's .icloud2nas/kept", async () => {
@@ -67,7 +67,7 @@ describe("Trash page", () => {
     await screen.findByText("2026/10/IMG_0001.HEIC");
     const get = calls().find((c) => c.method === "GET" && c.path === "/api/trash/2026-10-21");
     expect(decodeURIComponent(get?.search ?? "")).toBe(`?library=${ids.libXugang}`);
-    expect(screen.getByText(/保留区在图库文件夹里的 \.icloud2nas\/kept/)).toHaveTextContent("/photos/旭刚/.icloud2nas/kept");
+    expect(screen.getByText(/保留区在图库文件夹里的 \.icloud2nas\/kept/)).toHaveTextContent("/photos/小明/.icloud2nas/kept");
   });
 
   test("the prompt line shows the retention, and 不会自动清理 when it is 0", async () => {

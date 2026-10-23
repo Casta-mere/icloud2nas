@@ -34,7 +34,7 @@ export const ADMIN_PASSWORD = "hunter2";
 const accounts = (): Account[] => [
   {
     id: ids.xugang,
-    display_name: "旭刚",
+    display_name: "小明",
     apple_id: "xugang@example.com",
     region: "cn",
     status: "ok",
@@ -43,15 +43,15 @@ const accounts = (): Account[] => [
     last_auth_ok_at: "2026-10-21T09:14:00+00:00",
     last_error: null,
     created_at: "2026-10-14T02:00:00+00:00",
-    primary_dir: "旭刚",
+    primary_dir: "小明",
     library_ids: [ids.libXugang],
     owner_uid: 1000,
     owner_gid: 10,
-    owner_name: "Castamere",
+    owner_name: "Alice",
   },
   {
     id: ids.huanyijing,
-    display_name: "幻伊镜",
+    display_name: "小红",
     apple_id: "huanyijing@icloud.com",
     region: "cn",
     status: "awaiting_code",
@@ -60,11 +60,11 @@ const accounts = (): Account[] => [
     last_auth_ok_at: null,
     last_error: null,
     created_at: "2026-10-21T12:00:00+00:00",
-    primary_dir: "幻伊镜",
+    primary_dir: "小红",
     library_ids: [ids.libHuanyijing],
     owner_uid: 1001,
     owner_gid: 10,
-    owner_name: "Today_red",
+    owner_name: "Bob",
   },
 ];
 
@@ -74,8 +74,8 @@ const libraries = (): Library[] => [
     account_id: ids.xugang,
     kind: "personal",
     zone_name: "PrimarySync",
-    display_name: "旭刚",
-    target_dir: "旭刚",
+    display_name: "小明",
+    target_dir: "小明",
     enabled: true,
     status: "ok",
     interval_min: 30,
@@ -90,8 +90,8 @@ const libraries = (): Library[] => [
     account_id: ids.huanyijing,
     kind: "personal",
     zone_name: "PrimarySync",
-    display_name: "幻伊镜",
-    target_dir: "幻伊镜",
+    display_name: "小红",
+    target_dir: "小红",
     enabled: true,
     status: "ok",
     interval_min: 30,
@@ -181,8 +181,8 @@ const plans = (): Plan[] => [
 const trash = (): TrashEntry[] => [
   {
     library_id: ids.libXugang,
-    display_name: "旭刚",
-    target_dir: "旭刚",
+    display_name: "小明",
+    target_dir: "小明",
     days: [
       { day: "2026-10-21", files: 3, bytes: 12_582_912 },
       { day: "2026-10-19", files: 14, bytes: 2_147_483_648 },
@@ -190,8 +190,8 @@ const trash = (): TrashEntry[] => [
   },
   {
     library_id: ids.libHuanyijing,
-    display_name: "幻伊镜",
-    target_dir: "幻伊镜",
+    display_name: "小红",
+    target_dir: "小红",
     days: [{ day: "2026-10-20", files: 5, bytes: 52_428_800 }],
   },
 ];
@@ -232,8 +232,8 @@ const status = (): Status => ({
 });
 
 const hostUsers = (): HostUser[] => [
-  { name: "Castamere", uid: 1000, gid: 10, group: "admin", home: "/home/Castamere" },
-  { name: "Today_red", uid: 1001, gid: 10, group: "admin", home: "/home/Today_red" },
+  { name: "Alice", uid: 1000, gid: 10, group: "admin", home: "/home/Alice" },
+  { name: "Bob", uid: 1001, gid: 10, group: "admin", home: "/home/Bob" },
 ];
 
 function freshDb() {

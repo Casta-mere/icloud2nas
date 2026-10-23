@@ -25,9 +25,9 @@ const manyRuns = (n: number): Run[] =>
 describe("Overview", () => {
   test("awaiting_code card renders first and its input is the first focusable element", async () => {
     const { container } = renderWithProviders(<Overview />);
-    await screen.findByRole("article", { name: "旭刚" });
+    await screen.findByRole("article", { name: "小明" });
     const headings = [...container.querySelectorAll("article")].map((a) => a.getAttribute("aria-label"));
-    expect(headings.indexOf("幻伊镜")).toBeLessThan(headings.indexOf("旭刚"));
+    expect(headings.indexOf("小红")).toBeLessThan(headings.indexOf("小明"));
     const first = container.querySelector("input,button,a[href]");
     expect(first).toBe(screen.getByRole("textbox", { name: "验证码" }));
     expect(first).toHaveAttribute("inputmode", "numeric");
@@ -67,14 +67,14 @@ describe("Overview", () => {
   test("a dir_missing library shows the 找不到文件夹 chip on its account card", async () => {
     db.libraries[0]!.status = "dir_missing";
     renderWithProviders(<Overview />);
-    const card = await screen.findByRole("article", { name: "旭刚" });
+    const card = await screen.findByRole("article", { name: "小明" });
     expect(await within(card).findByText("找不到文件夹")).toBeInTheDocument();
   });
   test("a libraries error does not hide the account cards or the code input", async () => {
     given("GET", "/api/libraries", { error: "internal", detail: "database is locked" }, 500);
     renderWithProviders(<Overview />);
-    const card = await screen.findByRole("article", { name: "幻伊镜" });
+    const card = await screen.findByRole("article", { name: "小红" });
     expect(within(card).getByRole("textbox", { name: "验证码" })).toBeInTheDocument();
-    expect(screen.getByRole("article", { name: "旭刚" })).toBeInTheDocument();
+    expect(screen.getByRole("article", { name: "小明" })).toBeInTheDocument();
   });
 });

@@ -31,7 +31,7 @@ describe("PlanCard", () => {
     };
     given("GET", "/api/plans/:id", detail);
     const { user } = renderPage();
-    const el = await screen.findByRole("article", { name: "幻伊镜" });
+    const el = await screen.findByRole("article", { name: "小红" });
     expect(await within(el).findByText("对账待确认")).toBeInTheDocument();
     expect(await within(el).findByText("612")).toBeInTheDocument();
     const list = await within(el).findByRole("list");
@@ -59,7 +59,7 @@ describe("PlanCard", () => {
 
   test("plan.resolved pending shows apply-failed and re-enables 放行", async () => {
     const { user } = renderPage();
-    const el = await screen.findByRole("article", { name: "幻伊镜" });
+    const el = await screen.findByRole("article", { name: "小红" });
     await user.click(await within(el).findByRole("button", { name: "放行 612 个" }));
     expect(await within(el).findByRole("button", { name: "执行中…" })).toBeDisabled();
     expect(within(el).queryByText(/执行失败/)).not.toBeInTheDocument();
@@ -71,7 +71,7 @@ describe("PlanCard", () => {
 
   test("拒绝 posts reject and the card goes away", async () => {
     const { user } = renderPage();
-    const el = await screen.findByRole("article", { name: "幻伊镜" });
+    const el = await screen.findByRole("article", { name: "小红" });
     await user.click(await within(el).findByRole("button", { name: "拒绝" }));
     await waitFor(() => expect(calls().some((c) => c.path.endsWith("/reject"))).toBe(true));
     await waitFor(() => expect(within(el).queryByRole("button", { name: "拒绝" })).not.toBeInTheDocument());

@@ -2,8 +2,8 @@ import { expect, test } from "vitest";
 import { defaultDir, nests, normalizeRel } from "./paths";
 
 test.each([
-  ["幻伊镜", "幻伊镜"],
-  ["  家/旭刚 ", "家/旭刚"],
+  ["小红", "小红"],
+  ["  家/小明 ", "家/小明"],
   ["./a//b", "a/b"],
   ["a/b/", "a/b"],
 ])("normalizeRel(%j) = %j", (input, out) => {
@@ -17,16 +17,16 @@ test.each(["", "   ", "/abs", "../x", "a/../b", "a/./b", ".hidden", "a/.b", "sha
   },
 );
 
-test("nests: 旭刚 vs 旭刚/sub true, 旭刚 vs 旭刚2 false", () => {
-  expect(nests("旭刚", "旭刚/sub")).toBe(true);
-  expect(nests("旭刚/sub", "旭刚")).toBe(true);
-  expect(nests("旭刚", "旭刚")).toBe(true);
-  expect(nests("旭刚", "旭刚2")).toBe(false);
+test("nests: 小明 vs 小明/sub true, 小明 vs 小明2 false", () => {
+  expect(nests("小明", "小明/sub")).toBe(true);
+  expect(nests("小明/sub", "小明")).toBe(true);
+  expect(nests("小明", "小明")).toBe(true);
+  expect(nests("小明", "小明2")).toBe(false);
   expect(nests("a/b", "a/c")).toBe(false);
 });
 
 test("defaultDir mirrors safe_dir_name", () => {
-  expect(defaultDir("  幻伊镜 ")).toBe("幻伊镜");
+  expect(defaultDir("  小红 ")).toBe("小红");
   expect(defaultDir("a/b\\c")).toBe("a_b_c");
   expect(defaultDir("..hidden")).toBe("hidden");
   expect(defaultDir("  ")).toBe("");

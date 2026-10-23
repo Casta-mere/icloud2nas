@@ -51,7 +51,7 @@ describe("LogDrawer", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const { user, queryClient } = renderWithProviders(<Overview />);
     const list = await screen.findByRole("list", { name: "最近运行" });
-    await user.click(await within(list).findByText(/幻伊镜 · 登录/));
+    await user.click(await within(list).findByText(/小红 · 登录/));
     await screen.findByText(/start auth/);
     await act(() => vi.advanceTimersByTimeAsync(3200));
     const polling = logCalls();

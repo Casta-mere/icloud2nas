@@ -19,12 +19,12 @@ def store(config: Config) -> Store:
 def test_build_job_for_primary_and_shared(config: Config, store: Store) -> None:
     with store.session() as s:
         acc = repo.create_account(
-            s, display_name="旭刚", apple_id="a@icloud.com", region="cn",
+            s, display_name="小明", apple_id="a@icloud.com", region="cn",
             password_enc=b"x", client_id="11111111-1111-1111-1111-111111111111",
         )
         primary = repo.upsert_library(
-            s, acc, kind="personal", zone_name="PrimarySync", display_name="旭刚",
-            target_dir="旭刚", interval_min=30, nightly_at="03:00",
+            s, acc, kind="personal", zone_name="PrimarySync", display_name="小明",
+            target_dir="小明", interval_min=30, nightly_at="03:00",
         )
         shared = repo.upsert_library(
             s, acc, kind="shared", zone_name="SharedSync-ABC", display_name="家庭",
@@ -34,7 +34,7 @@ def test_build_job_for_primary_and_shared(config: Config, store: Store) -> None:
         assert job["apple_id"] == "a@icloud.com" and job["region"] == "cn"
         assert job["cookie_dir"] == str(config.cookie_dir(acc.id))
         assert job["photos_root"] == str(config.photos_dir)
-        assert job["target_dir"] == str(config.photos_dir / "旭刚")
+        assert job["target_dir"] == str(config.photos_dir / "小明")
         assert job["plan_dir"] == str(config.plans_dir / acc.id)
         assert job["library_zone"] is None and job["full"] is True and job["interactive"] is False
         assert job["until_found"] == 50 and job["mfa_timeout_s"] == 600

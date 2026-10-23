@@ -47,7 +47,7 @@ def test_household_two_accounts_scheduled_fused_plan_trash_and_pause(
             }
         },
     )
-    for name, apple_id in (("旭刚", "a@icloud.com"), ("幻伊镜", "b@icloud.com")):
+    for name, apple_id in (("小明", "a@icloud.com"), ("小红", "b@icloud.com")):
         rc, out = ctl_run(
             client,
             ["account", "add", "--name", name, "--apple-id", apple_id, "--region", "cn"],
@@ -59,7 +59,7 @@ def test_household_two_accounts_scheduled_fused_plan_trash_and_pause(
 
     rc, out = ctl_run(client, ["library", "list"])
     rows = [line.split("\t") for line in out.strip().splitlines()]
-    assert {r[2] for r in rows} == {"旭刚", "幻伊镜"} and {r[4] for r in rows} == {"旭刚", "幻伊镜"}
+    assert {r[2] for r in rows} == {"小明", "小红"} and {r[4] for r in rows} == {"小明", "小红"}
 
     # both never-synced libraries are due: the tick starts a full sync for each
     assert _tick(client, state) == 2
@@ -79,8 +79,8 @@ def test_household_two_accounts_scheduled_fused_plan_trash_and_pause(
     ]
     assert all(c["job"]["full"] is True for c in sync_calls)
     assert {c["job"]["target_dir"] for c in sync_calls} == {
-        str(state.config.photos_dir / "旭刚"),
-        str(state.config.photos_dir / "幻伊镜"),
+        str(state.config.photos_dir / "小明"),
+        str(state.config.photos_dir / "小红"),
     }
     assert _tick(client, state) == 0  # nothing is due right after a success
 
@@ -103,7 +103,7 @@ def test_household_two_accounts_scheduled_fused_plan_trash_and_pause(
             }
         },
     )
-    rc, _ = ctl_run(client, ["run", "reconcile", "旭刚"])
+    rc, _ = ctl_run(client, ["run", "reconcile", "小明"])
     assert rc == 6
     monkeypatch.delenv("FAKE_WORKER_SCENARIO")
     rc, out = ctl_run(client, ["plan", "list"])
@@ -118,15 +118,15 @@ def test_household_two_accounts_scheduled_fused_plan_trash_and_pause(
     # the trash (as left by a worker) is browsable through the CLI
     target = next(
         lib["target_dir"] for lib in client.get("/api/libraries").json()
-        if lib["display_name"] == "旭刚"
+        if lib["display_name"] == "小明"
     )
     day_dir = state.config.photos_dir / target / ".icloud2nas" / "trash" / "2026-10-20"
     (day_dir / "2024/01").mkdir(parents=True)
     (day_dir / DAY_MARKER).touch()
     (day_dir / "2024/01/x.HEIC").write_bytes(b"x" * 7)
     rc, out = ctl_run(client, ["trash", "list"])
-    assert rc == 0 and "旭刚\t2026-10-20\t1\t7" in out
-    rc, out = ctl_run(client, ["trash", "day", "旭刚", "2026-10-20"])
+    assert rc == 0 and "小明\t2026-10-20\t1\t7" in out
+    rc, out = ctl_run(client, ["trash", "day", "小明", "2026-10-20"])
     assert "2024/01/x.HEIC\t7" in out
 
     # pause stops scheduling; resume brings it back

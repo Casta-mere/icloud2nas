@@ -40,7 +40,7 @@ test("at 375px, through the whole shell, the overview is one column with the cod
   // one-line status strip (connection · pause · language) may come before it
   renderWithProviders(<App />);
   const main = await screen.findByRole("main");
-  await within(main).findByRole("article", { name: "旭刚" });
+  await within(main).findByRole("article", { name: "小明" });
   const code = await within(main).findByRole("textbox", { name: "验证码" });
   const grid = main.querySelector(":scope > .grid, :scope > * > .grid");
   expect(grid).toHaveClass("grid-cols-1");

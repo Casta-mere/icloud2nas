@@ -62,7 +62,7 @@ terminal on Docker Desktop:
 
     export I2N_URL=http://host.docker.internal:4871
     docker compose run --rm -e I2N_URL dev uv run icloud2nas-ctl status
-    docker compose run --rm -e I2N_URL dev uv run icloud2nas-ctl account add --name 旭刚 --apple-id you@icloud.com --region cn
+    docker compose run --rm -e I2N_URL dev uv run icloud2nas-ctl account add --name 小明 --apple-id you@icloud.com --region cn
     docker compose run --rm -e I2N_URL dev uv run icloud2nas-ctl runs
 
 Forgot the admin password? Stop the service and run `icloud2nas-serve --reset-admin-password`

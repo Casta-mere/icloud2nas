@@ -10,7 +10,7 @@ const emit = (run_id: string, event: Record<string, unknown>) =>
     appEvents.dispatchEvent(new CustomEvent("run.event", { detail: { run_id, event } }));
   });
 
-/** The fixture's live auth run of 幻伊镜 ends (a stale awaiting_code), so 重新发送 is offered. */
+/** The fixture's live auth run of 小红 ends (a stale awaiting_code), so 重新发送 is offered. */
 const endAuthRun = () => {
   const run = db.runs.find((r) => r.id === ids.runs[3])!;
   run.status = "failed";
@@ -33,7 +33,7 @@ describe("AccountCard 2FA flow", () => {
   test("mfa_result ok=false shows the reason, clears and refocuses the input, card stays", async () => {
     const { user } = renderWithProviders(<Overview />);
     const input = await screen.findByRole("textbox", { name: "验证码" });
-    await screen.findByRole("article", { name: "旭刚" });
+    await screen.findByRole("article", { name: "小明" });
     await user.type(input, "111111");
     await waitFor(() => expect(calls().some((c) => c.path.endsWith("/code"))).toBe(true));
     await user.click(document.body);
@@ -56,7 +56,7 @@ describe("AccountCard 2FA flow", () => {
     db.accounts[0]!.status = "needs_reauth";
     db.accounts[1]!.status = "ok";
     const { user } = renderWithProviders(<Overview />);
-    const card = await screen.findByRole("article", { name: "旭刚" });
+    const card = await screen.findByRole("article", { name: "小明" });
     expect(within(card).queryByRole("textbox")).not.toBeInTheDocument();
     expect(within(card).getByText("需要验证码")).toBeInTheDocument();
     db.accounts[0]!.status = "awaiting_code";
@@ -68,7 +68,7 @@ describe("AccountCard 2FA flow", () => {
   test("password_rejected links to the accounts page", async () => {
     db.accounts[0]!.status = "password_rejected";
     renderWithProviders(<Overview />);
-    const card = await screen.findByRole("article", { name: "旭刚" });
+    const card = await screen.findByRole("article", { name: "小明" });
     expect(within(card).getByRole("link")).toHaveAttribute("href", "/accounts");
   });
 
@@ -87,7 +87,7 @@ describe("AccountCard 2FA flow", () => {
 
   test("重新发送 is hidden while the account's auth run is still waiting", async () => {
     renderWithProviders(<Overview />);
-    const card = await screen.findByRole("article", { name: "幻伊镜" });
+    const card = await screen.findByRole("article", { name: "小红" });
     await within(card).findByRole("textbox", { name: "验证码" });
     await waitFor(() => expect(calls().some((c) => c.path === "/api/runs" && c.search.includes(ids.huanyijing))).toBe(true));
     await waitFor(() => expect(within(card).queryByRole("button", { name: "重新发送" })).not.toBeInTheDocument());
@@ -98,7 +98,7 @@ describe("AccountCard 2FA flow", () => {
   test("an auth run in needs_mfa (not running) does not hide 重新发送", async () => {
     db.runs.find((r) => r.id === ids.runs[3])!.status = "needs_mfa";
     renderWithProviders(<Overview />);
-    const card = await screen.findByRole("article", { name: "幻伊镜" });
+    const card = await screen.findByRole("article", { name: "小红" });
     expect(await within(card).findByRole("button", { name: "重新发送" })).toBeInTheDocument();
     expect(within(card).queryByText("验证码过期后可重新发送")).not.toBeInTheDocument();
   });
@@ -107,7 +107,7 @@ describe("AccountCard 2FA flow", () => {
     db.accounts[0]!.status = "needs_reauth";
     db.accounts[1]!.status = "ok";
     const { user } = renderWithProviders(<Overview />);
-    const card = await screen.findByRole("article", { name: "旭刚" });
+    const card = await screen.findByRole("article", { name: "小明" });
     await user.click(within(card).getByRole("button", { name: "重新验证" }));
     await waitFor(() => expect(calls().some((c) => c.path === `/api/accounts/${ids.xugang}/auth`)).toBe(true));
     await waitFor(() => expect(within(card).getByRole("button", { name: "重新验证" })).toBeEnabled());
@@ -126,7 +126,7 @@ describe("AccountCard 2FA flow", () => {
     endAuthRun();
     given("POST", "/api/accounts/:id/auth", { error: "invalid", detail: `an auth session is already active for ${ids.huanyijing}` }, 400);
     const { user } = renderWithProviders(<Overview />);
-    const card = await screen.findByRole("article", { name: "幻伊镜" });
+    const card = await screen.findByRole("article", { name: "小红" });
     await user.click(await within(card).findByRole("button", { name: "重新发送" }));
     expect(await within(card).findByRole("alert")).toHaveTextContent("这个账号正在等验证码");
     expect(within(card).queryByText(/already active/)).not.toBeInTheDocument();
@@ -136,7 +136,7 @@ describe("AccountCard 2FA flow", () => {
     endAuthRun();
     given("POST", "/api/accounts/:id/code", { error: "invalid", detail: "code rejected" }, 400);
     const { user } = renderWithProviders(<Overview />);
-    const card = await screen.findByRole("article", { name: "幻伊镜" });
+    const card = await screen.findByRole("article", { name: "小红" });
     await user.type(await within(card).findByRole("textbox", { name: "验证码" }), "123456");
     expect(await within(card).findByText("code rejected")).toBeInTheDocument();
     await user.click(within(card).getByRole("button", { name: "重新发送" }));

@@ -28,9 +28,9 @@ def shanghai_tz(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 @pytest.fixture
 def photos_tree(tmp_path: Path) -> tuple[Path, Path]:
-    """(photos_root, library_dir) with library_dir = photos_root/旭刚 created empty."""
+    """(photos_root, library_dir) with library_dir = photos_root/小明 created empty."""
     photos = tmp_path / "photos"
-    lib = photos / "旭刚"
+    lib = photos / "小明"
     lib.mkdir(parents=True)
     return photos, lib
 

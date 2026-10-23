@@ -43,7 +43,7 @@ class Env:
         with self.store.session() as s:
             acc = repo.create_account(
                 s,
-                display_name="旭刚",
+                display_name="小明",
                 apple_id="a@icloud.com",
                 region="cn",
                 password_enc=secrets.encrypt("pw"),
@@ -54,8 +54,8 @@ class Env:
                 acc,
                 kind="personal",
                 zone_name="PrimarySync",
-                display_name="旭刚",
-                target_dir="旭刚",
+                display_name="小明",
+                target_dir="小明",
                 interval_min=30,
                 nightly_at="03:00",
             )
@@ -92,7 +92,7 @@ def photos(config: Config) -> Iterator[Path]:
 
 
 def _old_day(photos: Path, day: str) -> Path:
-    d = photos / "旭刚" / ".icloud2nas" / "trash" / day
+    d = photos / "小明" / ".icloud2nas" / "trash" / day
     d.mkdir(parents=True)
     (d / DAY_MARKER).touch()
     (d / "a.jpg").write_bytes(b"abc")
@@ -155,13 +155,13 @@ async def test_purge_removes_expired_days_and_deleted_dirs(hk: Env, photos: Path
     old = _old_day(photos, "2026-09-01")
     fresh = _old_day(photos, "2026-10-15")
     deleted_root = photos / ".icloud2nas-deleted"
-    expired = deleted_root / "幻伊镜-2026-09-01"
+    expired = deleted_root / "小红-2026-09-01"
     recent = deleted_root / "Ann-2026-10-14"
     for d in (expired, recent):
         (d / "2024").mkdir(parents=True)
         (d / "2024" / "a.jpg").write_bytes(b"a")
     with hk.store.session() as s:
-        repo.add_deleted_dir(s, "幻伊镜/../x", datetime(2026, 8, 1, tzinfo=UTC))  # bad path
+        repo.add_deleted_dir(s, "小红/../x", datetime(2026, 8, 1, tzinfo=UTC))  # bad path
         repo.add_deleted_dir(s, expired.relative_to(photos).as_posix(), T0 - timedelta(days=45))
         repo.add_deleted_dir(s, recent.relative_to(photos).as_posix(), T0 - timedelta(days=2))
         repo.add_deleted_dir(s, ".icloud2nas-deleted/gone-2026-01-01", T0 - timedelta(days=200))
@@ -194,14 +194,14 @@ async def test_purge_drops_an_absolute_out_of_root_row(
 
 
 async def test_start_migrates_the_legacy_layout_once(hk: Env, photos: Path) -> None:
-    legacy = photos / ".trash" / "旭刚" / "2026-10-01"
+    legacy = photos / ".trash" / "小明" / "2026-10-01"
     legacy.mkdir(parents=True)
     (legacy / DAY_MARKER).touch()
     (legacy / "a.jpg").write_bytes(b"a")
-    (photos / "旭刚").mkdir()
+    (photos / "小明").mkdir()
     hk.hk.start()
     hk.hk.stop()
-    moved = photos / "旭刚" / ".icloud2nas" / "trash" / "2026-10-01" / "a.jpg"
+    moved = photos / "小明" / ".icloud2nas" / "trash" / "2026-10-01" / "a.jpg"
     assert moved.read_bytes() == b"a" and not (photos / ".trash").exists()
     assert hk.hk.migrate_legacy_layout() == []  # once per process
 

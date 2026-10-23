@@ -52,7 +52,7 @@ def nw(config: Config) -> dict[str, Any]:
     with store.session() as s:
         acc = repo.create_account(
             s,
-            display_name="旭刚",
+            display_name="小明",
             apple_id="a@icloud.com",
             region="cn",
             password_enc=secrets.encrypt("pw"),
@@ -63,7 +63,7 @@ def nw(config: Config) -> dict[str, Any]:
             acc,
             kind="personal",
             zone_name="PrimarySync",
-            display_name="旭刚相册",
+            display_name="小明相册",
             target_dir="xugang",
             interval_min=30,
             nightly_at="03:00",
@@ -140,7 +140,7 @@ def test_body_contains_name_reason_and_link(nw: dict[str, Any]) -> None:
     assert decision is not None
     event, subject, title, body = decision
     assert (event, subject) == ("needs_code", nw["acc"])
-    assert title == "icloud2nas：旭刚 需要验证码 / needs a 2FA code"
+    assert title == "icloud2nas：小明 需要验证码 / needs a 2FA code"
     assert body.splitlines() == [
         "Apple 要求重新验证，请打开网页输入验证码。/ "
         "Apple asked for a new 2FA code; open the web page to enter it.",
@@ -171,7 +171,7 @@ def test_repeated_failure_body_has_error_message(nw: dict[str, Any]) -> None:
         {"run_id": run_id, "status": "failed", "library_id": nw["lib"], "account_failures": 3},
     )
     assert decision is not None
-    assert decision[2] == "icloud2nas：旭刚相册 连续失败 / repeated failures"
+    assert decision[2] == "icloud2nas：小明相册 连续失败 / repeated failures"
     assert decision[3].splitlines()[1] == "iCloud timed out"
 
 

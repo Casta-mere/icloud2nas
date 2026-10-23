@@ -22,7 +22,7 @@ from icloud2nas.engine.trash import (
 
 def _library(tmp_path: Path) -> tuple[Path, Path]:
     photos = tmp_path / "photos"
-    lib = photos / "旭刚"
+    lib = photos / "小明"
     (lib / "2024" / "05").mkdir(parents=True)
     (lib / "2024" / "05" / "IMG_1.HEIC").write_bytes(b"abc")
     return photos, lib
@@ -42,7 +42,7 @@ def test_move_to_trash_goes_inside_the_library(tmp_path: Path) -> None:
     assert dest == lib / ".icloud2nas" / "trash" / "2026-10-14" / "2024" / "05" / "IMG_1.HEIC"
     assert dest.read_bytes() == b"abc" and not src.exists()
     assert (lib / ".icloud2nas" / "trash" / "2026-10-14" / DAY_MARKER).is_file()
-    assert sorted(p.name for p in photos.iterdir()) == ["旭刚"]  # nothing at the mount root
+    assert sorted(p.name for p in photos.iterdir()) == ["小明"]  # nothing at the mount root
 
 
 def test_move_never_overwrites_same_day(tmp_path: Path) -> None:
@@ -176,14 +176,14 @@ def test_trash_library_dir_renames_to_sibling_deleted_dir(tmp_path: Path) -> Non
     photos, lib = _library(tmp_path)
     today = date(2026, 10, 23)
     dest = trash_library_dir(lib, today, photos=lib.parent)
-    assert dest == photos / ".icloud2nas-deleted" / "旭刚-2026-10-23"
+    assert dest == photos / ".icloud2nas-deleted" / "小明-2026-10-23"
     assert (dest / "2024" / "05" / "IMG_1.HEIC").read_bytes() == b"abc"
     assert not lib.exists()
     assert trash_library_dir(lib, today, photos=lib.parent) is None
     lib.mkdir()
     again = trash_library_dir(lib, today, photos=lib.parent)
     assert again is not None and again != dest and again.parent == dest.parent
-    assert again.name.startswith("旭刚-2026-10-23")
+    assert again.name.startswith("小明-2026-10-23")
 
 
 @pytest.mark.parametrize("err", [errno.EXDEV, errno.EBUSY])

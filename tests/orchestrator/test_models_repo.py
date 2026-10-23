@@ -16,7 +16,7 @@ def store(config: Config) -> Store:
 def _account(s: object, apple_id: str = "a@icloud.com") -> Account:
     return repo.create_account(
         s,  # type: ignore[arg-type]
-        display_name="旭刚",
+        display_name="小明",
         apple_id=apple_id,
         region="cn",
         password_enc=b"enc",
@@ -31,7 +31,7 @@ def test_account_round_trip(store: Store) -> None:
         assert acc.created_at.tzinfo is not None
     with store.session() as s:
         again = repo.get_account_by_apple_id(s, "a@icloud.com")
-        assert again is not None and again.display_name == "旭刚"
+        assert again is not None and again.display_name == "小明"
         assert repo.get_account(s, "nope") is None
         assert [a.apple_id for a in repo.list_accounts(s)] == ["a@icloud.com"]
 
@@ -46,10 +46,10 @@ def test_apple_id_is_unique(store: Store) -> None:
 @pytest.mark.parametrize(
     ("existing", "candidate", "ok"),
     [
-        ("旭刚", "旭刚2", True),
-        ("旭刚", "旭刚/2024", False),
-        ("旭刚/2024", "旭刚", False),
-        ("旭刚", "旭刚", False),
+        ("小明", "小明2", True),
+        ("小明", "小明/2024", False),
+        ("小明/2024", "小明", False),
+        ("小明", "小明", False),
         ("shared/家庭", "shared", False),
         ("a", "b/a", True),
     ],
@@ -89,15 +89,15 @@ def test_upsert_library_is_idempotent_and_exclude_self(store: Store) -> None:
     with store.session() as s:
         acc = _account(s)
         lib = repo.upsert_library(
-            s, acc, kind="personal", zone_name="PrimarySync", display_name="旭刚",
-            target_dir="旭刚", interval_min=30, nightly_at="03:00",
+            s, acc, kind="personal", zone_name="PrimarySync", display_name="小明",
+            target_dir="小明", interval_min=30, nightly_at="03:00",
         )
         same = repo.upsert_library(
             s, acc, kind="personal", zone_name="PrimarySync", display_name="other",
             target_dir="elsewhere", interval_min=5, nightly_at="04:00",
         )
-        assert same.id == lib.id and same.target_dir == "旭刚" and same.enabled is False
-        assert repo.validate_target_dir(s, "旭刚", exclude_library_id=lib.id) == "旭刚"
+        assert same.id == lib.id and same.target_dir == "小明" and same.enabled is False
+        assert repo.validate_target_dir(s, "小明", exclude_library_id=lib.id) == "小明"
         assert lib.stats == {} and lib.status == "ok"
 
 
@@ -105,8 +105,8 @@ def test_runs_plans_settings_and_sweep(store: Store) -> None:
     with store.session() as s:
         acc = _account(s)
         lib = repo.upsert_library(
-            s, acc, kind="personal", zone_name="PrimarySync", display_name="旭刚",
-            target_dir="旭刚", interval_min=30, nightly_at="03:00",
+            s, acc, kind="personal", zone_name="PrimarySync", display_name="小明",
+            target_dir="小明", interval_min=30, nightly_at="03:00",
         )
         run = repo.create_run(
             s, account_id=acc.id, library_id=lib.id, mode="sync", trigger="manual"
