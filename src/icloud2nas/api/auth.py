@@ -11,6 +11,7 @@ import time
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from icloud2nas.api.state import AppState
@@ -117,8 +118,32 @@ async def require_session(request: Request) -> None:
         raise HTTPException(401, {"error": "unauthorized"})
 
 
+def _issue_cookie(response: Response, state: AppState) -> None:
+    response.set_cookie(
+        COOKIE,
+        sign_session(state.secrets.derive("i2n-session"), int(time.time())),
+        max_age=MAX_AGE_S,
+        httponly=True,
+        samesite="lax",
+        path="/",
+        secure=False,  # TLS is the reverse proxy's job (see docs)
+    )
+
+
+def _already_set_up() -> JSONResponse:
+    return JSONResponse(
+        {"error": "already set up", "detail": "the access mode is changed in Settings"},
+        status_code=409,
+    )
+
+
 class LoginBody(BaseModel):
     password: str
+
+
+class SetupBody(BaseModel):
+    mode: Literal["lan", "wan"]
+    password: str = ""
 
 
 router = APIRouter(prefix="/api")
@@ -145,15 +170,31 @@ async def login(body: LoginBody, request: Request) -> Response:
     if not await asyncio.to_thread(verify_password, body.password, stored):
         raise HTTPException(401, {"error": "unauthorized"})
     response = Response(status_code=204)
-    response.set_cookie(
-        COOKIE,
-        sign_session(state.secrets.derive("i2n-session"), int(time.time())),
-        max_age=MAX_AGE_S,
-        httponly=True,
-        samesite="lax",
-        path="/",
-        secure=False,  # TLS is the reverse proxy's job (see docs)
-    )
+    _issue_cookie(response, state)
+    return response
+
+
+@router.post("/setup", status_code=204)
+async def setup(body: SetupBody, request: Request) -> Response:
+    state = _state(request)
+    if access_mode(state.settings) != "setup":
+        return _already_set_up()
+    values = {"access_mode": "lan"}
+    if body.mode == "wan":
+        if not body.password:
+            raise ValueError("wan mode needs a password")
+        values = {
+            "admin_password_hash": await asyncio.to_thread(hash_password, body.password),
+            "admin_password_set_at": str(int(time.time())),
+        }
+    # hashing yielded the event loop: re-check, with no await between this and the write, so of
+    # two concurrent setups only the first to get here lands
+    if access_mode(state.settings) != "setup":
+        return _already_set_up()
+    state.settings.set_many(values)
+    response = Response(status_code=204)
+    if body.mode == "wan":
+        _issue_cookie(response, state)
     return response
 
 

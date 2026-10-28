@@ -7,8 +7,34 @@
     make image                  # builds icloud2nas:local
     docker compose up -d
 
-Open `http://<nas>:4871`, add an Apple ID, then add its libraries. State (database, cookies,
-logs) lives in `./data` (`/data` in the container); photos are written under `/photos`.
+Open `http://<nas>:4871`, choose LAN or WAN mode (next section), add an Apple ID, then add its
+libraries. State (database, cookies, logs) lives in `./data` (`/data` in the container); photos
+are written under `/photos`.
+
+## First visit: LAN or WAN
+
+A new install answers every API call with `428 setup required` and the web UI shows only a
+picker, until someone chooses:
+
+- **LAN**: no password. Anyone who can reach the port gets in, so use it only when that is just
+  your home network. Choosing it from a page that came through a reverse proxy or a public
+  address shows a warning; it never blocks.
+- **WAN**: you set an admin password and every request, from the LAN too, must log in. Choose
+  this for anything reachable from the internet.
+
+The mode can be switched later in Settings (setting a password makes it WAN, clearing it makes
+it LAN). An install that already had a password stays WAN after an upgrade; one without a
+password shows the picker. Syncs keep running in every mode, the picker included.
+
+Known limits:
+
+- **First-run race.** Whoever opens the picker first chooses. Finish setup before the port or
+  domain is exposed to anyone else.
+- **DNS rebinding.** A malicious site visited by someone on your LAN can drive a LAN-mode install
+  (or complete first-run setup) through their browser. The `application/json` requirement does
+  not stop it and there is no Host-header allowlist. Use WAN mode if that matters.
+- **No login throttling** in WAN mode; the password hashing cost is the only brake. Pick a
+  long password.
 
 ## What to mount as `/photos`
 
@@ -61,7 +87,9 @@ Cookies are kept in `/data`, so later syncs reuse the session.
 
 ## Reverse proxy
 
-- Set an admin password in Settings before exposing the port beyond your LAN.
+- Choose WAN mode (an admin password) before exposing the port or domain. LAN mode is open to
+  everyone who can reach it, and a fresh install lets the first visitor choose, so finish the
+  first-run setup before the proxy goes live.
 - Server-sent events live at `/api/events`; turn off buffering for them, for example in nginx
   `proxy_buffering off;` (and a generous `proxy_read_timeout`).
 - Pass the usual `Host` and `X-Forwarded-*` headers.

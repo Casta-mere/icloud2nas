@@ -190,6 +190,13 @@ def test_admin_password_prompt_and_retry(api: API) -> None:
     assert rc == 0 and "paused: true" in out
 
 
+def test_setup_required_message(api: API) -> None:
+    client, state = api
+    state.settings.set("access_mode", "")
+    rc, out = ctl_run(client, ["status"])
+    assert rc == 1 and "choose LAN or WAN mode in the web UI first" in out
+
+
 def test_event_stream_login_when_admin_password_is_set(
     api: API, monkeypatch: pytest.MonkeyPatch
 ) -> None:

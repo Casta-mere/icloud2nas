@@ -90,6 +90,94 @@ def test_login_refused_unless_wan(api: tuple[TestClient, AppState]) -> None:
         assert "set-cookie" not in response.headers
 
 
+def test_setup_lan(api: tuple[TestClient, AppState]) -> None:
+    client, state = api
+    state.settings.set("access_mode", "")
+    response = client.post("/api/setup", json={"mode": "lan"})
+    assert response.status_code == 204
+    assert "set-cookie" not in response.headers
+    assert client.get("/api/session").json()["mode"] == "lan"
+    assert client.get("/api/status").status_code == 200
+
+
+def test_setup_wan_logs_in(api: tuple[TestClient, AppState]) -> None:
+    client, state = api
+    state.settings.set("access_mode", "")
+    response = client.post("/api/setup", json={"mode": "wan", "password": PASSWORD})
+    assert response.status_code == 204
+    assert "i2n_session=" in response.headers["set-cookie"]
+    assert state.settings.get("admin_password_hash")
+    assert state.settings.get("admin_password_set_at") > 0
+    assert client.get("/api/session").json()["mode"] == "wan"
+    assert client.get("/api/status").status_code == 200
+    client.cookies.clear()
+    assert client.get("/api/status").status_code == 401
+
+
+def test_setup_wan_needs_password(api: tuple[TestClient, AppState]) -> None:
+    client, state = api
+    state.settings.set("access_mode", "")
+    for body in ({"mode": "wan", "password": ""}, {"mode": "wan"}):
+        response = client.post("/api/setup", json=body)
+        assert response.status_code == 400
+        assert "set-cookie" not in response.headers
+    assert client.get("/api/session").json()["mode"] == "setup"
+
+
+def test_setup_only_once(api: tuple[TestClient, AppState]) -> None:
+    client, state = api
+    state.settings.set("access_mode", "")
+    assert client.post("/api/setup", json={"mode": "lan"}).status_code == 204
+    for body in ({"mode": "lan"}, {"mode": "wan", "password": PASSWORD}):
+        response = client.post("/api/setup", json=body)
+        assert response.status_code == 409
+        assert response.json()["error"] == "already set up"
+        assert "set-cookie" not in response.headers
+    assert state.settings.get("admin_password_hash") == ""
+    assert client.get("/api/session").json()["mode"] == "lan"
+
+
+def test_setup_race_loser_gets_409(
+    api: tuple[TestClient, AppState], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, state = api
+    state.settings.set("access_mode", "")
+
+    def other_request_wins(password: str) -> str:
+        state.settings.set("access_mode", "lan")  # lands while this request is hashing
+        return hash_password(password)
+
+    monkeypatch.setattr("icloud2nas.api.auth.hash_password", other_request_wins)
+    response = client.post("/api/setup", json={"mode": "wan", "password": PASSWORD})
+    assert response.status_code == 409
+    assert "set-cookie" not in response.headers
+    assert state.settings.get("admin_password_hash") == ""
+    assert client.get("/api/session").json()["mode"] == "lan"
+
+
+def test_settings_switch_lan_wan(api: tuple[TestClient, AppState]) -> None:
+    client, state = api
+    assert client.get("/api/session").json()["mode"] == "lan"
+    assert client.put("/api/settings", json={"admin_password": PASSWORD}).status_code == 200
+    assert client.get("/api/session").json()["mode"] == "wan"
+    login(client)
+    assert client.put("/api/settings", json={"admin_password": ""}).status_code == 200
+    assert client.get("/api/session").json()["mode"] == "lan"  # not back to setup
+    assert state.settings.get("access_mode") == "lan"
+    assert client.get("/api/status").status_code == 200
+
+
+def test_clearing_a_setup_wan_password_goes_lan(api: tuple[TestClient, AppState]) -> None:
+    client, state = api
+    state.settings.set("access_mode", "")
+    assert client.post("/api/setup", json={"mode": "wan", "password": PASSWORD}).status_code == 204
+    assert state.settings.get("access_mode") == ""  # wan setup never wrote it
+    assert client.put("/api/settings", json={"admin_password": ""}).status_code == 200
+    assert client.get("/api/session").json()["mode"] == "lan"
+    assert state.settings.get("access_mode") == "lan"
+    assert client.get("/api/status").status_code == 200
+
+
 @pytest.mark.parametrize(
     ("headers", "client_host", "remote"),
     [
