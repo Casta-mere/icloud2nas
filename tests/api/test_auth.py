@@ -4,10 +4,13 @@ import time
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 from icloud2nas.api.auth import (
     COOKIE,
+    SETUP_REQUIRED,
     hash_password,
+    is_remote,
     sign_session,
     verify_password,
     verify_session,
@@ -41,10 +44,81 @@ def test_errors_are_mapped(api: tuple[TestClient, AppState]) -> None:
     assert client.get("/api/_boom/value").status_code == 400
 
 
-def test_no_password_means_open(api: tuple[TestClient, AppState]) -> None:
+def test_lan_mode_is_open(api: tuple[TestClient, AppState]) -> None:
     client, _ = api
-    assert client.get("/api/session").json() == {"auth_required": False, "authenticated": False}
+    assert client.get("/api/session").json() == {
+        "mode": "lan", "auth_required": False, "authenticated": False, "remote": False,
+    }
     assert client.get("/api/status").status_code == 200
+
+
+def _assert_needs_setup(client: TestClient) -> None:
+    gated = client.get("/api/status")
+    assert gated.status_code == 428
+    assert gated.json() == {"detail": SETUP_REQUIRED}
+    assert client.get("/healthz").status_code == 200
+    assert client.get("/metrics").status_code == 200
+    session = client.get("/api/session").json()
+    assert session["mode"] == "setup"
+    assert session["auth_required"] is False
+
+
+def test_fresh_and_passwordless_installs_need_setup(api: tuple[TestClient, AppState]) -> None:
+    client, state = api
+    state.settings.set("access_mode", "")
+    _assert_needs_setup(client)
+    # an install upgraded from before access modes: no password, nothing chosen
+    state.settings.set("access_mode", "lan")
+    state.settings.set_many({"admin_password_hash": "", "access_mode": ""})
+    _assert_needs_setup(client)
+
+
+def test_password_means_wan_even_if_lan_flag_set(api: tuple[TestClient, AppState]) -> None:
+    client, state = api
+    assert state.settings.get("access_mode") == "lan"
+    _set_password(state)
+    assert client.get("/api/session").json()["mode"] == "wan"
+    assert client.get("/api/status").status_code == 401
+
+
+def test_login_refused_unless_wan(api: tuple[TestClient, AppState]) -> None:
+    client, state = api
+    for mode in ("lan", ""):
+        state.settings.set("access_mode", mode)
+        response = client.post("/api/session", json={"password": "x"})
+        assert response.status_code == 400
+        assert "set-cookie" not in response.headers
+
+
+@pytest.mark.parametrize(
+    ("headers", "client_host", "remote"),
+    [
+        ({"forwarded": "for=1.2.3.4"}, "192.168.1.5", True),
+        ({"x-forwarded-for": "1.2.3.4"}, "10.0.0.2", True),
+        ({"x-real-ip": "1.2.3.4"}, "127.0.0.1", True),
+        ({}, "8.8.8.8", True),
+        ({}, "192.168.1.5", False),
+        ({}, "10.0.0.2", False),
+        ({}, "127.0.0.1", False),
+        ({}, "::1", False),
+        ({}, "testclient", False),
+    ],
+)
+def test_is_remote(headers: dict[str, str], client_host: str, remote: bool) -> None:
+    request = Request(
+        {
+            "type": "http",
+            "headers": [(k.encode(), v.encode()) for k, v in headers.items()],
+            "client": (client_host, 1),
+        }
+    )
+    assert is_remote(request) is remote
+
+
+def test_session_reports_remote(api: tuple[TestClient, AppState]) -> None:
+    client, _ = api
+    body = client.get("/api/session", headers={"x-forwarded-for": "1.2.3.4"}).json()
+    assert body["remote"] is True
 
 
 def test_password_gates_api_but_not_health(api: tuple[TestClient, AppState]) -> None:
@@ -54,7 +128,9 @@ def test_password_gates_api_but_not_health(api: tuple[TestClient, AppState]) -> 
     assert client.get("/api/status").json() == {"detail": {"error": "unauthorized"}}
     assert client.get("/healthz").status_code == 200
     assert client.get("/metrics").status_code == 200
-    assert client.get("/api/session").json() == {"auth_required": True, "authenticated": False}
+    assert client.get("/api/session").json() == {
+        "mode": "wan", "auth_required": True, "authenticated": False, "remote": False,
+    }
 
 
 def test_login_sets_cookie_and_logout_clears(api: tuple[TestClient, AppState]) -> None:
@@ -69,7 +145,9 @@ def test_login_sets_cookie_and_logout_clears(api: tuple[TestClient, AppState]) -
     assert "i2n_session=" in cookie and "httponly" in cookie and "samesite=lax" in cookie
     assert "path=/" in cookie
     assert client.get("/api/status").status_code == 200
-    assert client.get("/api/session").json() == {"auth_required": True, "authenticated": True}
+    assert client.get("/api/session").json() == {
+        "mode": "wan", "auth_required": True, "authenticated": True, "remote": False,
+    }
     assert client.request("DELETE", "/api/session", json={}).status_code == 204
     assert client.get("/api/status").status_code == 401
 
@@ -81,7 +159,9 @@ def test_malformed_cookie_is_unauthorized(api: tuple[TestClient, AppState], cook
     headers = {"cookie": f"i2n_session={cookie}".encode()}
     assert client.get("/api/status", headers=headers).status_code == 401
     body = client.get("/api/session", headers=headers).json()
-    assert body == {"auth_required": True, "authenticated": False}
+    assert body == {
+        "mode": "wan", "auth_required": True, "authenticated": False, "remote": False,
+    }
 
 
 def test_password_change_invalidates_old_cookie(api: tuple[TestClient, AppState]) -> None:
@@ -164,24 +244,26 @@ def test_reset_admin_password_flag(
 
     monkeypatch.setattr(uvicorn, "run", fail)
     with TestClient(create_app(config, env)) as client:
+        state0: AppState = client.app.state.i2n  # type: ignore[attr-defined]
+        state0.settings.set("access_mode", "lan")  # a bare create_app starts in setup
         put = client.put("/api/settings", json={"admin_password": PASSWORD})
         assert put.status_code == 200
         login(client)
         assert client.get("/api/status").status_code == 200
-        state0: AppState = client.app.state.i2n  # type: ignore[attr-defined]
         old_cookie = sign_session(state0.secrets.derive("i2n-session"), int(time.time()) - 5)
     before = int(time.time())
     assert serve(["--reset-admin-password"]) == 0
-    assert capsys.readouterr().out.strip() == "admin password cleared; set a new one in Settings"
+    assert capsys.readouterr().out.strip() == (
+        "admin password cleared; open the web UI to choose an access mode"
+    )
     with TestClient(create_app(config, env)) as client:
         state: AppState = client.app.state.i2n  # type: ignore[attr-defined]
         assert state.settings.get("admin_password_hash") == ""
+        assert state.settings.get("access_mode") == ""
         assert state.settings.get("admin_password_set_at") >= before
-        assert client.get("/api/session").json() == {
-            "auth_required": False, "authenticated": False,
-        }
+        assert client.get("/api/session").json()["mode"] == "setup"
         # a cookie issued before the reset does not come back to life under a new password
-        client.put("/api/settings", json={"admin_password": "new"})
+        _set_password(state, set_at=int(time.time()))
         client.cookies.set(COOKIE, old_cookie)
         assert client.get("/api/status").status_code == 401
     lock = DaemonLock(config.lock_path)

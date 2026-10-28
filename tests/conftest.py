@@ -70,7 +70,7 @@ def sent() -> list[tuple[list[str], str, str]]:
 def api(
     config: Config, sent: list[tuple[list[str], str, str]]
 ) -> Iterator[tuple[TestClient, AppState]]:
-    """The FastAPI app with its lifespan running and the fake worker configured."""
+    """The FastAPI app (in lan mode) with its lifespan running and the fake worker configured."""
 
     def recording_sender(urls: list[str], title: str, body: str) -> bool:
         sent.append((urls, title, body))
@@ -78,6 +78,7 @@ def api(
 
     env = make_env(config)
     state = build_state(config, env, send=recording_sender)
+    state.settings.set("access_mode", "lan")  # a bare install starts in setup; few tests want that
     app = create_app(config, env, state=state)
     with TestClient(app) as client:
         yield client, state

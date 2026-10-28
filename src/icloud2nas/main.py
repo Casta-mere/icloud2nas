@@ -206,12 +206,19 @@ def create_app(
 
 
 def reset_admin_password(config: Config) -> None:
-    """Clear the admin password; the new set_at invalidates every session cookie issued so far."""
+    """Back to first-run setup: clear the password and the lan choice.
+
+    The new set_at invalidates every session cookie issued so far.
+    """
     engine = make_engine(config.db_path)
     try:
         upgrade_db(engine)
         Settings(Store(engine)).set_many(
-            {"admin_password_hash": "", "admin_password_set_at": str(int(time.time()))}
+            {
+                "admin_password_hash": "",
+                "admin_password_set_at": str(int(time.time())),
+                "access_mode": "",
+            }
         )
     finally:
         engine.dispose()
@@ -244,7 +251,7 @@ def serve(argv: Sequence[str]) -> int:
     try:
         if args.reset_admin_password:
             reset_admin_password(config)
-            print("admin password cleared; set a new one in Settings")
+            print("admin password cleared; open the web UI to choose an access mode")
             return 0
         import uvicorn
 

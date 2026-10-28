@@ -1,21 +1,31 @@
-"""Optional single-admin password and signed session cookie."""
+"""Access mode (setup/lan/wan), the single-admin password and the signed session cookie."""
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
 import hmac
+import ipaddress
 import secrets as _secrets
 import time
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from icloud2nas.api.state import AppState
+from icloud2nas.orchestrator.settings import Settings
 
 COOKIE = "i2n_session"
 MAX_AGE_S = 30 * 86400
 _SCRYPT = {"n": 2**14, "r": 8, "p": 1}
+SETUP_REQUIRED = {
+    "error": "setup required",
+    "detail": "choose LAN or WAN mode in the web UI first",
+}
+_PROXY_HEADERS = ("forwarded", "x-forwarded-for", "x-real-ip")
+
+AccessMode = Literal["setup", "lan", "wan"]
 
 
 def hash_password(password: str) -> str:
@@ -74,11 +84,36 @@ def _authenticated(state: AppState, request: Request) -> bool:
     )
 
 
+def access_mode(settings: Settings) -> AccessMode:
+    # derived, never migrated: a stored password means wan, so an upgrade keeps it locked, and a
+    # passwordless install stays in setup until someone chooses lan
+    if settings.get("admin_password_hash"):
+        return "wan"
+    return "lan" if settings.get("access_mode") == "lan" else "setup"
+
+
+def is_remote(request: Request) -> bool:
+    """Whether the page was reached from outside (warning only; nothing is gated on it).
+
+    Reads the raw proxy headers rather than request.client, which uvicorn may rewrite; a forged
+    header can only make a request look more remote.
+    """
+    if any(name in request.headers for name in _PROXY_HEADERS):
+        return True
+    if request.client is None:
+        return False
+    try:
+        return ipaddress.ip_address(request.client.host).is_global
+    except ValueError:
+        return False
+
+
 async def require_session(request: Request) -> None:
     state = _state(request)
-    if not state.settings.get("admin_password_hash"):
-        return
-    if not _authenticated(state, request):
+    mode = access_mode(state.settings)
+    if mode == "setup":
+        raise HTTPException(428, SETUP_REQUIRED)
+    if mode == "wan" and not _authenticated(state, request):
         raise HTTPException(401, {"error": "unauthorized"})
 
 
@@ -90,17 +125,24 @@ router = APIRouter(prefix="/api")
 
 
 @router.get("/session")
-async def get_session(request: Request) -> dict[str, bool]:
+async def get_session(request: Request) -> dict[str, Any]:
     state = _state(request)
-    required = bool(state.settings.get("admin_password_hash"))
-    return {"auth_required": required, "authenticated": required and _authenticated(state, request)}
+    mode = access_mode(state.settings)
+    return {
+        "mode": mode,
+        "auth_required": mode == "wan",
+        "authenticated": mode == "wan" and _authenticated(state, request),
+        "remote": is_remote(request),
+    }
 
 
 @router.post("/session", status_code=204)
 async def login(body: LoginBody, request: Request) -> Response:
     state = _state(request)
+    if access_mode(state.settings) != "wan":
+        raise ValueError("no admin password is set")
     stored = state.settings.get("admin_password_hash")
-    if stored and not await asyncio.to_thread(verify_password, body.password, stored):
+    if not await asyncio.to_thread(verify_password, body.password, stored):
         raise HTTPException(401, {"error": "unauthorized"})
     response = Response(status_code=204)
     response.set_cookie(
