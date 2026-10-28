@@ -3,6 +3,7 @@ import { useT } from "../i18n";
 import { PromptBar } from "../ui/PromptBar";
 import { BottomTabs } from "./BottomTabs";
 import { Nav } from "./Nav";
+import { OutsideWarning } from "./OutsideWarning";
 import { PhoneBar } from "./PhoneBar";
 
 export function Shell() {
@@ -16,6 +17,7 @@ export function Shell() {
           <PromptBar className="ml-auto max-sm:hidden" />
         </header>
         <PhoneBar />
+        <OutsideWarning />
         <main>
           <Outlet />
         </main>

@@ -62,10 +62,10 @@ describe("Settings page", () => {
     expect(await screen.findByText("发送成功")).toBeInTheDocument();
   });
 
-  test("清除 puts admin_password '' and 设置 puts the typed value then logs in; label reflects admin_password_set", async () => {
+  test("切到局域网模式 puts admin_password '' and 设置 puts the typed value then logs in; the hint names the access mode", async () => {
     const { user } = renderWithProviders(<Settings />);
-    expect(await screen.findByText("未设置 · 任何人可访问")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "清除" })).not.toBeInTheDocument();
+    expect(await screen.findByText("局域网模式 · 无密码，能访问的人都能打开")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "切到局域网模式" })).not.toBeInTheDocument();
     const pw = screen.getByLabelText("管理密码");
     expect(screen.getByRole("button", { name: "设置" })).toBeDisabled();
     await user.type(pw, "s3cret");
@@ -77,16 +77,17 @@ describe("Settings page", () => {
       expect(calls().some((c) => c.method === "POST" && c.path === "/api/session")).toBe(true),
     );
     expect(calls().find((c) => c.path === "/api/session" && c.method === "POST")?.body).toEqual({ password: "s3cret" });
-    expect(await screen.findByText("已设置管理密码")).toBeInTheDocument();
+    expect(await screen.findByText("外网模式 · 需要密码")).toBeInTheDocument();
     expect(screen.getByLabelText("管理密码")).toHaveValue("");
     expect(screen.getByLabelText("确认密码")).toHaveValue("");
 
-    await user.click(screen.getByRole("button", { name: "清除" }));
+    await user.click(screen.getByRole("button", { name: "切到局域网模式" }));
     const dialog = await screen.findByRole("alertdialog");
-    await user.click(within(dialog).getByRole("button", { name: "清除" }));
+    expect(within(dialog).getByText("切换到局域网模式？")).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "切到局域网模式" }));
     await waitFor(() => expect(puts()).toHaveLength(2));
     expect(puts()[1]?.body).toEqual({ admin_password: "" });
-    expect(await screen.findByText("未设置 · 任何人可访问")).toBeInTheDocument();
+    expect(await screen.findByText("局域网模式 · 无密码，能访问的人都能打开")).toBeInTheDocument();
   });
 
   test("设置 in the full app keeps the user on the settings page (login happens inside the mutation)", async () => {
@@ -96,7 +97,7 @@ describe("Settings page", () => {
     await user.type(await screen.findByLabelText("管理密码"), "s3cret");
     await user.type(screen.getByLabelText("确认密码"), "s3cret");
     await user.click(screen.getByRole("button", { name: "设置" }));
-    expect(await screen.findByText("已设置管理密码")).toBeInTheDocument();
+    expect(await screen.findByText("外网模式 · 需要密码")).toBeInTheDocument();
     expect(db.session).toEqual({ mode: "wan", auth_required: true, authenticated: true, remote: false });
     expect(screen.queryByRole("button", { name: "进入" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "保存 0 项" })).toBeInTheDocument();
