@@ -146,10 +146,20 @@ export interface Status {
   started_at: string;
 }
 
+/** `setup`: nobody has chosen yet (the API answers 428); `lan`: open; `wan`: admin password. */
+export type AccessMode = "setup" | "lan" | "wan";
+
 export interface Session {
+  mode: AccessMode;
+  /** `mode === "wan"`. */
   auth_required: boolean;
   authenticated: boolean;
+  /** The request looks like it came through a proxy or from a public address (a hint only). */
+  remote: boolean;
 }
+
+/** `POST /api/setup` body: leave `setup` by choosing LAN or WAN (with its password). */
+export type SetupChoice = { mode: "lan" } | { mode: "wan"; password: string };
 
 export interface NewAccount {
   display_name: string;

@@ -2,7 +2,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, expect, test, vi } from "vitest";
-import { onUnauthorized } from "../api/client";
+import { onSetupRequired, onUnauthorized } from "../api/client";
 import { calls, given } from "../test/msw";
 import { makeQueryClient } from "../test/render";
 import { FakeEventSource } from "./fakeEventSource";
@@ -127,7 +127,7 @@ test("error → session check → reconnect with backoff; expired cookie → una
   expect(filters?.queryKey).toBeUndefined();
   const predicate = filters?.predicate;
   expect(predicate).toBeTypeOf("function");
-  queryClient.setQueryData(["session"], { auth_required: false, authenticated: false });
+  queryClient.setQueryData(["session"], { mode: "lan", auth_required: false, authenticated: false, remote: false });
   queryClient.setQueryData(["runs", {}], []);
   const cache = queryClient.getQueryCache();
   const sessionQuery = cache.find({ queryKey: ["session"] });
@@ -137,7 +137,7 @@ test("error → session check → reconnect with backoff; expired cookie → una
   const before = FakeEventSource.instances.length;
 
   // the cookie expired: the session check says so and the stream stops retrying
-  given("GET", "/api/session", { auth_required: true, authenticated: false });
+  given("GET", "/api/session", { mode: "wan", auth_required: true, authenticated: false, remote: false });
   timeouts.mockClear();
   act(() => FakeEventSource.latest().fail());
   await until(() => expect(unauthorized).toHaveBeenCalledTimes(1));
@@ -146,6 +146,23 @@ test("error → session check → reconnect with backoff; expired cookie → una
   });
   expect(FakeEventSource.instances).toHaveLength(before);
   expect(backoffs()).toEqual([]);
+});
+
+test("error → the session check says setup is needed → setup-required, and the stream stops retrying", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const setupRequired = vi.fn();
+  const unauthorized = vi.fn();
+  unsubscribers.push(onSetupRequired(setupRequired), onUnauthorized(unauthorized));
+  mount();
+  given("GET", "/api/session", { mode: "setup", auth_required: false, authenticated: false, remote: false });
+
+  act(() => FakeEventSource.latest().fail());
+  await until(() => expect(setupRequired).toHaveBeenCalledTimes(1));
+  expect(unauthorized).not.toHaveBeenCalled();
+  act(() => {
+    vi.advanceTimersByTime(60_000);
+  });
+  expect(FakeEventSource.instances).toHaveLength(1);
 });
 
 test("run.event is re-dispatched on appEvents", () => {

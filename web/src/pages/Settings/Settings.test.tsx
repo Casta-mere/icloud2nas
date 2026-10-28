@@ -97,7 +97,7 @@ describe("Settings page", () => {
     await user.type(screen.getByLabelText("确认密码"), "s3cret");
     await user.click(screen.getByRole("button", { name: "设置" }));
     expect(await screen.findByText("已设置管理密码")).toBeInTheDocument();
-    expect(db.session).toEqual({ auth_required: true, authenticated: true });
+    expect(db.session).toEqual({ mode: "wan", auth_required: true, authenticated: true, remote: false });
     expect(screen.queryByRole("button", { name: "进入" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "保存 0 项" })).toBeInTheDocument();
   });

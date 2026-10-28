@@ -21,6 +21,7 @@ import type {
   Session,
   SettingsResponse,
   SettingsUpdate,
+  SetupChoice,
   Status,
   TrashEntry,
   TrashFile,
@@ -296,6 +297,16 @@ export const useLogin = () =>
     [keys.session],
   );
 
+/** Leave `setup`: choose LAN, or WAN with its password (the response logs the caller in). */
+export const useSetup = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (choice: SetupChoice) => request<undefined>("POST", "/api/setup", choice),
+    // the mode changed under every query, not just the session
+    onSuccess: () => qc.invalidateQueries(),
+  });
+};
+
 /** Sign out: show the login card and drop every other cached resource (no session refetch needed). */
 export const useLogout = () => {
   const qc = useQueryClient();
@@ -303,7 +314,12 @@ export const useLogout = () => {
     mutationFn: () => request<undefined>("DELETE", "/api/session"),
     onSuccess: () => {
       // the session query stays (its observer is the gate in App); everything else goes, as clear() would
-      qc.setQueryData<Session>(keys.session, { auth_required: true, authenticated: false });
+      qc.setQueryData<Session>(keys.session, (prev) => ({
+        mode: "wan",
+        auth_required: true,
+        authenticated: false,
+        remote: prev?.remote ?? false,
+      }));
       qc.removeQueries({ predicate: (q) => q.queryKey[0] !== keys.session[0] });
       qc.getMutationCache().clear();
     },

@@ -7,6 +7,7 @@ import type {
   Plan,
   PlanDetail,
   Run,
+  Session,
   SettingsResponse,
   SettingsValues,
   Status,
@@ -245,7 +246,7 @@ function freshDb() {
     trash: trash(),
     settings: { values: settingsValues(), admin_password_set: false, public_url_fallback: null } as SettingsResponse,
     status: status(),
-    session: { auth_required: false, authenticated: false },
+    session: { mode: "lan", auth_required: false, authenticated: false, remote: false } as Session,
     adminPassword: ADMIN_PASSWORD,
     /** `GET /api/host-users`: false = single-user mode. */
     privileged: true,
@@ -256,10 +257,16 @@ function freshDb() {
 /** Mutable fixture state; reset after every test by `resetMsw()`. */
 export let db = freshDb();
 
-/** Require the admin password (the fixture server then answers 401 until `POST /api/session`). */
+/** WAN mode: the fixture server answers 401 until `POST /api/session`. */
 export function requireAuth(): void {
-  db.session = { auth_required: true, authenticated: false };
+  db.session = { ...db.session, mode: "wan", auth_required: true, authenticated: false };
   db.settings.admin_password_set = true;
+}
+
+/** First run: the fixture server answers 428 on protected routes until `POST /api/setup`. */
+export function requireSetup(): void {
+  db.session = { ...db.session, mode: "setup", auth_required: false, authenticated: false };
+  db.settings.admin_password_set = false;
 }
 
 export interface Call {
@@ -287,6 +294,12 @@ const find = <T extends { id: string }>(items: T[], id: string | readonly string
 const guarded =
   (resolver: HttpResponseResolver): HttpResponseResolver =>
   (info) => {
+    if (db.session.mode === "setup") {
+      return HttpResponse.json(
+        { detail: { error: "setup required", detail: "choose LAN or WAN mode in the web UI first" } },
+        { status: 428 },
+      );
+    }
     if (db.session.auth_required && !db.session.authenticated) {
       return err(401, "unauthorized", "login required");
     }
@@ -330,9 +343,8 @@ const handlers = [
   route("get", "/api/session", () => HttpResponse.json(db.session)),
   route("post", "/api/session", async ({ request }) => {
     const body = (await request.json()) as { password?: string };
-    if (db.session.auth_required && body.password !== db.adminPassword) {
-      return err(401, "unauthorized", "wrong password");
-    }
+    if (db.session.mode !== "wan") return err(400, "invalid", "no admin password is set");
+    if (body.password !== db.adminPassword) return err(401, "unauthorized", "wrong password");
     db.session = { ...db.session, authenticated: true };
     return new HttpResponse(null, {
       status: 204,
@@ -342,6 +354,26 @@ const handlers = [
   route("delete", "/api/session", () => {
     db.session = { ...db.session, authenticated: false };
     return new HttpResponse(null, { status: 204 });
+  }),
+  route("post", "/api/setup", async ({ request }) => {
+    const body = (await request.json()) as { mode?: string; password?: string };
+    if (db.session.mode !== "setup") {
+      return err(409, "already set up", "the access mode is changed in Settings");
+    }
+    if (body.mode === "lan") {
+      db.session = { ...db.session, mode: "lan", auth_required: false, authenticated: false };
+      return new HttpResponse(null, { status: 204 });
+    }
+    if (body.mode !== "wan") return err(422, "invalid", "mode must be lan or wan");
+    if (!body.password) return err(400, "invalid", "wan mode needs a password");
+    db.adminPassword = body.password;
+    db.settings.admin_password_set = true;
+    // the caller is logged in: the response carries the cookie
+    db.session = { ...db.session, mode: "wan", auth_required: true, authenticated: true };
+    return new HttpResponse(null, {
+      status: 204,
+      headers: { "Set-Cookie": "i2n_session=signed; Path=/; HttpOnly; SameSite=Lax" },
+    });
   }),
 
   route("get", "/api/status", guarded(() => HttpResponse.json(db.status))),
@@ -604,8 +636,14 @@ const handlers = [
       for (const [key, value] of Object.entries(body)) {
         if (key === "admin_password") {
           db.settings.admin_password_set = value !== "";
-          // As the real server: setting requires the cookie from then on, but issues none itself.
-          db.session = { auth_required: value !== "", authenticated: false };
+          // As the real server: lan <-> wan (never back to setup); setting requires the cookie from
+          // then on, but issues none itself.
+          db.session = {
+            ...db.session,
+            mode: value !== "" ? "wan" : "lan",
+            auth_required: value !== "",
+            authenticated: false,
+          };
           if (value !== "") db.adminPassword = value;
           continue;
         }

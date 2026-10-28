@@ -1,7 +1,7 @@
 import { HttpResponse } from "msw";
 import { afterEach, expect, test, vi } from "vitest";
 import { calls, given } from "../test/msw";
-import { ApiError, onUnauthorized, request } from "./client";
+import { ApiError, onSetupRequired, onUnauthorized, request } from "./client";
 
 const unsubscribers: (() => void)[] = [];
 afterEach(() => {
@@ -55,4 +55,25 @@ test("401 fires onUnauthorized once per response", async () => {
 
   await request("GET", "/api/status");
   expect(cb).toHaveBeenCalledTimes(2);
+});
+
+test("428 fires onSetupRequired once per response, and not onUnauthorized", async () => {
+  const setup = vi.fn();
+  const unauthorized = vi.fn();
+  unsubscribers.push(onSetupRequired(setup), onUnauthorized(unauthorized));
+  given(
+    "GET",
+    "/api/accounts",
+    { detail: { error: "setup required", detail: "choose LAN or WAN mode in the web UI first" } },
+    428,
+  );
+
+  await expect(request("GET", "/api/accounts")).rejects.toMatchObject({ status: 428 });
+  expect(setup).toHaveBeenCalledTimes(1);
+  await expect(request("GET", "/api/accounts")).rejects.toMatchObject({ status: 428 });
+  expect(setup).toHaveBeenCalledTimes(2);
+  expect(unauthorized).not.toHaveBeenCalled();
+
+  await request("GET", "/api/status");
+  expect(setup).toHaveBeenCalledTimes(2);
 });

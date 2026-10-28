@@ -19,6 +19,7 @@ test("no 退出登录 when no admin password is set", async () => {
 test("退出登录 deletes the session, drops the cache and shows the login card", async () => {
   requireAuth();
   db.session.authenticated = true;
+  db.session.remote = true;
   const { user, queryClient } = renderWithProviders(<App />);
   await screen.findByRole("article", { name: "小明" });
   expect(queryClient.getQueryData(keys.accounts)).toBeDefined();
@@ -27,6 +28,12 @@ test("退出登录 deletes the session, drops the cache and shows the login card
   await user.click(within(screen.getByTestId("prompt-bar")).getByRole("button", { name: "退出登录" }));
 
   expect(await screen.findByLabelText("管理密码")).toBeInTheDocument();
+  expect(queryClient.getQueryData(keys.session)).toEqual({
+    mode: "wan",
+    auth_required: true,
+    authenticated: false,
+    remote: true,
+  });
   expect(calls().some((c) => c.method === "DELETE" && c.path === "/api/session")).toBe(true);
   await waitFor(() => expect(queryClient.getQueryData(keys.accounts)).toBeUndefined());
   expect(screen.queryByRole("article", { name: "小明" })).not.toBeInTheDocument();
