@@ -210,7 +210,7 @@ export const en: Record<Key, string> = {
   "discard": "Discard",
   "save-n": "Save {n}",
   "admin-password-set": "WAN mode · password required",
-  "admin-password-unset": "LAN mode · no password; anyone who can reach this gets in",
+  "admin-password-unset": "LAN mode · no password; anyone who can reach this gets in. Set a password to switch to WAN mode",
   "admin-password-set-btn": "Set",
   "admin-password-clear": "Switch to LAN mode",
   "admin-password-clear-title": "Switch to LAN mode?",

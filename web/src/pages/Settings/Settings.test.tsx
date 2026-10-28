@@ -64,7 +64,7 @@ describe("Settings page", () => {
 
   test("切到局域网模式 puts admin_password '' and 设置 puts the typed value then logs in; the hint names the access mode", async () => {
     const { user } = renderWithProviders(<Settings />);
-    expect(await screen.findByText("局域网模式 · 无密码，能访问的人都能打开")).toBeInTheDocument();
+    expect(await screen.findByText("局域网模式 · 无密码，能访问的人都能打开。设置密码即切到外网模式")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "切到局域网模式" })).not.toBeInTheDocument();
     const pw = screen.getByLabelText("管理密码");
     expect(screen.getByRole("button", { name: "设置" })).toBeDisabled();
@@ -87,7 +87,7 @@ describe("Settings page", () => {
     await user.click(within(dialog).getByRole("button", { name: "切到局域网模式" }));
     await waitFor(() => expect(puts()).toHaveLength(2));
     expect(puts()[1]?.body).toEqual({ admin_password: "" });
-    expect(await screen.findByText("局域网模式 · 无密码，能访问的人都能打开")).toBeInTheDocument();
+    expect(await screen.findByText("局域网模式 · 无密码，能访问的人都能打开。设置密码即切到外网模式")).toBeInTheDocument();
   });
 
   test("设置 in the full app keeps the user on the settings page (login happens inside the mutation)", async () => {

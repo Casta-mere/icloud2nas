@@ -137,6 +137,23 @@ def test_setup_only_once(api: tuple[TestClient, AppState]) -> None:
     assert client.get("/api/session").json()["mode"] == "lan"
 
 
+def test_setup_after_wan_is_refused_too(api: tuple[TestClient, AppState]) -> None:
+    client, state = api
+    state.settings.set("access_mode", "")
+    assert client.post("/api/setup", json={"mode": "wan", "password": PASSWORD}).status_code == 204
+    hashed = state.settings.get("admin_password_hash")
+    for body in ({"mode": "lan"}, {"mode": "wan", "password": "other"}):
+        response = client.post("/api/setup", json=body)
+        assert response.status_code == 409
+        assert response.json()["error"] == "already set up"
+        assert "set-cookie" not in response.headers
+    # the first password stands: the rejected requests did not replace or clear it
+    assert state.settings.get("admin_password_hash") == hashed
+    assert verify_password(PASSWORD, hashed)
+    assert not verify_password("other", hashed)
+    assert client.get("/api/session").json()["mode"] == "wan"
+
+
 def test_setup_race_loser_gets_409(
     api: tuple[TestClient, AppState], monkeypatch: pytest.MonkeyPatch
 ) -> None:

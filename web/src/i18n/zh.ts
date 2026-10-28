@@ -208,7 +208,7 @@ export const zh = {
   "discard": "放弃",
   "save-n": "保存 {n} 项",
   "admin-password-set": "外网模式 · 需要密码",
-  "admin-password-unset": "局域网模式 · 无密码，能访问的人都能打开",
+  "admin-password-unset": "局域网模式 · 无密码，能访问的人都能打开。设置密码即切到外网模式",
   "admin-password-set-btn": "设置",
   "admin-password-clear": "切到局域网模式",
   "admin-password-clear-title": "切换到局域网模式？",

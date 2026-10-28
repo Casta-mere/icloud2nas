@@ -1,7 +1,7 @@
 import { screen, within } from "@testing-library/react";
 import { expect, test } from "vitest";
 import App from "../App";
-import { ADMIN_PASSWORD, calls, requireAuth } from "../test/msw";
+import { ADMIN_PASSWORD, calls, db, requireAuth } from "../test/msw";
 import { renderWithProviders } from "../test/render";
 
 test("wrong password shows detail; right password sets cookie path and shows the shell", async () => {
@@ -31,6 +31,22 @@ test("wrong password shows detail; right password sets cookie path and shows the
     headers: expect.objectContaining({ "content-type": "application/json" }) as unknown,
     body: { password: ADMIN_PASSWORD },
   });
+});
+
+test("a login card gone stale (no password any more) refetches the session and lands in the app", async () => {
+  requireAuth();
+  const { user } = renderWithProviders(<App />);
+  expect(await screen.findByText("这台 NAS 设了管理密码")).toBeInTheDocument();
+
+  // the install was switched to LAN while this card was open: POST /api/session now answers 400
+  db.session = { ...db.session, mode: "lan", auth_required: false };
+  await user.type(screen.getByPlaceholderText("管理密码"), ADMIN_PASSWORD);
+  await user.click(screen.getByRole("button", { name: "进入" }));
+
+  expect((await screen.findAllByRole("link", { name: "总览" })).length).toBeGreaterThan(0);
+  expect(screen.queryByText("这台 NAS 设了管理密码")).not.toBeInTheDocument();
+  const logins = calls().filter((c) => c.method === "POST" && c.path === "/api/session");
+  expect(logins).toHaveLength(1);
 });
 
 test("a 401 from any request drops back to the login card", async () => {

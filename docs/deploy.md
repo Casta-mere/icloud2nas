@@ -13,8 +13,8 @@ are written under `/photos`.
 
 ## First visit: LAN or WAN
 
-A new install answers every API call with `428 setup required` and the web UI shows only a
-picker, until someone chooses:
+A new install answers every other API call with `428 setup required` (the session and setup
+endpoints stay open) and the web UI shows only a picker, until someone chooses:
 
 - **LAN**: no password. Anyone who can reach the port gets in, so use it only when that is just
   your home network. Choosing it from a page that came through a reverse proxy or a public
@@ -24,7 +24,10 @@ picker, until someone chooses:
 
 The mode can be switched later in Settings (setting a password makes it WAN, clearing it makes
 it LAN). An install that already had a password stays WAN after an upgrade; one without a
-password shows the picker. Syncs keep running in every mode, the picker included.
+password shows the picker. If that password-less install is already reachable from outside (a
+reverse proxy or a forwarded port), set a password in Settings *before* upgrading: it then comes
+back in WAN mode and never shows the first-run picker on the public address. Syncs keep running
+in every mode, the picker included.
 
 Known limits:
 

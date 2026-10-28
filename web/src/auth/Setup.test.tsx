@@ -69,6 +69,20 @@ test("a refused choice shows the server's detail and stays on the picker", async
   expect(screen.getByText("首次设置")).toBeInTheDocument();
 });
 
+test("a stale picker (someone else already chose) refetches the session and lands in the app", async () => {
+  requireSetup();
+  const { user } = renderWithProviders(<App />);
+  const lan = await screen.findByRole("button", { name: "使用局域网模式" });
+
+  // another tab finished the first-run choice while this picker was open
+  db.session = { ...db.session, mode: "lan", auth_required: false, authenticated: false };
+  await user.click(lan);
+
+  expect((await screen.findAllByRole("link", { name: "总览" })).length).toBeGreaterThan(0);
+  expect(screen.queryByText("首次设置")).not.toBeInTheDocument();
+  expect(setupPosts().map((c) => c.body)).toEqual([{ mode: "lan" }]);
+});
+
 test("outside-note shows above the LAN choice only for a remote request", async () => {
   requireSetup();
   db.session.remote = true;
