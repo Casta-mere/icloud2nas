@@ -5,11 +5,13 @@ import { BottomTabs } from "./BottomTabs";
 import { Nav } from "./Nav";
 import { OutsideWarning } from "./OutsideWarning";
 import { PhoneBar } from "./PhoneBar";
+import { UpdateBanner } from "./UpdateBanner";
 
 export function Shell() {
   const t = useT();
   return (
     <div className="page-bg">
+      <UpdateBanner />
       <div className="mx-auto max-w-[1180px] px-3.5 pt-4 pb-24 sm:px-[26px] sm:pt-[22px] sm:pb-7">
         <header className="mb-3 flex min-w-0 flex-wrap items-baseline gap-x-[18px] gap-y-2 sm:mb-[18px]">
           <div className="text-lg font-extrabold tracking-[-.3px]">{t("brand")}</div>

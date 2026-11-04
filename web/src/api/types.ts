@@ -119,6 +119,7 @@ export interface SettingsValues {
   paused: boolean;
   apprise_urls: string;
   public_url: string;
+  update_check: boolean;
   "notify.needs_code.enabled": boolean;
   "notify.password_rejected.enabled": boolean;
   "notify.repeated_failure.enabled": boolean;
@@ -138,12 +139,25 @@ export interface SettingsResponse {
 /** PUT /api/settings body: values are strings (booleans "1"/"0"); `admin_password: ""` clears it. */
 export type SettingsUpdate = Partial<Record<SettingsKey, string>> & { admin_password?: string };
 
+/** The last update check (`GET /api/status`; `POST /api/version/check` answers a fresh one). */
+export interface UpdateInfo {
+  /** Newest plain `X.Y.Z` release on GHCR; null before any successful check. */
+  latest: string | null;
+  update_available: boolean;
+  checked_at: string | null;
+  /** Why the last check failed (a known `latest` survives a later failure). */
+  error: string | null;
+  /** GitHub compare view `v<current>...v<latest>`; null when it would not resolve. */
+  compare_url: string | null;
+}
+
 export interface Status {
   paused: boolean;
   space_low: boolean;
   workers_running: number;
   version: string;
   started_at: string;
+  update: UpdateInfo;
 }
 
 /** `setup`: nobody has chosen yet (the API answers 428); `lan`: open; `wan`: admin password. */
@@ -236,6 +250,8 @@ export interface EventPayloads {
   "space.ok": { min_free_gb: number };
   paused: { paused: boolean };
   "settings.updated": { keys: string[] };
+  /** An update check finished (success or failure); re-read `/api/status`. */
+  "version.checked": Record<string, never>;
 }
 
 export type EventTopic = Exclude<keyof EventPayloads, "hello">;

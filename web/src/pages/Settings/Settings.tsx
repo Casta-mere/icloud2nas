@@ -1,4 +1,5 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useId, useState, type ReactNode } from "react";
+import { useLocation } from "react-router";
 import { ApiError } from "../../api/client";
 import { useNotifyTest, usePutSettings, useSettings } from "../../api/queries";
 import type { SettingsUpdate } from "../../api/types";
@@ -11,17 +12,23 @@ import { Toggle } from "../../ui/Toggle";
 import { AdminPassword } from "./AdminPassword";
 import { FieldRow } from "./FieldRow";
 import { FIELDS, fromValues, validate, type Field, type FieldKey } from "./schema";
+import { VersionInfo } from "./VersionInfo";
 
 type DataKey = Exclude<FieldKey, "admin_password">;
 const DATA_FIELDS = FIELDS.filter((f) => f.kind !== "password");
 const inGroup = (g: Field["group"]) => DATA_FIELDS.filter((f) => f.group === g);
 
-function Group({ title, children }: { title: string; children: ReactNode }) {
+function Group({ id, title, children }: { id?: string; title: string; children: ReactNode }) {
+  const heading = useId();
   return (
-    <Card tone="soft">
-      <h4 className="mb-3 text-[15px] font-extrabold">{title}</h4>
-      <div className="grid gap-3">{children}</div>
-    </Card>
+    <section id={id} aria-labelledby={heading} className="min-w-0">
+      <Card tone="soft">
+        <h4 id={heading} className="mb-3 text-[15px] font-extrabold">
+          {title}
+        </h4>
+        <div className="grid gap-3">{children}</div>
+      </Card>
+    </section>
   );
 }
 
@@ -32,6 +39,13 @@ export function Settings() {
   const notify = useNotifyTest();
   const [draft, setDraft] = useState<Partial<Record<DataKey, string>>>({});
   const [serverError, setServerError] = useState<{ key: string; detail: string } | null>(null);
+  const { hash, key: visit } = useLocation();
+  const loaded = settings.data !== undefined;
+
+  // `/settings#about` lands on the About card once the page has laid out (again on every visit)
+  useEffect(() => {
+    if (loaded && hash === "#about") document.getElementById("about")?.scrollIntoView?.({ block: "start" });
+  }, [loaded, hash, visit]);
 
   if (!settings.data) return <QueryState queries={[settings]} />;
   const { values, admin_password_set, public_url_fallback } = settings.data;
@@ -135,6 +149,10 @@ export function Settings() {
           <Group title={t("settings-retention")}>
             {inGroup("retention").map(row)}
             <AdminPassword isSet={admin_password_set} />
+          </Group>
+          <Group id="about" title={t("settings-about")}>
+            <VersionInfo />
+            {inGroup("about").map(row)}
           </Group>
         </div>
       </div>

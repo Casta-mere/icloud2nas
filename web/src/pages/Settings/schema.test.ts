@@ -3,7 +3,7 @@ import { FIELDS, fromValues, toWire, validate } from "./schema";
 import { db } from "../../test/msw";
 
 const API_KEYS = [
-  "apprise_urls", "public_url",
+  "apprise_urls", "public_url", "update_check",
   "notify.needs_code.enabled", "notify.password_rejected.enabled", "notify.repeated_failure.enabled",
   "notify.plan_pending.enabled", "notify.space_low.enabled", "notify.first_full.enabled",
   "max_workers", "threads_per_worker", "min_free_gb", "file_match_policy", "folder_structure",
@@ -34,6 +34,6 @@ describe("settings schema", () => {
     const wire = fromValues(db.settings.values);
     expect(wire.max_workers).toBe("2");
     expect(wire["notify.needs_code.enabled"]).toBe("1");
-    expect(Object.keys(wire)).toHaveLength(17);
+    expect(Object.keys(wire)).toHaveLength(18);
   });
 });

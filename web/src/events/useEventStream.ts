@@ -27,6 +27,7 @@ export const INVALIDATIONS: Invalidations = {
   "space.ok": () => [keys.status, keys.libraries],
   paused: () => [keys.status, keys.libraries],
   "settings.updated": () => [keys.settings],
+  "version.checked": () => [keys.status],
 };
 
 const TOPICS = Object.keys(INVALIDATIONS) as EventTopic[];
