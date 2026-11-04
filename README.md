@@ -66,6 +66,6 @@ terminal on Docker Desktop:
     docker compose run --rm -e I2N_URL dev uv run icloud2nas-ctl runs
 
 Forgot the admin password? Stop the service and run `icloud2nas-serve --reset-admin-password`
-(same data directory); then set a new one in Settings.
+(same data directory); then open the web UI and choose an access mode (LAN or WAN) again.
 
 The API is documented in `docs/api.md`, the CLI and scheduling rules in `docs/orchestrator.md`.

@@ -30,6 +30,21 @@ export function notifyUnauthorized(): void {
   for (const cb of [...unauthorizedListeners]) cb();
 }
 
+const setupListeners = new Set<() => void>();
+
+/** Subscribe to 428s (the install is still in `setup`) from any request; returns the unsubscribe function. */
+export function onSetupRequired(cb: () => void): () => void {
+  setupListeners.add(cb);
+  return () => {
+    setupListeners.delete(cb);
+  };
+}
+
+/** Tell every subscriber the first-run choice is pending (also used by the event stream's session check). */
+export function notifySetupRequired(): void {
+  for (const cb of [...setupListeners]) cb();
+}
+
 function isErrorBody(value: unknown): value is { error?: unknown; detail?: unknown } {
   return typeof value === "object" && value !== null;
 }
@@ -60,6 +75,7 @@ async function send(method: Method, path: string, body?: unknown): Promise<Respo
   const res = await fetch(path, init);
   if (!res.ok) {
     if (res.status === 401) notifyUnauthorized();
+    if (res.status === 428) notifySetupRequired();
     throw await toApiError(res);
   }
   return res;

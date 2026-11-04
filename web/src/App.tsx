@@ -1,10 +1,11 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { Navigate, Route, Routes } from "react-router";
-import { onUnauthorized } from "./api/client";
+import { onSetupRequired, onUnauthorized } from "./api/client";
 import { keys, useSession } from "./api/queries";
 import type { Session } from "./api/types";
 import { Login } from "./auth/Login";
+import { Setup } from "./auth/Setup";
 import { StreamProvider } from "./events/StreamProvider";
 import { useT } from "./i18n";
 import { Accounts } from "./pages/Accounts/Accounts";
@@ -15,7 +16,7 @@ import { Trash } from "./pages/Trash/Trash";
 import { Shell } from "./shell/Shell";
 import { Empty } from "./ui/Empty";
 
-const LOGGED_OUT: Session = { auth_required: true, authenticated: false };
+const LOGGED_OUT: Session = { mode: "wan", auth_required: true, authenticated: false, remote: false };
 
 /** Session gate + routes; the router itself comes from `main.tsx` (or the test's MemoryRouter). */
 export default function App() {
@@ -25,6 +26,19 @@ export default function App() {
 
   // any 401 drops back to the login card without refetching the session
   useEffect(() => onUnauthorized(() => qc.setQueryData(keys.session, LOGGED_OUT)), [qc]);
+  // any 428 (an unset-up install) drops back to the first-run picker, likewise without a refetch
+  useEffect(
+    () =>
+      onSetupRequired(() =>
+        qc.setQueryData<Session>(keys.session, (prev) => ({
+          ...(prev ?? LOGGED_OUT),
+          mode: "setup",
+          auth_required: false,
+          authenticated: false,
+        })),
+      ),
+    [qc],
+  );
 
   if (session.isError && !session.data) {
     return (
@@ -34,6 +48,7 @@ export default function App() {
     );
   }
   if (!session.data) return <div className="page-bg" />;
+  if (session.data.mode === "setup") return <Setup />;
   if (session.data.auth_required && !session.data.authenticated) return <Login />;
 
   return (

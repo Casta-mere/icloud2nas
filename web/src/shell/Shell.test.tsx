@@ -2,7 +2,7 @@ import { act, screen, within } from "@testing-library/react";
 import { expect, test } from "vitest";
 import App from "../App";
 import { FakeEventSource } from "../events/fakeEventSource";
-import { calls } from "../test/msw";
+import { calls, db, requireAuth } from "../test/msw";
 import { renderWithProviders } from "../test/render";
 
 test("prompt bar shows counts, 已断开 · 重连中 when disconnected, pause button toggles via /api/pause", async () => {
@@ -63,4 +63,32 @@ test("under 640px the bottom tabs render and the top nav does not", async () => 
   // the bottom tabs come after the page content, so a code input stays the first interactive element
   const main = screen.getByRole("main");
   expect(main.compareDocumentPosition(tabs) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+test("outside banner only in lan mode from outside", async () => {
+  const WARNING = "局域网模式，但你正从外网访问：能访问这个地址的人都能进来。可在设置里切换到外网模式。";
+
+  // lan, reached from outside: the warning strip shows, and it carries no controls
+  db.session.remote = true;
+  const outside = renderWithProviders(<App />);
+  const banner = await screen.findByTestId("outside-banner");
+  expect(banner).toHaveTextContent(WARNING);
+  expect(within(banner).queryByRole("button")).not.toBeInTheDocument();
+  expect(within(banner).queryByRole("link")).not.toBeInTheDocument();
+  outside.unmount();
+
+  // lan, reached directly: nothing to warn about
+  db.session.remote = false;
+  const direct = renderWithProviders(<App />);
+  await screen.findByTestId("prompt-bar");
+  expect(screen.queryByText(WARNING)).not.toBeInTheDocument();
+  direct.unmount();
+
+  // wan, even from outside: the password already guards the page
+  requireAuth();
+  db.session.authenticated = true;
+  db.session.remote = true;
+  renderWithProviders(<App />);
+  await screen.findByTestId("prompt-bar");
+  expect(screen.queryByText(WARNING)).not.toBeInTheDocument();
 });

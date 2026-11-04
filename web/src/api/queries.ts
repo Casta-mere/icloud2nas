@@ -6,7 +6,7 @@ import {
   type QueryClient,
   type QueryKey,
 } from "@tanstack/react-query";
-import { request, requestText } from "./client";
+import { ApiError, request, requestText } from "./client";
 import type {
   Account,
   HostUsers,
@@ -21,6 +21,7 @@ import type {
   Session,
   SettingsResponse,
   SettingsUpdate,
+  SetupChoice,
   Status,
   TrashEntry,
   TrashFile,
@@ -290,11 +291,33 @@ export const useResumeAll = () =>
     [keys.status, keys.libraries, keys.settings],
   );
 
-export const useLogin = () =>
-  useAction(
-    ({ password }: { password: string }) => request<undefined>("POST", "/api/session", { password }),
-    [keys.session],
-  );
+export const useLogin = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ password }: { password: string }) => request<undefined>("POST", "/api/session", { password }),
+    onSuccess: () => invalidate(qc, [keys.session]),
+    // 400: no admin password is set any more (reset, or switched to LAN) — the card is stale, so
+    // re-read the session and let the gate route (picker in setup, the app in lan)
+    onError: (error) => {
+      if (error instanceof ApiError && error.status === 400) void invalidate(qc, [keys.session]);
+    },
+  });
+};
+
+/** Leave `setup`: choose LAN, or WAN with its password (the response logs the caller in). */
+export const useSetup = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (choice: SetupChoice) => request<undefined>("POST", "/api/setup", choice),
+    // the mode changed under every query, not just the session
+    onSuccess: () => qc.invalidateQueries(),
+    // 409: someone else already chose — re-read the session so the gate re-routes (the app in lan,
+    // the login card in wan) instead of leaving a stale picker
+    onError: (error) => {
+      if (error instanceof ApiError && error.status === 409) void invalidate(qc, [keys.session]);
+    },
+  });
+};
 
 /** Sign out: show the login card and drop every other cached resource (no session refetch needed). */
 export const useLogout = () => {
@@ -303,7 +326,12 @@ export const useLogout = () => {
     mutationFn: () => request<undefined>("DELETE", "/api/session"),
     onSuccess: () => {
       // the session query stays (its observer is the gate in App); everything else goes, as clear() would
-      qc.setQueryData<Session>(keys.session, { auth_required: true, authenticated: false });
+      qc.setQueryData<Session>(keys.session, (prev) => ({
+        mode: "wan",
+        auth_required: true,
+        authenticated: false,
+        remote: prev?.remote ?? false,
+      }));
       qc.removeQueries({ predicate: (q) => q.queryKey[0] !== keys.session[0] });
       qc.getMutationCache().clear();
     },

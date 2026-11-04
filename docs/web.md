@@ -62,9 +62,16 @@ and again at 375px. The page to check is in brackets.
 8. The log drawer is 640px wide on desktop and full screen on phones. [Overview, open a run]
 9. Numbers use tabular figures; times are local; dates are `YYYY-MM-DD`. [Overview, Trash, Libraries]
 
+Desktop:
+
+- [ ] First run (fresh data directory): the access-mode picker shows LAN and WAN side by side; LAN is one click; the WAN password and confirm inputs are full width.
+- [ ] LAN mode reached through a reverse proxy: a warning strip sits between the header and the page content, with no controls in it.
+
 Phone (375px):
 
 - [ ] The five bottom tabs show; the top nav does not.
 - [ ] A compact line under the brand shows the connection state, 全局暂停/继续 and the language switch (plus 退出登录 when an admin password is set).
 - [ ] A waiting-for-code account is first, and its code input is the first control in the page content (only the status strip above it comes earlier).
 - [ ] The log drawer covers the full width, with a visible close button.
+- [ ] First run (fresh data directory): the access-mode picker stacks the two choices; LAN is one click; the WAN password and confirm inputs are full width.
+- [ ] LAN mode reached through a reverse proxy: the warning strip sits above the page content and has no controls (the code input stays the first control).

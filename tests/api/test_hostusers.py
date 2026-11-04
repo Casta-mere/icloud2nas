@@ -28,6 +28,7 @@ def host_api(config: Config, tmp_path: Path) -> Iterator[API]:
     cfg = dataclasses.replace(config, host_etc=etc)
     env = make_env(cfg)
     state = build_state(cfg, env)
+    state.settings.set("access_mode", "lan")  # a bare install starts in setup
     with TestClient(create_app(cfg, env, state=state)) as client:
         yield client, state
 

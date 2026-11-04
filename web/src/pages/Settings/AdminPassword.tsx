@@ -8,7 +8,7 @@ import { FormRow } from "../../ui/FormRow";
 
 const INPUT = "w-full rounded-[10px] border-2 border-ink bg-white px-2.5 py-1.5 text-[13px]";
 
-/** Set / clear the admin password; PUTs on its own, separate from the save bar. */
+/** The access-mode switch: setting a password means WAN mode, clearing it LAN mode; PUTs on its own, separate from the save bar. */
 export function AdminPassword({ isSet }: { isSet: boolean }) {
   const t = useT();
   const put = useSetAdminPassword();

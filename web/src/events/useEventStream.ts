@@ -1,6 +1,6 @@
 import { useQueryClient, type QueryKey } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import { notifyUnauthorized, request } from "../api/client";
+import { notifySetupRequired, notifyUnauthorized, request } from "../api/client";
 import { invalidate, keys } from "../api/queries";
 import type { EventPayloads, EventTopic, Session } from "../api/types";
 
@@ -55,7 +55,11 @@ export function useEventStream(): { connected: boolean } {
       try {
         const session = await request<Session>("GET", "/api/session");
         if (disposed) return;
-        if (session.auth_required && !session.authenticated) {
+        if (session.mode === "setup") {
+          notifySetupRequired();
+          return;
+        }
+        if (session.mode === "wan" && !session.authenticated) {
           notifyUnauthorized();
           return;
         }

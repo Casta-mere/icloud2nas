@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -177,6 +178,16 @@ def test_plan_reject_and_superseded(api: API, monkeypatch: pytest.MonkeyPatch) -
     assert "rejected" in ctl_run(client, ["plan", "list", "--status", "rejected"])[1]
 
 
+def test_login_refused_without_password_shows_the_reason() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": "invalid", "detail": "no admin password is set"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    api = ctl_follow.Api(client, "http://nas", {}, lambda _prompt: PASSWORD)
+    with pytest.raises(ctl_follow.CtlError, match="no admin password is set"):
+        api.login()
+
+
 def test_admin_password_prompt_and_retry(api: API) -> None:
     client, _ = api
     assert client.put("/api/settings", json={"admin_password": PASSWORD}).status_code == 200
@@ -188,6 +199,13 @@ def test_admin_password_prompt_and_retry(api: API) -> None:
     client.cookies.clear()
     rc, out = ctl_run(client, ["pause"], env={"I2N_ADMIN_PASSWORD": PASSWORD})
     assert rc == 0 and "paused: true" in out
+
+
+def test_setup_required_message(api: API) -> None:
+    client, state = api
+    state.settings.set("access_mode", "")
+    rc, out = ctl_run(client, ["status"])
+    assert rc == 1 and "choose LAN or WAN mode in the web UI first" in out
 
 
 def test_event_stream_login_when_admin_password_is_set(

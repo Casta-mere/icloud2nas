@@ -112,6 +112,9 @@ def test_unauthenticated_page_load_does_not_set_origin(api: tuple[TestClient, Ap
     page = {"host": "evil.lan", "sec-fetch-mode": "navigate", "accept": "text/html"}
     assert client.get("/api/status", headers=page).status_code == 401
     assert state.last_origin is None
+    state.settings.set_many({"admin_password_hash": "", "access_mode": ""})
+    assert client.get("/api/status", headers=page).status_code == 428
+    assert state.last_origin is None
 
 
 def test_metrics_keep_same_named_libraries_apart(api: tuple[TestClient, AppState]) -> None:

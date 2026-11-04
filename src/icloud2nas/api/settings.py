@@ -58,6 +58,7 @@ async def put_settings(body: dict[str, Any], request: Request) -> dict[str, Any]
         else:
             values["admin_password_hash"] = ""
             values["admin_password_set_at"] = "0"
+            values["access_mode"] = "lan"  # clearing the password is choosing LAN, not setup
     state.settings.set_many(values)
     if body:
         state.bus.publish("settings.updated", keys=list(body))

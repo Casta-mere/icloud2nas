@@ -163,7 +163,7 @@ def create_app(
         response = await call_next(request)
         host = request.headers.get("host", request.url.netloc)
         if (
-            response.status_code != 401
+            response.status_code not in (401, 428)
             and not request.url.path.startswith(("/healthz", "/metrics"))
             and _is_page_load(request)
             and _hostname(host).lower() not in LOOPBACK_HOSTS
@@ -206,12 +206,19 @@ def create_app(
 
 
 def reset_admin_password(config: Config) -> None:
-    """Clear the admin password; the new set_at invalidates every session cookie issued so far."""
+    """Back to first-run setup: clear the password and the lan choice.
+
+    The new set_at invalidates every session cookie issued so far.
+    """
     engine = make_engine(config.db_path)
     try:
         upgrade_db(engine)
         Settings(Store(engine)).set_many(
-            {"admin_password_hash": "", "admin_password_set_at": str(int(time.time()))}
+            {
+                "admin_password_hash": "",
+                "admin_password_set_at": str(int(time.time())),
+                "access_mode": "",
+            }
         )
     finally:
         engine.dispose()
@@ -224,7 +231,10 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument(
         "--reset-admin-password",
         action="store_true",
-        help="clear the web UI admin password and exit (the service must be stopped)",
+        help=(
+            "clear the web UI admin password and the LAN/WAN choice (the web UI shows the"
+            " first-run picker again) and exit; the service must be stopped"
+        ),
     )
     return parser.parse_args(list(argv))
 
@@ -244,7 +254,7 @@ def serve(argv: Sequence[str]) -> int:
     try:
         if args.reset_admin_password:
             reset_admin_password(config)
-            print("admin password cleared; set a new one in Settings")
+            print("admin password cleared; open the web UI to choose an access mode")
             return 0
         import uvicorn
 

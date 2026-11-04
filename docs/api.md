@@ -12,29 +12,54 @@ body: send `{}`. Anything else is answered `415 {"error": "unsupported media typ
 
 ## Auth
 
-By default the API is open. Set an admin password (`PUT /api/settings {"admin_password": "..."}`,
-or the settings page) and every route except `/healthz`, `/metrics` and `/api/session` requires
-the `i2n_session` cookie (signed, HTTP-only, 30 days). Changing or clearing the password
-invalidates earlier sessions. Without a valid cookie protected routes answer `401`.
+The API runs in one of three access modes, reported by `GET /api/session`:
+
+- `setup`: nobody has chosen yet (a fresh install, or after `--reset-admin-password`). Every
+  protected route answers `428 {"detail": {"error": "setup required", "detail": "choose LAN or WAN
+  mode in the web UI first"}}`.
+- `lan`: no password; every route is open to whoever can reach the port.
+- `wan`: an admin password is set; every route except the open ones requires the `i2n_session`
+  cookie (signed, HTTP-only, 30 days), from anywhere, the LAN included. Without a valid cookie
+  protected routes answer `401`.
+
+The mode is derived, not stored: a stored password means `wan`, else a chosen LAN means `lan`,
+else `setup`. An install from before access modes therefore reads as `wan` when it had a password
+and as `setup` when it had none; it never becomes `lan` by itself. `access_mode` is an internal
+setting and cannot be written through `PUT /api/settings`.
+
+Leaving `setup`: `POST /api/setup` (once; later calls are `409`). `{"mode": "lan"}` chooses LAN.
+`{"mode": "wan", "password": "..."}` sets the password and answers with the session cookie, so
+the caller is logged in. Switching later: `PUT /api/settings {"admin_password": "..."}` in `lan`
+makes it `wan`; `{"admin_password": ""}` in `wan` makes it `lan` (never back to `setup`).
+Changing or clearing the password invalidates earlier sessions.
+
+Open routes, whatever the mode: `/healthz`, `/metrics`, `GET`/`POST`/`DELETE /api/session`,
+`POST /api/setup`, and the web UI's static files. Only HTTP is gated: the scheduler,
+housekeeping and notifier keep working in every mode, `setup` included.
+
 TLS is the reverse proxy's job. A forgotten password is cleared offline with
-`icloud2nas-serve --reset-admin-password` (see `docs/orchestrator.md`).
+`icloud2nas-serve --reset-admin-password` (see `docs/orchestrator.md`), which leads back to
+`setup`.
 
 `icloud2nas-ctl` reads the base URL from `I2N_URL` (default `http://127.0.0.1:4871`). On a 401
 (or before opening the event stream) it logs in with `I2N_ADMIN_PASSWORD`, or asks for the
-password, then retries once.
+password, then retries once. In `setup` it prints the `428` text (choose LAN or WAN mode in the
+web UI first) and exits 1.
 
 | Method | Path | Body | Response | Errors |
 |---|---|---|---|---|
-| GET | `/api/session` | | `{auth_required, authenticated}` | |
-| POST | `/api/session` | `{password}` | 204 + `Set-Cookie: i2n_session` | 401 wrong password |
+| GET | `/api/session` | | `{mode: setup\|lan\|wan, auth_required, authenticated, remote}`; `auth_required` is `mode == "wan"`; `remote` is true when the request carries `Forwarded`, `X-Forwarded-For` or `X-Real-IP`, or comes from a public address (a hint for a warning, nothing is gated on it) | |
+| POST | `/api/session` | `{password}` | 204 + `Set-Cookie: i2n_session` | 400 not in `wan` (no cookie is set), 401 wrong password |
 | DELETE | `/api/session` | | 204, cookie cleared | |
+| POST | `/api/setup` | `{mode: lan\|wan, password?}` (`password` required for `wan`) | 204; `wan` also sets `Set-Cookie: i2n_session` | 400 `wan` without a password, 409 already set up (not in `setup`) |
 
 ## Errors
 
 Failures are `{"error": "<kind>", "detail": "<text>"}`: `400` invalid input (`ValueError`),
-`401` unauthorized, `404` unknown id, `409` busy / already exists, `415` a mutating request
-without `Content-Type: application/json`, `422` malformed body (FastAPI validation), `500` cannot
-decrypt stored passwords, `502` the worker failed.
+`401` unauthorized, `404` unknown id, `409` busy / already exists / already set up, `415` a
+mutating request without `Content-Type: application/json`, `422` malformed body (FastAPI
+validation), `428` setup required (the install is in `setup` mode; body as shown under Auth),
+`500` cannot decrypt stored passwords, `502` the worker failed.
 
 ## Ids
 
@@ -154,7 +179,7 @@ libraries at startup; trash of unknown folders is left in place and logged.
 | Method | Path | Body | Response | Errors |
 |---|---|---|---|---|
 | GET | `/api/settings` | | `{values, admin_password_set, public_url_fallback}`; the fallback is the origin of the last authorised browser page load from a non-loopback host, used for notification links while `public_url` is empty | |
-| PUT | `/api/settings` | `{<key>: <value>, ..., admin_password?}`; values are strings (booleans `1`/`0`); `admin_password: ""` clears it | same as GET | 400 unknown key, bad value, internal key, null |
+| PUT | `/api/settings` | `{<key>: <value>, ..., admin_password?}`; values are strings (booleans `1`/`0`); `admin_password: ""` clears it and switches to `lan`, a non-empty one switches `lan` to `wan` | same as GET | 400 unknown key, bad value, internal key, null |
 | POST | `/api/notify/test` | | `{sent}` | 400 `apprise_urls` empty |
 
 Keys: `max_workers, min_free_gb, threads_per_worker, trash_retention_days, log_retention_runs,

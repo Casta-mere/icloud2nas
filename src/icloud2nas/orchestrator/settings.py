@@ -19,7 +19,7 @@ NOTIFY_EVENTS = (
     "space_low",
     "first_full",
 )
-INTERNAL_KEYS = frozenset({"admin_password_hash", "admin_password_set_at"})
+INTERNAL_KEYS = frozenset({"admin_password_hash", "admin_password_set_at", "access_mode"})
 
 
 @dataclass(frozen=True)
@@ -107,6 +107,7 @@ SPECS: dict[str, SettingSpec] = {
         _spec("public_url", "", _text, _public_url),
         _spec("admin_password_hash", "", _text),
         _spec("admin_password_set_at", "0", int, _int_range(0)),
+        _spec("access_mode", "", _text, _one_of(("", "lan"))),
         *(_spec(f"notify.{event}.enabled", "1", _bool) for event in NOTIFY_EVENTS),
     )
 }

@@ -55,9 +55,11 @@ the file-owner list), `I2N_WORKER_CMD` (tests only).
 
 Forgot the web UI admin password: stop the service, then run
 `icloud2nas-serve --reset-admin-password` against the same data directory. It takes the daemon
-lock (and refuses while the service runs), clears the password, invalidates every earlier
-session cookie, prints `admin password cleared; set a new one in Settings` and exits 0; the API
-is open until a new password is set.
+lock (and refuses while the service runs), clears the password and the chosen access mode,
+invalidates every earlier session cookie, prints `admin password cleared; open the web UI to
+choose an access mode` and exits 0. The install is back in `setup`: the API answers `428 setup
+required` (`icloud2nas-ctl` prints "choose LAN or WAN mode in the web UI first") until someone
+picks LAN or WAN in the web UI. Scheduled syncs are not paused meanwhile.
 
 Each run's worker stderr goes to `<data>/logs/runs/<run_id>.log` (also `runs` → `log_path`).
 
