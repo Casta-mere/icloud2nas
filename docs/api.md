@@ -72,7 +72,7 @@ ambiguous prefix is a `400`, no match a `404`.
 | Method | Path | Body | Response | Errors |
 |---|---|---|---|---|
 | GET | `/healthz` | | `{ok: true}` (open) | 503 `{ok: false, detail}` database or scheduler down |
-| GET | `/metrics` | | Prometheus text (open); library series are labelled `library_id` and `library` (display name); `i2n_account_status` is labelled `account` (display name) and `status`, `i2n_account_session_expiry_timestamp_seconds` only `account` (a status change keeps its series) and is omitted while the expiry is unknown | |
+| GET | `/metrics` | | Prometheus text (open); library series are labelled `library_id` and `library` (display name); `i2n_account_status` is labelled `account` (display name) and `status`, `i2n_account_session_expiry_timestamp_seconds` `account_id` and `account`, without `status` (a status change keeps its series) and is omitted while the expiry is unknown | |
 | GET | `/api/status` | | `{paused, space_low, workers_running, version, started_at, update}`; `version` is the running version, `update` the last update check (below; cached, no network) | |
 | POST | `/api/pause` | | `{paused: true}`; stops scheduled runs, manual requests still run | |
 | POST | `/api/resume` | | `{paused: false}` | |
