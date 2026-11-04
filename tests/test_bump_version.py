@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "bump_version.py"
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from bump_version import mismatches, next_version, read_version  # noqa: E402
+from bump_version import mismatches, next_version, read_version, write_version  # noqa: E402
 
 FILES = [
     "pyproject.toml",
@@ -128,7 +128,8 @@ def test_set_explicit_version(repo: Path) -> None:
     assert set(found.values()) == {"2.3.4"}
 
 
-def test_set_refuses_non_release_current(repo: Path) -> None:
+@pytest.mark.parametrize("target", ["patch", "1.0.0"])
+def test_set_refuses_non_release_current(repo: Path, target: str) -> None:
     pyproject = repo / "pyproject.toml"
     text = pyproject.read_text(encoding="utf-8")
     pyproject.write_text(
@@ -137,10 +138,14 @@ def test_set_refuses_non_release_current(repo: Path) -> None:
     )
     before = snapshot(repo)
 
-    result = run(repo, "set", "patch")
+    result = run(repo, "set", target)
 
     assert result.returncode != 0
     assert "0.2.0-rc.1" in result.stderr
+    assert "fix project.version in pyproject.toml by hand" in result.stderr
+    assert snapshot(repo) == before
+    with pytest.raises(ValueError, match="0.2.0-rc.1"):
+        write_version(repo, "1.0.0")
     assert snapshot(repo) == before
 
 

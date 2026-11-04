@@ -5,9 +5,10 @@
     python scripts/bump_version.py set PART|X.Y.Z    write the four hand-editable fields
     python scripts/bump_version.py check             list fields that disagree; exit 1 if any
 
-Every command takes `--root DIR` (default: this repository). `set` leaves `uv.lock` to `uv lock`;
-`make bump` runs all three steps. Stdlib only: the release workflow runs it on the runner's
-python3 too.
+Every command takes `--root DIR` (default: this repository). `set` refuses, writing nothing,
+unless pyproject.toml's current version is a plain X.Y.Z, for a PART and an explicit X.Y.Z alike.
+It leaves `uv.lock` to `uv lock`; `make bump` runs all three steps. Stdlib only: the release
+workflow runs it on the runner's python3 too.
 """
 
 from __future__ import annotations
@@ -82,8 +83,21 @@ def next_version(current: str, part: Part) -> str:
     raise ValueError(f"unknown part {part!r}; expected one of {', '.join(PARTS)}")
 
 
+def _release_current(root: Path) -> str:
+    """pyproject.toml's version, refused unless it is a plain X.Y.Z (whatever the bump target)."""
+    current = read_version(root)
+    if _RELEASE.fullmatch(current) is None:
+        raise ValueError(
+            f"pyproject.toml says version {current!r}, not a plain X.Y.Z, so nothing was "
+            "changed; fix project.version in pyproject.toml by hand first"
+        )
+    return current
+
+
 def write_version(root: Path, version: str) -> None:
-    """Write `version` to the four hand-editable files. Nothing is written unless all can be."""
+    """Write `version` to the four hand-editable files. Nothing is written unless all can be,
+    and never while the current version isn't a plain X.Y.Z."""
+    _release_current(root)
     _release(version)
     out: dict[str, str] = {}
     for rel, pattern in _LINES.items():
@@ -149,9 +163,10 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "next":
             print(next_version(read_version(root), args.part))
         elif args.command == "set":
+            current = _release_current(root)
             target: str = args.target
             if target in PARTS:
-                target = next_version(read_version(root), cast(Part, target))
+                target = next_version(current, cast(Part, target))
             write_version(root, target)
             print(target)
         else:
