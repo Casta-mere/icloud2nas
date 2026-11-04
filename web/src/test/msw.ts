@@ -13,6 +13,7 @@ import type {
   Status,
   TrashEntry,
   TrashFile,
+  UpdateInfo,
 } from "../api/types";
 
 export const ids = {
@@ -216,6 +217,7 @@ const settingsValues = (): SettingsValues => ({
   paused: false,
   apprise_urls: "",
   public_url: "",
+  update_check: true,
   "notify.needs_code.enabled": true,
   "notify.password_rejected.enabled": true,
   "notify.repeated_failure.enabled": true,
@@ -230,6 +232,8 @@ const status = (): Status => ({
   workers_running: 1,
   version: "0.0.1",
   started_at: "2026-10-21T08:00:00+00:00",
+  // no check has run yet
+  update: { latest: null, update_available: false, checked_at: null, error: null, compare_url: null },
 });
 
 const hostUsers = (): HostUser[] => [
@@ -251,6 +255,8 @@ function freshDb() {
     /** `GET /api/host-users`: false = single-user mode. */
     privileged: true,
     hostUsers: hostUsers(),
+    /** What the next `POST /api/version/check` finds (copied into `status.update`); null: the last result again. */
+    nextCheck: null as UpdateInfo | null,
   };
 }
 
@@ -391,6 +397,15 @@ const handlers = [
       db.status = { ...db.status, paused: false };
       db.settings.values.paused = false;
       return HttpResponse.json({ paused: false });
+    }),
+  ),
+  // a fresh check: its result is what `/api/status` reports from then on
+  route(
+    "post",
+    "/api/version/check",
+    guarded(() => {
+      if (db.nextCheck) db.status = { ...db.status, update: db.nextCheck };
+      return HttpResponse.json(db.status.update);
     }),
   ),
 

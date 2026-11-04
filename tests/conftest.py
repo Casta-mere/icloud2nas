@@ -4,6 +4,7 @@ import time
 from collections.abc import Iterator
 from pathlib import Path
 
+import httpx
 import pytest
 import tzlocal
 from fastapi.testclient import TestClient
@@ -12,6 +13,7 @@ from icloud2nas import ctl
 from icloud2nas.api.state import AppState, build_state
 from icloud2nas.main import create_app
 from icloud2nas.orchestrator.config import Config
+from tests.fake_registry import FakeRegistry
 
 FAKE_WORKER = Path(__file__).resolve().parent / "fake_worker.py"
 
@@ -24,6 +26,16 @@ def shanghai_tz(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     tzlocal.reload_localzone()
     yield
     tzlocal.reload_localzone()
+
+
+@pytest.fixture(autouse=True)
+def no_real_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The update checker's default transport must never be used: tests pass a FakeRegistry."""
+
+    async def refuse(self: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"a test tried to reach the network: {request.url}")
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", refuse)
 
 
 @pytest.fixture
@@ -67,8 +79,14 @@ def sent() -> list[tuple[list[str], str, str]]:
 
 
 @pytest.fixture
+def registry() -> FakeRegistry:
+    """The in-memory ghcr.io the api fixture's update checker talks to (never the network)."""
+    return FakeRegistry(tags=["0.1.1"])
+
+
+@pytest.fixture
 def api(
-    config: Config, sent: list[tuple[list[str], str, str]]
+    config: Config, sent: list[tuple[list[str], str, str]], registry: FakeRegistry
 ) -> Iterator[tuple[TestClient, AppState]]:
     """The FastAPI app (in lan mode) with its lifespan running and the fake worker configured."""
 
@@ -77,7 +95,9 @@ def api(
         return True
 
     env = make_env(config)
-    state = build_state(config, env, send=recording_sender)
+    state = build_state(
+        config, env, send=recording_sender, update_transport=registry.transport()
+    )
     state.settings.set("access_mode", "lan")  # a bare install starts in setup; few tests want that
     app = create_app(config, env, state=state)
     with TestClient(app) as client:
