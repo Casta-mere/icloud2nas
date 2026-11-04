@@ -223,6 +223,7 @@ export const en: Record<Key, string> = {
   "retention-days": "recoverable for {days} days",
   "retention-forever": "kept until you delete it",
   "apple-id-exists-detail": "This Apple ID is already added: {detail}",
+  "login-start-failed": "Could not start the login: {detail}. Press Next to try again",
   "auth-failed-detail": "Login failed: {detail}",
   "discover-failed-detail": "Discovering libraries failed: {detail}",
   "mode-sync": "sync",
