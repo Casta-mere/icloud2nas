@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import os
 import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -790,3 +791,28 @@ def test_plain_auth_keeps_the_account_cookie_dir(
     monkeypatch.setattr(worker_mod.adapter, "trust_expiry", lambda _i: None)
     rc, _events = run_main("auth", {**BASE, "cookie_dir": str(tmp_path), "interactive": True})
     assert rc == 0 and seen == [str(tmp_path)]
+
+
+def test_renew_whose_second_file_move_fails_keeps_the_old_pair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cookie_dir = tmp_path / "cookies"
+    _account_files(cookie_dir, OLD_TRUST_AT, "old")
+    before = {p.name: p.read_bytes() for p in cookie_dir.iterdir()}
+    seen: list[JobSpec] = []
+    monkeypatch.setattr(worker_mod.adapter, "authenticate", renewing_login("123456", seen))
+    real = os.replace
+    calls: list[str] = []
+
+    def replace(src: Any, dst: Any) -> None:
+        calls.append(str(dst))
+        if len(calls) == 2:
+            raise OSError(5, "Input/output error")
+        real(src, dst)
+
+    monkeypatch.setattr(worker_mod.adapter.os, "replace", replace)
+    job = {**BASE, "cookie_dir": str(cookie_dir), "interactive": True, "renew": True}
+    rc, events = run_main("auth", job, stdin='{"code": "123456"}\n')
+    assert rc == 1 and events[-1]["ev"] == "error" and "Input/output" in events[-1]["message"]
+    assert "session" not in evs(events) and "done" not in evs(events)
+    assert {p.name: p.read_bytes() for p in cookie_dir.iterdir()} == before  # no .renew-* left

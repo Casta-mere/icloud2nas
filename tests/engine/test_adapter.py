@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -411,3 +412,73 @@ def test_discard_renewal_refuses_the_account_dir(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="renewal"):
         adapter.discard_renewal(_spec("auth", cookie_dir=str(cookie_dir)))
     assert jar.is_file()
+
+
+def _fail_second_replace(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
+    """os.replace that raises on its second call (the session file); later calls are real."""
+    real = os.replace
+    calls: list[tuple[str, str]] = []
+
+    def replace(src: Any, dst: Any) -> None:
+        calls.append((str(src), str(dst)))
+        if len(calls) == 2:
+            raise OSError(28, "No space left on device")
+        real(src, dst)
+
+    monkeypatch.setattr(adapter.os, "replace", replace)
+    return calls
+
+
+def _renewed(cookie_dir: Path) -> tuple[Any, Any]:
+    renewal = adapter.begin_renewal(_spec("auth", cookie_dir=str(cookie_dir)))
+    icloud = offline_service(renewal.cookie_dir)
+    write_jar(icloud.cookiejar_path, [make_cookie(TRUST_COOKIE, TRUST_AT)])
+    Path(icloud.session_path).write_text(json.dumps({"trust_token": "new"}))
+    return renewal, icloud
+
+
+def test_commit_renewal_puts_the_original_pair_back_when_a_move_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cookie_dir = tmp_path / "cookies"
+    _account_jar(cookie_dir, [make_cookie(TRUST_COOKIE, SESSION_AT)])
+    (cookie_dir / "userexamplecom.session").write_text(json.dumps({"trust_token": "old"}))
+    before = {p.name: p.read_bytes() for p in cookie_dir.iterdir()}
+    renewal, icloud = _renewed(cookie_dir)
+    calls = _fail_second_replace(monkeypatch)
+    with pytest.raises(OSError, match="No space"):
+        adapter.commit_renewal(icloud, str(cookie_dir))
+    assert len(calls) == 3  # jar moved, session failed, jar put back
+    adapter.discard_renewal(renewal)
+    assert {p.name: p.read_bytes() for p in cookie_dir.iterdir()} == before
+
+
+def test_commit_renewal_removes_a_file_the_account_did_not_have(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cookie_dir = tmp_path / "cookies"
+    cookie_dir.mkdir()
+    (cookie_dir / "userexamplecom.session").write_text(json.dumps({"trust_token": "old"}))
+    renewal, icloud = _renewed(cookie_dir)  # no jar in the account: nothing to keep for it
+    _fail_second_replace(monkeypatch)
+    with pytest.raises(OSError):
+        adapter.commit_renewal(icloud, str(cookie_dir))
+    adapter.discard_renewal(renewal)
+    assert [p.name for p in cookie_dir.iterdir()] == ["userexamplecom.session"]
+    assert json.loads((cookie_dir / "userexamplecom.session").read_text())["trust_token"] == "old"
+
+
+def test_commit_renewal_success_leaves_no_kept_originals(tmp_path: Path) -> None:
+    cookie_dir = tmp_path / "cookies"
+    _account_jar(cookie_dir, [make_cookie(TRUST_COOKIE, SESSION_AT)])
+    (cookie_dir / "userexamplecom.session").write_text(json.dumps({"trust_token": "old"}))
+    renewal, icloud = _renewed(cookie_dir)
+    adapter.commit_renewal(icloud, str(cookie_dir))
+    assert sorted(p.name for p in Path(renewal.cookie_dir).iterdir()) == [
+        "userexamplecom.orig", "userexamplecom.session.orig"
+    ]  # the kept originals, removed with the renewal dir
+    adapter.discard_renewal(renewal)
+    assert sorted(p.name for p in cookie_dir.iterdir()) == [
+        "userexamplecom", "userexamplecom.session"
+    ]
+    assert json.loads((cookie_dir / "userexamplecom.session").read_text())["trust_token"] == "new"

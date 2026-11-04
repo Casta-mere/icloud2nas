@@ -38,7 +38,7 @@ Unknown keys are rejected (`config` error).
 | `target_dir` | absolute path | null | required for `sync`/`reconcile`; must be inside `photos_root` and not equal to it |
 | `plan_dir` | string | null | required for `reconcile` unless `--apply-plan` |
 | `interactive` | bool | false | true: wait for a 2FA code on stdin; false: exit 3 when 2FA is needed |
-| `renew` | bool | false | `auth` with `interactive` only: renew Apple's trust instead of reusing it. The worker logs in from a new empty directory inside `cookie_dir` (same `client_id`), so Apple asks for a code (`need_mfa`, stdin as usual) and sets a new trust cookie; only after that login succeeded does it replace the cookie jar and session file in `cookie_dir` (one `rename` each). On any failure the old files stay and the new directory is removed |
+| `renew` | bool | false | `auth` with `interactive` only: renew Apple's trust instead of reusing it. The worker logs in from a new empty directory inside `cookie_dir` (same `client_id`), so Apple asks for a code (`need_mfa`, stdin as usual) and sets a new trust cookie; only after that login succeeded does it replace the cookie jar and session file in `cookie_dir` (one `rename` each; if one fails, the original pair is put back). On any failure the old files stay and the new directory is removed |
 | `full` | bool | false | sync: scan the whole library instead of stopping early |
 | `until_found` | int | 50 | sync: stop after this many consecutive already-downloaded assets |
 | `recent` | int | null | sync: only the N most recent assets |

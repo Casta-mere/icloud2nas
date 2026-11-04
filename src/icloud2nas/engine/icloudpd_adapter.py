@@ -297,18 +297,54 @@ def begin_renewal(spec: JobSpec) -> JobSpec:
     return dataclasses.replace(spec, cookie_dir=fresh)
 
 
+def _keep_original(target: str, backup: str) -> bool:
+    """Keep the account's current file at `backup` (a hard link, else a copy); False if absent."""
+    if not os.path.isfile(target):
+        return False
+    try:
+        os.link(target, backup)
+    except OSError:  # a filesystem without hard links
+        shutil.copy2(target, backup)
+    return True
+
+
 def commit_renewal(icloud: PyiCloudService, cookie_dir: str) -> None:
     """Replace the account's cookie jar and session file with the ones the renewal login wrote.
 
-    Each file moves with os.replace inside cookie_dir (atomic per file). Raises before touching
-    anything when either file is missing, so a half-written renewal never replaces a working one.
+    Raises before touching anything when either renewed file is missing, so a half-written
+    renewal never replaces a working one. Each file moves with os.replace inside cookie_dir
+    (atomic per file); the account's current pair is kept in the renewal dir first, and if a
+    move fails the original pair is put back (a file the account did not have is removed again)
+    before the error propagates. On success the kept originals go with the renewal dir.
+    A SIGKILL in the microseconds between the two renames is not covered: the account would hold
+    a new jar with its old session file, which at worst costs one more code entry.
     """
     renewed = [icloud.cookiejar_path, icloud.session_path]
     missing = [path for path in renewed if not os.path.isfile(path)]
     if missing:
         raise RuntimeError(f"renewed session files missing: {missing}")
+    staging = os.path.dirname(renewed[0])
+    moves: list[tuple[str, str, str | None]] = []  # (renewed file, account file, kept original)
     for path in renewed:
-        os.replace(path, os.path.join(cookie_dir, os.path.basename(path)))
+        name = os.path.basename(path)
+        target = os.path.join(cookie_dir, name)
+        kept = os.path.join(staging, name + ".orig")
+        moves.append((path, target, kept if _keep_original(target, kept) else None))
+    done: list[tuple[str, str | None]] = []
+    try:
+        for src, dst, original in moves:
+            os.replace(src, dst)
+            done.append((dst, original))
+    except BaseException:
+        for dst, original in reversed(done):
+            try:
+                if original is not None:
+                    os.replace(original, dst)
+                else:
+                    os.unlink(dst)  # the account had no such file before the renewal
+            except OSError:  # keep undoing the rest; the first error is the one to report
+                pass
+        raise
 
 
 def discard_renewal(renewal: JobSpec) -> None:
