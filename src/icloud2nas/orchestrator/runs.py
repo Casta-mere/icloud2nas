@@ -69,11 +69,13 @@ class RunManager:
         owner: tuple[int, int] | None = None,
     ) -> WorkerResult:
         def relay(event: dict[str, Any]) -> None:
-            if event.get("ev") == "progress":
+            ev = event.get("ev", "")
+            record = {"progress": self._record_progress, "retry": self._record_retry}.get(ev)
+            if record is not None:
                 try:
-                    self._record_progress(run_id, event)
+                    record(run_id, event)
                 except Exception:  # noqa: BLE001 - a DB hiccup must not drop the event
-                    log.exception("run %s: could not persist progress", run_id)
+                    log.exception("run %s: could not persist %s", run_id, ev)
             self.bus.publish("run.event", run_id=run_id, event=event)
             if on_event is not None:
                 on_event(event)
@@ -122,11 +124,18 @@ class RunManager:
         return result
 
     def _record_progress(self, run_id: str, event: dict[str, Any]) -> None:
+        self._record_latest(run_id, "progress", event)
+
+    def _record_retry(self, run_id: str, event: dict[str, Any]) -> None:
+        """The latest in-run retry stays in the stats, so a finished run still shows it."""
+        self._record_latest(run_id, "retry", event)
+
+    def _record_latest(self, run_id: str, key: str, event: dict[str, Any]) -> None:
         with self.store.session() as s:
             run = repo.get_run(s, run_id)
             if run is not None:
                 stats = run.stats
-                stats["progress"] = {k: v for k, v in event.items() if k not in ("ev", "ts")}
+                stats[key] = {k: v for k, v in event.items() if k not in ("ev", "ts")}
                 run.stats_json = json.dumps(stats, ensure_ascii=False)
 
     def _mark_internal_failure(self, run_id: str, exc: BaseException) -> None:

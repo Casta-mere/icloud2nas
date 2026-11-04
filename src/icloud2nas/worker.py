@@ -11,12 +11,13 @@ import logging
 import os
 import sys
 import threading
+import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import date
 from typing import TextIO
 
 from icloud2nas.engine import icloudpd_adapter as adapter
-from icloud2nas.engine.errors import ExitCode, HardExit, classify
+from icloud2nas.engine.errors import ExitCode, HardExit, classify, retryable
 from icloud2nas.engine.events import Emitter
 from icloud2nas.engine.job import MODES, PASSWORD_ENV, JobSpec
 from icloud2nas.engine.mfa import MfaWatchdog, StdinCodeFeeder, WorkerStatusExchange
@@ -93,6 +94,7 @@ class Worker:
         exit_hook: Callable[[ExitCode], None] = hard_exit,
         stdin: TextIO | None = None,
         today: Callable[[], date] = date.today,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.spec = spec
         self.password = password
@@ -100,6 +102,7 @@ class Worker:
         self.exit_hook = exit_hook
         self.stdin = stdin
         self.today = today
+        self.sleep = sleep
         self.mfa_timed_out = False
         self.exchange = WorkerStatusExchange(emitter)
         self.logger, self.counter, self.recorder = setup_logging()
@@ -183,14 +186,7 @@ class Worker:
         sampler = threading.Thread(target=self._sample_progress, args=(stop,), daemon=True)
         sampler.start()
         try:
-            result = adapter.run_sync(
-                self.spec,
-                self.password,
-                self.exchange,
-                self.notificator,
-                self.logger,
-                icloud=icloud,
-            )
+            result = self._run_sync_with_retries(icloud)
         finally:
             stop.set()
             sampler.join(timeout=5)
@@ -214,6 +210,58 @@ class Worker:
             },
         )
         return ExitCode.OK
+
+    def _run_sync_with_retries(self, icloud: adapter.PyiCloudService) -> int:
+        """icloudpd's download pass, repeated while Apple stalls (one wait per retry_waits_s).
+
+        Retries reuse the logged-in session: a fresh login starts a new Apple index job. icloudpd
+        skips files already on disk, so a retry resumes. Only the last attempt's result (or
+        exception) reaches the caller.
+        """
+        waits = self.spec.retry_waits_s
+        retries = 0
+        while True:
+            self.recorder.last = None
+            last_attempt = retries == len(waits)
+            failure: BaseException
+            try:
+                result = adapter.run_sync(
+                    self.spec,
+                    self.password,
+                    self.exchange,
+                    self.notificator,
+                    self.logger,
+                    icloud=icloud,
+                )
+            except Exception as exc:
+                if last_attempt or not retryable(classify(exc)[1]):
+                    raise
+                failure = exc
+            else:
+                logged = self.recorder.last
+                if result == 0 or last_attempt or logged is None:
+                    return result
+                if not retryable(classify(logged)[1]):
+                    return result
+                failure = logged
+            wait = waits[retries]
+            retries += 1
+            self._announce_retry(retries, len(waits), wait, failure)
+            self.sleep(wait)
+
+    def _announce_retry(self, attempt: int, of: int, wait: int, failure: BaseException) -> None:
+        kind = classify(failure)[1]
+        self.logger.warning(
+            "Apple is not responding (%s: %s); retry %d/%d in %d s",
+            kind,
+            failure,
+            attempt,
+            of,
+            wait,
+        )
+        self.emitter.emit(
+            "retry", attempt=attempt, of=of, wait_s=wait, kind=kind, message=str(failure)
+        )
 
     def _sample_progress(self, stop: threading.Event) -> None:
         while not stop.wait(PROGRESS_INTERVAL_S):
@@ -323,6 +371,7 @@ def main(
     stdin: TextIO | None = None,
     stdout: TextIO | None = None,
     exit_hook: Callable[[ExitCode], None] = hard_exit,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> int:
     args = parse_args(argv)
     emitter = Emitter(stdout)
@@ -337,7 +386,8 @@ def main(
     if needs_login and not password:
         emitter.emit("error", kind="config", message=f"{PASSWORD_ENV} is not set")
         return int(ExitCode.FAILED)
-    return int(Worker(spec, password, emitter, exit_hook=exit_hook, stdin=stdin).run())
+    worker = Worker(spec, password, emitter, exit_hook=exit_hook, stdin=stdin, sleep=sleep)
+    return int(worker.run())
 
 
 def cli() -> None:

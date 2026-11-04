@@ -48,3 +48,14 @@ def classify(exc: BaseException) -> tuple[ExitCode, str]:
             return ExitCode.UNAVAILABLE, "ratelimit"
         return ExitCode.FAILED, "api"
     return ExitCode.FAILED, "unknown"
+
+
+RETRYABLE_KINDS = frozenset({"network", "unavailable"})
+
+
+def retryable(kind: str) -> bool:
+    """True for Apple connection stalls a sync may retry within the same run.
+
+    Never a rate limit (backing off is the answer), a credential or MFA problem, or anything else.
+    """
+    return kind in RETRYABLE_KINDS

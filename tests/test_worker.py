@@ -13,7 +13,10 @@ from zoneinfo import ZoneInfo
 import pytest
 from icloudpd.status import Status, StatusExchange
 from pyicloud_ipd.exceptions import (
+    PyiCloudAPIResponseException,
+    PyiCloudConnectionErrorException,
     PyiCloudFailedLoginException,
+    PyiCloudServiceNotActivatedException,
     PyiCloudServiceUnavailableException,
 )
 
@@ -43,6 +46,7 @@ def run_main(
     stdin: str = "",
     password: str | None = "pw",
     apply_plan: str | None = None,
+    sleep: Callable[[float], None] | None = None,
 ) -> tuple[int, list[dict[str, Any]]]:
     env = {JOB_ENV: json.dumps(job)}
     if password is not None:
@@ -52,7 +56,12 @@ def run_main(
     if apply_plan:
         argv += ["--apply-plan", apply_plan]
     rc = worker_mod.main(
-        argv, env=env, stdin=io.StringIO(stdin), stdout=out, exit_hook=raising_exit
+        argv,
+        env=env,
+        stdin=io.StringIO(stdin),
+        stdout=out,
+        exit_hook=raising_exit,
+        sleep=sleep if sleep is not None else (lambda _s: None),  # retries never really wait
     )
     return rc, [json.loads(line) for line in out.getvalue().splitlines()]
 
@@ -463,3 +472,196 @@ def test_index_still_running_after_wait_is_not_activated(
     monkeypatch.setattr(worker_mod.adapter, "wait_for_photos_index", still_running)
     rc, events = run_main("sync", _sync_job(photos, lib))
     assert rc == 1 and events[-1]["ev"] == "error" and events[-1]["kind"] == "not_activated"
+
+
+# -- retries of Apple connection stalls ------------------------------------------------------
+
+STALL = "Cannot connect to Apple iCloud service"
+
+
+def flaky_sync(outcomes: list[BaseException | int], sessions: list[Any]) -> Callable[..., int]:
+    """run_sync stand-in, one outcome per attempt: an int is returned as is (0 also logs a
+    download); an exception is logged the way core_single_run does, then 1 is returned."""
+
+    def fake(
+        spec: Any, password: str, exchange: Any, notificator: Any, logger: Any, **kwargs: Any
+    ) -> int:
+        sessions.append(kwargs.get("icloud"))
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            logger.info(outcome)
+            return 1
+        if outcome == 0:
+            logger.info("Downloaded %s", f"IMG_{len(sessions)}.HEIC")
+        return outcome
+
+    return fake
+
+
+def test_sync_retries_a_connection_stall_on_the_same_session(
+    photos_tree: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    photos, lib = photos_tree
+    icloud = FakeICloud()
+    logins: list[int] = []
+
+    def login(*args: Any) -> FakeICloud:
+        logins.append(1)
+        return icloud
+
+    sessions: list[Any] = []
+    monkeypatch.setattr(worker_mod.adapter, "authenticate", login)
+    monkeypatch.setattr(
+        worker_mod.adapter,
+        "run_sync",
+        flaky_sync([PyiCloudConnectionErrorException(STALL), 0], sessions),
+    )
+    slept: list[float] = []
+    rc, events = run_main("sync", _sync_job(photos, lib), sleep=slept.append)
+    assert rc == 0
+    retries = [e for e in events if e["ev"] == "retry"]
+    assert len(retries) == 1
+    assert {k: v for k, v in retries[0].items() if k != "ts"} == {
+        "ev": "retry", "attempt": 1, "of": 3, "wait_s": 10, "kind": "network", "message": STALL,
+    }
+    assert slept == [10]
+    assert events[-1]["ev"] == "done" and events[-1]["stats"]["downloaded"] == 1
+    assert logins == [1] and sessions == [icloud, icloud]  # no re-login between attempts
+
+
+def test_sync_retries_a_raised_connection_error(
+    photos_tree: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    photos, lib = photos_tree
+    monkeypatch.setattr(worker_mod.adapter, "authenticate", lambda *a: FakeICloud())
+    calls: list[int] = []
+
+    def raising_once(*args: Any, **kwargs: Any) -> int:
+        calls.append(1)
+        if len(calls) == 1:
+            raise PyiCloudServiceUnavailableException("503")
+        return 0
+
+    monkeypatch.setattr(worker_mod.adapter, "run_sync", raising_once)
+    slept: list[float] = []
+    rc, events = run_main("sync", _sync_job(photos, lib), sleep=slept.append)
+    assert rc == 0 and events[-1]["ev"] == "done"
+    (retry,) = [e for e in events if e["ev"] == "retry"]
+    assert retry["kind"] == "unavailable" and retry["message"] == "503"
+    assert slept == [10] and len(calls) == 2
+
+
+def test_sync_fails_as_before_after_the_last_retry(
+    photos_tree: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    photos, lib = photos_tree
+    deleted = make_asset("DEL3", "IMG_7.HEIC", TAKEN)
+    deleted_path = _touch_expected(deleted, lib)
+    icloud = FakeICloud()
+    icloud.photos.recently_deleted = [deleted]
+    monkeypatch.setattr(worker_mod.adapter, "authenticate", lambda *a: icloud)
+    sessions: list[Any] = []
+    stalls: list[BaseException | int] = [PyiCloudConnectionErrorException(STALL)] * 4
+    monkeypatch.setattr(worker_mod.adapter, "run_sync", flaky_sync(stalls, sessions))
+    slept: list[float] = []
+    rc, events = run_main("sync", _sync_job(photos, lib), sleep=slept.append)
+    assert rc == 5
+    assert events[-1] == {**events[-1], "ev": "error", "kind": "network", "message": STALL}
+    retries = [e for e in events if e["ev"] == "retry"]
+    assert [(e["attempt"], e["of"], e["wait_s"]) for e in retries] == [
+        (1, 3, 10), (2, 3, 30), (3, 3, 60),
+    ]
+    assert slept == [10, 30, 60] and len(sessions) == 4
+    assert "done" not in evs(events)
+    assert deleted_path.exists()  # the recently-deleted pass only follows a successful attempt
+
+
+def test_sync_raised_stall_after_the_last_retry_is_reported(
+    photos_tree: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    photos, lib = photos_tree
+    monkeypatch.setattr(worker_mod.adapter, "authenticate", lambda *a: FakeICloud())
+
+    def always(*args: Any, **kwargs: Any) -> int:
+        raise PyiCloudConnectionErrorException(STALL)
+
+    monkeypatch.setattr(worker_mod.adapter, "run_sync", always)
+    rc, events = run_main("sync", _sync_job(photos, lib, retry_waits_s=[1]))
+    assert rc == 5 and evs(events)[-2:] == ["retry", "error"]
+    assert events[-1]["kind"] == "network"
+
+
+@pytest.mark.parametrize(
+    ("failure", "code", "kind"),
+    [
+        (PyiCloudFailedLoginException("Invalid email/password combination."), 4, "password"),
+        (PyiCloudAPIResponseException("slow down", "429"), 5, "ratelimit"),
+        (PyiCloudServiceNotActivatedException("still indexing", None), 1, "not_activated"),
+    ],
+)
+def test_sync_does_not_retry_other_failures(
+    photos_tree: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    failure: BaseException,
+    code: int,
+    kind: str,
+) -> None:
+    photos, lib = photos_tree
+    monkeypatch.setattr(worker_mod.adapter, "authenticate", lambda *a: FakeICloud())
+    sessions: list[Any] = []
+    monkeypatch.setattr(worker_mod.adapter, "run_sync", flaky_sync([failure, 0], sessions))
+    slept: list[float] = []
+    rc, events = run_main("sync", _sync_job(photos, lib), sleep=slept.append)
+    assert rc == code and events[-1]["ev"] == "error" and events[-1]["kind"] == kind
+    assert "retry" not in evs(events) and slept == [] and len(sessions) == 1
+
+
+def test_sync_does_not_retry_a_raised_unknown_error(
+    photos_tree: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    photos, lib = photos_tree
+    monkeypatch.setattr(worker_mod.adapter, "authenticate", lambda *a: FakeICloud())
+    calls: list[int] = []
+
+    def boom(*args: Any, **kwargs: Any) -> int:
+        calls.append(1)
+        raise RuntimeError("kaboom")
+
+    monkeypatch.setattr(worker_mod.adapter, "run_sync", boom)
+    rc, events = run_main("sync", _sync_job(photos, lib))
+    assert rc == 1 and events[-1]["kind"] == "unknown" and len(calls) == 1
+    assert "retry" not in evs(events)
+
+
+def test_sync_retries_can_be_disabled(
+    photos_tree: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    photos, lib = photos_tree
+    monkeypatch.setattr(worker_mod.adapter, "authenticate", lambda *a: FakeICloud())
+    sessions: list[Any] = []
+    monkeypatch.setattr(
+        worker_mod.adapter,
+        "run_sync",
+        flaky_sync([PyiCloudConnectionErrorException(STALL), 0], sessions),
+    )
+    slept: list[float] = []
+    rc, events = run_main("sync", _sync_job(photos, lib, retry_waits_s=[]), sleep=slept.append)
+    assert rc == 5 and events[-1]["kind"] == "network"
+    assert "retry" not in evs(events) and slept == [] and len(sessions) == 1
+
+
+def test_sync_retry_forgets_the_previous_attempts_exception(
+    photos_tree: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    photos, lib = photos_tree
+    monkeypatch.setattr(worker_mod.adapter, "authenticate", lambda *a: FakeICloud())
+    sessions: list[Any] = []
+    monkeypatch.setattr(
+        worker_mod.adapter,
+        "run_sync",
+        flaky_sync([PyiCloudConnectionErrorException(STALL), 1], sessions),
+    )
+    rc, events = run_main("sync", _sync_job(photos, lib, retry_waits_s=[2, 4]))
+    assert rc == 1 and events[-1]["ev"] == "error" and events[-1]["kind"] == "icloudpd"
+    (retry,) = [e for e in events if e["ev"] == "retry"]
+    assert retry["of"] == 2 and retry["wait_s"] == 2 and len(sessions) == 2
