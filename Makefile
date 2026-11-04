@@ -1,5 +1,8 @@
-RUN := docker compose run --rm dev
-WEB := docker compose run --rm --no-deps web
+# Extra `docker compose run` flags. CI has no TTY and passes DC_FLAGS=-T; empty locally.
+DC_FLAGS ?=
+DC_RUN := docker compose run --rm$(if $(DC_FLAGS), $(DC_FLAGS))
+RUN := $(DC_RUN) dev
+WEB := $(DC_RUN) --no-deps web
 
 .PHONY: build sync test lint typecheck check shell web-install web-check web-test web-build web-dev image
 
@@ -25,7 +28,7 @@ shell:
 
 # The named node_modules volume is created root-owned; hand it to the web user first.
 web-install:
-	docker compose run --rm --no-deps --user root web chown -R "$${I2N_UID:-1000}:$${I2N_GID:-1000}" /web/node_modules
+	$(DC_RUN) --no-deps --user root web chown -R "$${I2N_UID:-1000}:$${I2N_GID:-1000}" /web/node_modules
 	$(WEB) npm ci
 
 web-check:

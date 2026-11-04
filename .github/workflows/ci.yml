@@ -1,0 +1,50 @@
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  python:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Build the dev image
+        run: make build
+      - name: uv.lock is up to date
+        run: docker compose run --rm -T dev uv sync --locked
+      - name: Lint, typecheck, tests
+        run: make check DC_FLAGS=-T
+      - name: ShellCheck
+        run: find docker scripts -type f -name '*.sh' -print0 | xargs -0 -r shellcheck
+
+  web:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Run the web container as the runner user
+        run: |
+          echo "I2N_UID=$(id -u)" >> "$GITHUB_ENV"
+          echo "I2N_GID=$(id -g)" >> "$GITHUB_ENV"
+      - name: Install
+        run: make web-install DC_FLAGS=-T
+      - name: Typecheck, lint, tests
+        run: make web-check DC_FLAGS=-T
