@@ -20,7 +20,8 @@ export const INVALIDATIONS: Invalidations = {
   "run.started": () => [keys.runsAll, keys.status],
   // auto-delete moves files into the trash at the end of a sync
   "run.finished": () => [keys.runsAll, keys.status, keys.libraries, keys.accounts, keys.trash],
-  "run.event": () => [],
+  // a retry lands in run.stats: re-read the runs so the "Apple not responding" note shows
+  "run.event": (p) => (p.event?.ev === "retry" ? [keys.runsAll] : []),
   "plan.pending": () => [keys.plansAll, keys.libraries],
   "plan.resolved": () => [keys.plansAll, keys.libraries],
   "space.low": () => [keys.status, keys.libraries],

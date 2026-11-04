@@ -90,6 +90,8 @@ export const en: Record<Key, string> = {
   "stat-full": "first full sync",
   "stat-remote": "iCloud {n}",
   "stat-local": "local {n}",
+  "stat-retry": "Apple not responding, retry {n}/{of}",
+  "stat-retried": "Apple stalled, retried {n}/{of}",
   "add-account": "Add account",
   "step-who-where": "Account and folder",
   "step-apple-id": "Apple ID and password",

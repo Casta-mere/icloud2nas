@@ -206,6 +206,15 @@ export interface WorkerEvent {
   [field: string]: unknown;
 }
 
+/** `run.stats.retry`: the latest worker `retry` event (a sync retrying an Apple connection stall). */
+export interface RunRetry {
+  attempt: number;
+  of: number;
+  wait_s: number;
+  kind: string;
+  message: string;
+}
+
 export interface EventPayloads {
   hello: { server_time: string };
   "run.started": {

@@ -2,6 +2,7 @@ import type { Account, Library, Run } from "../../api/types";
 import { useT } from "../../i18n";
 import { fmtTime } from "../../lib/format";
 import { accountName, libraryName } from "../../lib/names";
+import { runRetry } from "../../lib/runRetry";
 import { Card } from "../../ui/Card";
 import { Chip, type ChipTone } from "../../ui/Chip";
 import { Empty } from "../../ui/Empty";
@@ -40,6 +41,7 @@ export function RecentRuns({
             const who = run.library_id
               ? libraryName(libraries, run.library_id)
               : accountName(accounts, run.account_id);
+            const retry = run.status === "running" ? runRetry(run) : null;
             return (
               <li key={run.id}>
                 <button
@@ -52,6 +54,12 @@ export function RecentRuns({
                   </span>
                   <span className="truncate">
                     {who} · {t(`mode-${run.mode}`)}
+                    {retry ? (
+                      <span className="text-[#9a3412]">
+                        {" · "}
+                        {t("stat-retry", { n: retry.attempt, of: retry.of })}
+                      </span>
+                    ) : null}
                   </span>
                   <Chip tone={TONE[run.status]}>
                     {t(killed ? "run-status-killed" : `run-status-${run.status}`)}

@@ -47,6 +47,23 @@ describe("LogDrawer", () => {
     expect(writeText).toHaveBeenCalledWith(expect.stringContaining("start sync"));
   });
 
+  test("stats line notes an in-run retry while running and after the run ended", async () => {
+    const retry = { attempt: 2, of: 3, wait_s: 30, kind: "network", message: "stall" };
+    const base = runById(ids.runs[0]);
+    const running = { ...base, status: "running" as const, ended_at: null, exit_code: null };
+    const view = renderWithProviders(
+      <LogDrawer run={{ ...running, stats: { downloaded: 1, retry } }} onClose={() => {}} />,
+    );
+    expect(await screen.findByText("下载 1 · Apple 无响应，重试 2/3")).toBeInTheDocument();
+    view.unmount();
+
+    renderWithProviders(
+      <LogDrawer run={{ ...base, stats: { downloaded: 4, trashed: 0, retry } }} onClose={() => {}} />,
+      { lang: "en" },
+    );
+    expect(await screen.findByText("4 downloaded · 0 trashed · Apple stalled, retried 2/3")).toBeInTheDocument();
+  });
+
   test("refetches the log once when the run finishes, then stays quiet", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const { user, queryClient } = renderWithProviders(<Overview />);

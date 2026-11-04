@@ -88,6 +88,8 @@ export const zh = {
   "stat-full": "首次全量",
   "stat-remote": "iCloud {n}",
   "stat-local": "本地 {n}",
+  "stat-retry": "Apple 无响应，重试 {n}/{of}",
+  "stat-retried": "Apple 曾无响应，已重试 {n}/{of}",
   "add-account": "添加账号",
   "step-who-where": "谁、放哪",
   "step-apple-id": "Apple ID 与密码",
