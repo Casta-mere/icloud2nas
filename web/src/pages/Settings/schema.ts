@@ -5,7 +5,7 @@ export type FieldKey = Exclude<SettingsKey, "paused"> | "admin_password";
 
 export type Field = {
   key: FieldKey;
-  group: "notify" | "sync" | "retention";
+  group: "notify" | "sync" | "retention" | "about";
   kind: "text" | "textarea" | "int" | "float" | "select" | "toggle" | "password";
   labelKey: I18nKey;
   min?: number;
@@ -26,6 +26,7 @@ const event = (name: string, labelKey: I18nKey): Field => ({
 export const FIELDS: readonly Field[] = [
   { key: "apprise_urls", group: "notify", kind: "textarea", labelKey: "field-apprise-urls", mono: true },
   { key: "public_url", group: "notify", kind: "text", labelKey: "field-public-url" },
+  { key: "update_check", group: "about", kind: "toggle", labelKey: "field-update-check" },
   event("needs_code", "event-needs-code"),
   event("password_rejected", "event-password-rejected"),
   event("repeated_failure", "event-repeated-failure"),

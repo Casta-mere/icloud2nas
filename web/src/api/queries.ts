@@ -25,6 +25,7 @@ import type {
   Status,
   TrashEntry,
   TrashFile,
+  UpdateInfo,
 } from "./types";
 
 export type { SettingsKey } from "./types";
@@ -278,6 +279,10 @@ export const useSetAdminPassword = () => {
 
 export const useNotifyTest = () =>
   useAction<void, { sent: boolean }>(() => request<{ sent: boolean }>("POST", "/api/notify/test"), []);
+
+/** A fresh update check (joins one already running); the result lands on `/api/status`. */
+export const useCheckForUpdates = () =>
+  useAction<void, UpdateInfo>(() => request<UpdateInfo>("POST", "/api/version/check"), [keys.status]);
 
 export const usePauseAll = () =>
   useAction<void, { paused: boolean }>(

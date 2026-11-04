@@ -243,5 +243,18 @@ export const zh = {
   "loading": "加载中…",
   "load-failed": "加载失败：{detail}",
   "sign-out": "退出登录",
+  "settings-about": "关于",
+  "field-update-check": "自动检查更新",
+  "version-label": "版本",
+  "update-check": "检查更新",
+  "update-checking": "正在检查…",
+  "update-latest": "已是最新 · {ago}前检查过",
+  "update-available": "新版本 {latest} 可用",
+  "update-whats-new": "更新内容",
+  "update-failed": "检查失败：{error}",
+  "update-command": "在 NAS 上 compose 所在目录运行：",
+  "update-copy": "复制",
+  "update-copied": "已复制",
+  "update-copy-failed": "无法复制，请手动选中命令",
 } as const satisfies Record<string, string>;
 export type Key = keyof typeof zh;
