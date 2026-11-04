@@ -20,9 +20,12 @@ release is a choice made in the pull request being merged.
    Tick only one of Major, Minor and Patch.
 3. **Merge.** The workflow's `release` job then:
    - checks out `main` (never the pull request's code) and runs `make bump PART=<part>`
-   - commits `Release X.Y.Z` as `github-actions[bot]` and tags it `vX.Y.Z`
+   - commits `Release X.Y.Z (#N)` (`N` is the pull request) as `github-actions[bot]` and tags it
+     `vX.Y.Z`
    - pushes the commit and the tag together (`git push --atomic`) with `RELEASE_TOKEN`
-   - comments on the pull request with the version and a link to the tag's CI runs
+
+   Then its `notify` job comments on the pull request with the version and a link to the tag's
+   CI runs.
 
    The number is worked out from `main` at that moment, and releases run one at a time, so two
    pull requests merged close together get consecutive versions.
@@ -38,6 +41,7 @@ When the merge doesn't release:
 | Merged by anyone but the owner | Nothing. The jobs are skipped. |
 | `RELEASE_TOKEN` missing or expired | The release job fails before changing anything. Fix the secret ([setup](#one-time-setup-release_token)), then do a [manual run](#releasing-without-a-pull-request). |
 | `main` moved while the release job ran | The atomic push is rejected and nothing is pushed. Do a [manual run](#releasing-without-a-pull-request). |
+| The workflow is re-run after its release went out | Nothing: it finds the pull request's `Release X.Y.Z (#N)` commit on `main` and stops. A failed `notify` (the pull request comments) can be re-run safely. |
 
 GitHub keeps at most one release run waiting behind the running one. If a third release starts
 while one runs and one waits, the waiting run is cancelled; do a manual run for it.

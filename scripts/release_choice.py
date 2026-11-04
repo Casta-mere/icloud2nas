@@ -9,6 +9,11 @@
     python scripts/release_choice.py is-approve   body on stdin; exit 0 if it is /approve, else 1
     python scripts/release_choice.py find         `gh api --paginate .../comments` on stdin; print
                                                   the id of the bot's choice comment, if any
+    python scripts/release_choice.py release-subject --version X.Y.Z [--pr N]
+                                                  print the release commit's subject
+    python scripts/release_choice.py already-released --pr N
+                                                  `git log --format=%s` on stdin; print PR N's
+                                                  release subject and exit 0, or exit 1 if none
 
 Options are read by their hidden `<!-- major|minor|patch|none -->` token, never by their wording.
 Stdlib only: the release workflow runs it on the runner's python3.
@@ -97,9 +102,26 @@ def _comments(text: str) -> Iterator[Mapping[str, Any]]:
         yield from value if isinstance(value, list) else [value]
 
 
+def release_subject(version: str, pr: int | None = None) -> str:
+    """The release commit's subject: `Release X.Y.Z (#PR)` from a pull request, else no `(#PR)`."""
+    return f"Release {version}" if pr is None else f"Release {version} (#{pr})"
+
+
+def already_released(subjects: Iterable[str], pr: int) -> str | None:
+    """The subject of the release commit made for pull request `pr`, if `subjects` has one."""
+    pattern = re.compile(rf"Release [0-9]+\.[0-9]+\.[0-9]+ \(#{pr}\)")
+    return next((s for s in subjects if pattern.fullmatch(s)), None)
+
+
+def _pr_number(value: str) -> int:
+    if not value.isascii() or not value.isdigit() or int(value) < 1:
+        raise argparse.ArgumentTypeError(f"not a pull request number: {value!r}")
+    return int(value)
+
+
 def released_note(version: str, runs_url: str) -> str:
     return (
-        f"Released **{version}**: `Release {version}` is on `main`, tagged `v{version}`. "
+        f"Released **{version}**: the release commit is on `main`, tagged `v{version}`. "
         f"CI builds and publishes the image: [runs for v{version}]({runs_url})."
     )
 
@@ -119,6 +141,13 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("parse", help="print the ticked choice of the comment on stdin")
     sub.add_parser("is-approve", help="exit 0 if the comment on stdin is /approve")
     sub.add_parser("find", help="print the id of the choice comment among those on stdin")
+    p_subject = sub.add_parser("release-subject", help="print the release commit's subject")
+    p_subject.add_argument("--version", required=True, metavar="X.Y.Z")
+    p_subject.add_argument("--pr", type=_pr_number, help="the pull request being released")
+    p_already = sub.add_parser(
+        "already-released", help="exit 0 if `git log --format=%%s` on stdin has PR's release"
+    )
+    p_already.add_argument("--pr", type=_pr_number, required=True)
     args = parser.parse_args(argv)
 
     try:
@@ -138,6 +167,13 @@ def main(argv: list[str] | None = None) -> int:
             found = find_comment(_comments(sys.stdin.read()))
             if found is not None:
                 print(found)
+        elif args.command == "release-subject":
+            print(release_subject(args.version, args.pr))
+        elif args.command == "already-released":
+            subject = already_released(sys.stdin.read().splitlines(), args.pr)
+            if subject is None:
+                return 1
+            print(subject)
         else:
             return 0 if is_approve_command(sys.stdin.read()) else 1
     except ValueError as e:

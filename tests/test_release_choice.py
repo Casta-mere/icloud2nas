@@ -12,9 +12,11 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from release_choice import (  # noqa: E402
     MARKER,
     Choice,
+    already_released,
     find_comment,
     is_approve_command,
     parse,
+    release_subject,
     released_note,
     render,
     render_released,
@@ -168,3 +170,51 @@ def test_cli_render_released() -> None:
 def test_cli_render_refuses_a_non_release_current() -> None:
     result = run("render", "--current", "0.2.0-rc.1")
     assert result.returncode != 0 and "0.2.0-rc.1" in result.stderr
+
+
+def test_release_subject_names_the_pr_only_for_pr_releases() -> None:
+    assert release_subject("0.1.2", 13) == "Release 0.1.2 (#13)"
+    assert release_subject("0.1.2") == "Release 0.1.2"
+
+
+HISTORY = [
+    "Fix the wizard (#14)",
+    "Release 0.1.3",  # a manual run
+    "Release 0.1.2 (#130)",
+    "Release 0.1.1 (#1)",
+    "Add release notes (#13)",  # the PR's own squash merge
+    "Update check: show the version and announce new releases (#8)",
+]
+
+
+def test_already_released_matches_this_prs_release_commit() -> None:
+    subjects = [*HISTORY[:3], "Release 0.1.2 (#13)", *HISTORY[3:]]
+    assert already_released(subjects, 13) == "Release 0.1.2 (#13)"
+    assert already_released([release_subject("2.0.0", 7)], 7) == "Release 2.0.0 (#7)"
+
+
+def test_already_released_no_match() -> None:
+    assert already_released(HISTORY, 13) is None  # other PRs' numbers, a manual run, a merge
+    assert already_released([], 13) is None
+    assert already_released([" Release 0.1.2 (#13)", "Release 0.1.2 (#13) again"], 13) is None
+    assert already_released(["Release 0.1.2-rc.1 (#13)"], 13) is None
+
+
+def test_already_released_ignores_a_manual_run_subject() -> None:
+    assert already_released([release_subject("0.1.2")], 13) is None
+
+
+def test_cli_already_released_reads_git_log() -> None:
+    log = "\n".join([*HISTORY, "Release 0.1.2 (#13)"]) + "\n"
+    found = run("already-released", "--pr", "13", stdin=log)
+    assert (found.returncode, found.stdout) == (0, "Release 0.1.2 (#13)\n")
+    assert run("already-released", "--pr", "14", stdin=log).returncode == 1
+    assert run("already-released", "--pr", "13", stdin="".join(HISTORY)).returncode == 1
+    assert run("already-released", "--pr", "x", stdin=log).returncode == 2
+
+
+def test_cli_release_subject() -> None:
+    assert run("release-subject", "--version", "0.1.2", "--pr", "13").stdout == (
+        "Release 0.1.2 (#13)\n"
+    )
+    assert run("release-subject", "--version", "0.1.2").stdout == "Release 0.1.2\n"

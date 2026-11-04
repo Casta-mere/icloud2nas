@@ -2,8 +2,12 @@ name: release
 
 # After the owner comments `/approve` on a pull request, a bot comment offers Major / Minor / Patch /
 # No release. Merging the pull request with a release ticked bumps the version on `main`, commits
-# `Release X.Y.Z` and pushes the tag `vX.Y.Z`; the tag's ci.yml run publishes the image. A manual
-# run (Actions → release → Run workflow) releases without a pull request. See docs/release.md.
+# `Release X.Y.Z (#PR)` and pushes the tag `vX.Y.Z`; the tag's ci.yml run publishes the image. A
+# manual run (Actions → release → Run workflow) releases without a pull request, as
+# `Release X.Y.Z`. See docs/release.md.
+#
+# Jobs: `offer` on `/approve`; then on a merge or manual run `decide` → `release` → `notify`.
+# A pull request is released at most once: re-runs find its `Release X.Y.Z (#PR)` commit and stop.
 #
 # Security:
 # - No job checks out or runs a pull request's code: every checkout is `main`.
@@ -114,9 +118,12 @@ jobs:
       part: ${{ steps.part.outputs.part }}
       comment: ${{ steps.part.outputs.comment }}
     steps:
+      # 100 commits reach back to this PR's `Release X.Y.Z (#N)` commit on any re-run: GitHub
+      # allows re-runs for 30 days, and this repository merges far fewer commits than that.
       - uses: actions/checkout@v7
         with:
           ref: main
+          fetch-depth: 100
           persist-credentials: false
       - name: Read the ticked option
         id: part
@@ -135,6 +142,17 @@ jobs:
                 ;;
             esac
             exit 0
+          fi
+          # A re-run of this workflow after the release went out must not release again.
+          status=0
+          released=$(git log --format=%s \
+            | python3 scripts/release_choice.py already-released --pr "$PR") || status=$?
+          if [ "$status" -eq 0 ]; then
+            echo "::notice::#$PR was already released ($released); not releasing again."
+            exit 0
+          fi
+          if [ "$status" -ne 1 ]; then
+            exit "$status"
           fi
           id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments" \
             | python3 scripts/release_choice.py find)
@@ -165,7 +183,8 @@ jobs:
           fi
           echo "part=$choice" >> "$GITHUB_OUTPUT"
 
-  # One release at a time, always computed from the tip of `main`.
+  # One release at a time, always computed from the tip of `main`. Nothing runs after the push,
+  # so once the release is out this job has succeeded and "Re-run failed jobs" never repeats it.
   release:
     needs: decide
     if: needs.decide.outputs.part != ''
@@ -173,10 +192,10 @@ jobs:
     concurrency:
       group: release
       cancel-in-progress: false
-    # GITHUB_TOKEN only comments on the pull request; checkout and push use RELEASE_TOKEN.
-    permissions:
-      issues: write
-      pull-requests: write
+    # Checkout and push use RELEASE_TOKEN; this job makes no GITHUB_TOKEN calls.
+    permissions: {}
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
     steps:
       - name: RELEASE_TOKEN is set and valid
         env:
@@ -190,11 +209,30 @@ jobs:
             echo "::error::the RELEASE_TOKEN secret is expired or cannot read $GITHUB_REPOSITORY; see docs/release.md"
             exit 1
           fi
-      # A pushed tag starts ci.yml only when the push is not made with GITHUB_TOKEN.
+      # A pushed tag starts ci.yml only when the push is not made with GITHUB_TOKEN. History as
+      # deep as decide's, for the check below.
       - uses: actions/checkout@v7
         with:
           ref: main
+          fetch-depth: 100
           token: ${{ secrets.RELEASE_TOKEN }}
+      # decide checked this too, but a re-run of this job alone reuses decide's part: if an
+      # earlier attempt pushed and then failed to report it, stop here.
+      - name: This pull request is not released yet
+        if: github.event_name == 'pull_request_target'
+        env:
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          status=0
+          released=$(git log --format=%s \
+            | python3 scripts/release_choice.py already-released --pr "$PR") || status=$?
+          if [ "$status" -eq 0 ]; then
+            echo "::error::#$PR was already released ($released); not releasing it again"
+            exit 1
+          fi
+          if [ "$status" -ne 1 ]; then
+            exit "$status"
+          fi
       - name: Build the dev image
         run: make build
       - name: Bump the version
@@ -208,26 +246,48 @@ jobs:
       - name: Commit, tag and push
         env:
           VERSION: ${{ steps.bump.outputs.version }}
+          PR: ${{ github.event.pull_request.number }}
         run: |
+          if [ -n "$PR" ]; then
+            subject=$(python3 scripts/release_choice.py release-subject --version "$VERSION" --pr "$PR")
+          else
+            subject=$(python3 scripts/release_choice.py release-subject --version "$VERSION")
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -am "Release $VERSION"
+          git commit -am "$subject"
           git tag "v$VERSION"
           git push --atomic origin HEAD:main "v$VERSION"
           echo "::notice::released $VERSION: tag v$VERSION pushed; its ci run publishes the image"
+
+  # Report a release on its pull request. Kept out of `release` so that a failed comment call
+  # can be re-run on its own: the comment is rewritten first (idempotent), then the note posted.
+  notify:
+    needs: [decide, release]
+    if: github.event_name == 'pull_request_target' && needs.release.result == 'success'
+    runs-on: ubuntu-24.04
+    # contents: read is for the checkout (the scripts); the rest is for commenting.
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          persist-credentials: false
       - name: Tell the pull request
-        if: github.event_name == 'pull_request_target'
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
           COMMENT_ID: ${{ needs.decide.outputs.comment }}
           PART: ${{ needs.decide.outputs.part }}
-          VERSION: ${{ steps.bump.outputs.version }}
+          VERSION: ${{ needs.release.outputs.version }}
         run: |
+          body=$(python3 scripts/release_choice.py render-released --version "$VERSION" --part "$PART")
+          gh api --method PATCH --silent "repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT_ID" \
+            -f body="$body"
           runs="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/workflows/ci.yml?query=branch%3Av$VERSION"
           note=$(python3 scripts/release_choice.py released-note --version "$VERSION" --runs-url "$runs")
           gh api --method POST --silent "repos/$GITHUB_REPOSITORY/issues/$PR/comments" \
             -f body="$note"
-          body=$(python3 scripts/release_choice.py render-released --version "$VERSION" --part "$PART")
-          gh api --method PATCH --silent "repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT_ID" \
-            -f body="$body"
