@@ -291,6 +291,6 @@ def test_metrics_export_the_session_expiry_per_account(api: tuple[TestClient, Ap
         )
     text = client.get("/metrics").text
     assert "# TYPE i2n_account_session_expiry_timestamp_seconds gauge" in text
-    sample = 'i2n_account_session_expiry_timestamp_seconds{account="小明",status="ok"}'
+    sample = 'i2n_account_session_expiry_timestamp_seconds{account="小明"}'  # no status label
     assert f"{sample} {expires.timestamp()}" in text
     assert 'i2n_account_session_expiry_timestamp_seconds{account="小红"' not in text  # unknown

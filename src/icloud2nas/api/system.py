@@ -64,10 +64,11 @@ def render_metrics(state: AppState) -> str:
             if lib.last_success_at is not None:
                 last_success.append((label, lib.last_success_at.timestamp()))
         for account in repo.list_accounts(s):
-            label = _labels(account=account.display_name, status=account.status)
-            statuses.append((label, 1))
-            if account.session_expires_at is not None:
-                session_expiry.append((label, account.session_expires_at.timestamp()))
+            statuses.append((_labels(account=account.display_name, status=account.status), 1))
+            if account.session_expires_at is not None:  # no status label: one series per account
+                session_expiry.append(
+                    (_labels(account=account.display_name), account.session_expires_at.timestamp())
+                )
     metric("i2n_library_files", "Files mirrored per library at the last run.", files)
     metric(
         "i2n_library_last_success_timestamp",
