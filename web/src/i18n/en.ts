@@ -258,6 +258,7 @@ export const en: Record<Key, string> = {
   "update-copy": "Copy",
   "update-copied": "Copied",
   "update-copy-failed": "Couldn't copy; select the command instead",
+  "update-command-pinned": "If .env pins a version with I2N_TAG, change it to the new one or delete that line first",
   "banner-update": "🎉 {brand} {latest} is out!",
   "banner-update-short": "🎉 {latest} is out",
   "banner-how-to": "How to update",

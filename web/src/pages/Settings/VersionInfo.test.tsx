@@ -1,7 +1,8 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse } from "msw";
 import { describe, expect, test, vi } from "vitest";
 import App from "../../App";
+import { keys } from "../../api/queries";
 import type { UpdateInfo } from "../../api/types";
 import { calls, db, given } from "../../test/msw";
 import { renderWithProviders } from "../../test/render";
@@ -72,6 +73,8 @@ describe("About card", () => {
     expect(link).toHaveAttribute("target", "_blank");
     expect(UPDATE_COMMAND).toBe("docker compose pull && docker compose up -d");
     expect(card.getByText(UPDATE_COMMAND)).toBeInTheDocument();
+    // a pinned install (I2N_TAG in .env, docs/deploy.md) would pull the old version again
+    expect(card.getByText("如果 .env 里用 I2N_TAG 固定了版本，请先改成新版本或删掉那一行")).toBeInTheDocument();
     expect(card.queryByText(/已是最新/)).not.toBeInTheDocument();
 
     await user.click(card.getByRole("button", { name: "复制" }));
@@ -125,6 +128,27 @@ describe("About card", () => {
     await card.findByText("0.0.1");
     await user.click(card.getByRole("button", { name: "检查更新" }));
     expect(await card.findByText("检查失败：boom")).toBeInTheDocument();
+  });
+
+  test("a newer check result replaces an old request error", async () => {
+    given("post", "/api/version/check", { error: "internal", detail: "boom" }, 500);
+    const { user, queryClient } = renderWithProviders(<Settings />);
+    const card = await about();
+    await card.findByText("0.0.1");
+    await user.click(card.getByRole("button", { name: "检查更新" }));
+    expect(await card.findByText("检查失败：boom")).toBeInTheDocument();
+
+    // a later check succeeds (the daily one, or another tab); version.checked re-reads /api/status
+    db.status.update = {
+      latest: "0.0.1",
+      update_available: false,
+      checked_at: new Date().toISOString(),
+      error: null,
+      compare_url: null,
+    };
+    await act(() => queryClient.invalidateQueries({ queryKey: keys.status }));
+    expect(await card.findByText(/已是最新/)).toBeInTheDocument();
+    expect(card.queryByText("检查失败：boom")).not.toBeInTheDocument();
   });
 
   test("自动检查更新 saves update_check through 保存", async () => {

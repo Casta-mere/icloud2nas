@@ -21,14 +21,23 @@ export function VersionInfo() {
   const check = useCheckForUpdates();
   const codeRef = useRef<HTMLElement>(null);
   const [copied, setCopied] = useState<boolean | null>(null);
+  // the result the last button press was made against: a failed request only speaks for itself
+  // until a newer result (the daily check, another tab) reaches /api/status
+  const [sentAgainst, setSentAgainst] = useState<string | null>(null);
 
   const update = status.data?.update;
-  const requestError = check.error
-    ? check.error instanceof ApiError
-      ? check.error.detail
-      : check.error.message
-    : null;
+  const checkedAt = update?.checked_at ?? null;
+  const requestError =
+    check.error && checkedAt === sentAgainst
+      ? check.error instanceof ApiError
+        ? check.error.detail
+        : check.error.message
+      : null;
   const error = requestError ?? update?.error ?? null;
+  const runCheck = () => {
+    setSentAgainst(checkedAt);
+    check.mutate();
+  };
 
   let line: ReactNode = null;
   if (check.isPending) {
@@ -86,6 +95,8 @@ export function VersionInfo() {
           </span>
         )}
       </div>
+      {/* the app can't see a pin: I2N_TAG only fills in compose.yaml, it never reaches the container */}
+      <span>{t("update-command-pinned")}</span>
     </div>
   );
 
@@ -102,7 +113,7 @@ export function VersionInfo() {
     >
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-mono text-[13px] tabular-nums">{status.data?.version ?? "—"}</span>
-        <Button variant="ghost" disabled={check.isPending} onClick={() => check.mutate()}>
+        <Button variant="ghost" disabled={check.isPending} onClick={runCheck}>
           {t("update-check")}
         </Button>
       </div>

@@ -256,6 +256,7 @@ export const zh = {
   "update-copy": "复制",
   "update-copied": "已复制",
   "update-copy-failed": "无法复制，请手动选中命令",
+  "update-command-pinned": "如果 .env 里用 I2N_TAG 固定了版本，请先改成新版本或删掉那一行",
   "banner-update": "🎉 {brand} {latest} 发布了！",
   "banner-update-short": "🎉 {latest} 发布了",
   "banner-how-to": "如何更新",
