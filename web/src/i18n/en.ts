@@ -258,4 +258,9 @@ export const en: Record<Key, string> = {
   "update-copy": "Copy",
   "update-copied": "Copied",
   "update-copy-failed": "Couldn't copy; select the command instead",
+  "banner-update": "🎉 {brand} {latest} is out!",
+  "banner-update-short": "🎉 {latest} is out",
+  "banner-how-to": "How to update",
+  "banner-update-link": "Update",
+  "banner-dismiss": "Dismiss",
 };

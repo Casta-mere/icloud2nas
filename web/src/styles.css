@@ -19,3 +19,8 @@
   color: var(--color-ink);
   min-height: 100vh;
 }
+
+/* The update banner: diagonal stripes in two light greens of the app palette. */
+@utility update-stripes {
+  background: repeating-linear-gradient(135deg, #dcfce7 0 14px, #bbf7d0 14px 28px);
+}

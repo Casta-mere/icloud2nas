@@ -256,5 +256,10 @@ export const zh = {
   "update-copy": "复制",
   "update-copied": "已复制",
   "update-copy-failed": "无法复制，请手动选中命令",
+  "banner-update": "🎉 {brand} {latest} 发布了！",
+  "banner-update-short": "🎉 {latest} 发布了",
+  "banner-how-to": "如何更新",
+  "banner-update-link": "更新",
+  "banner-dismiss": "关闭提示",
 } as const satisfies Record<string, string>;
 export type Key = keyof typeof zh;

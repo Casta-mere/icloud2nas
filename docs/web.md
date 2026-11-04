@@ -66,6 +66,7 @@ Desktop:
 
 - [ ] First run (fresh data directory): the access-mode picker shows LAN and WAN side by side; LAN is one click; the WAN password and confirm inputs are full width.
 - [ ] LAN mode reached through a reverse proxy: a warning strip sits between the header and the page content, with no controls in it.
+- [ ] A newer release shows a full-width striped banner above the header with 更新内容, 如何更新 and ✕; 如何更新 opens Settings at the 关于 card; ✕ hides it across reloads until a newer version. No banner while an account waits for a code, at any width.
 
 Phone (375px):
 
@@ -75,3 +76,4 @@ Phone (375px):
 - [ ] The log drawer covers the full width, with a visible close button.
 - [ ] First run (fresh data directory): the access-mode picker stacks the two choices; LAN is one click; the WAN password and confirm inputs are full width.
 - [ ] LAN mode reached through a reverse proxy: the warning strip sits above the page content and has no controls (the code input stays the first control).
+- [ ] The update banner is one line (version · 更新 · ✕) and is hidden while an account waits for a code (the code input stays the first control).

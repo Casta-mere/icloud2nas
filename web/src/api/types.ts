@@ -250,6 +250,8 @@ export interface EventPayloads {
   "space.ok": { min_free_gb: number };
   paused: { paused: boolean };
   "settings.updated": { keys: string[] };
+  /** An update check finished (success or failure); re-read `/api/status`. */
+  "version.checked": Record<string, never>;
 }
 
 export type EventTopic = Exclude<keyof EventPayloads, "hello">;
