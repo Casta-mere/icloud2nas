@@ -137,14 +137,18 @@ def create_app(
         app_state.housekeeping.start()
         scheduler_task = asyncio.create_task(app_state.scheduler.run_forever(stop))
         housekeeping_task = asyncio.create_task(app_state.housekeeping.run_forever(stop))
+        updates_task = asyncio.create_task(app_state.updates.run_forever(stop))
         app.state.i2n_scheduler_task = scheduler_task
         try:
             yield
         finally:
             stop.set()
+            app_state.updates.cancel()  # a check waiting on ghcr.io must not hold up shutdown
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(
-                    asyncio.gather(scheduler_task, housekeeping_task, return_exceptions=True),
+                    asyncio.gather(
+                        scheduler_task, housekeeping_task, updates_task, return_exceptions=True
+                    ),
                     SHUTDOWN_CEILING_S,
                 )
             await app_state.ops.shutdown()

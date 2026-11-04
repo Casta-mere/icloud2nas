@@ -73,9 +73,21 @@ ambiguous prefix is a `400`, no match a `404`.
 |---|---|---|---|---|
 | GET | `/healthz` | | `{ok: true}` (open) | 503 `{ok: false, detail}` database or scheduler down |
 | GET | `/metrics` | | Prometheus text (open); library series are labelled `library_id` and `library` (display name) | |
-| GET | `/api/status` | | `{paused, space_low, workers_running, version, started_at}` | |
+| GET | `/api/status` | | `{paused, space_low, workers_running, version, started_at, update}`; `version` is the running version, `update` the last update check (below; cached, no network) | |
 | POST | `/api/pause` | | `{paused: true}`; stops scheduled runs, manual requests still run | |
 | POST | `/api/resume` | | `{paused: false}` | |
+| POST | `/api/version/check` | | the `update` object after a fresh check; joins a check already running, at most ~30 s; failures are reported in `error`, not as HTTP errors | |
+
+Update object: `{latest, update_available, checked_at, error, compare_url}`. `latest` is the
+highest plain `X.Y.Z` tag of `ghcr.io/casta-mere/icloud2nas` (null before any check or when there
+is none); `update_available` is `latest > version` compared numerically (a `version` that isn't
+plain `X.Y.Z` counts as `0.0.0`); `checked_at` is when the last check finished (ISO time, or
+null); `error` is a short reason the last check failed (`timed out`, `couldn't reach ghcr.io`,
+`unexpected response (HTTP 403)`, ...) or null; `compare_url` is
+`https://github.com/Casta-mere/icloud2nas/compare/v<version>...v<latest>` when an update is
+available and `version` is plain `X.Y.Z`, else null. A failed check keeps `latest`,
+`update_available` and `compare_url` from the last successful one. The service checks about a
+minute after start and then daily while `update_check` is on and the access mode isn't `setup`.
 
 ## Accounts
 
@@ -184,7 +196,9 @@ libraries at startup; trash of unknown folders is left in place and logged.
 
 Keys: `max_workers, min_free_gb, threads_per_worker, trash_retention_days, log_retention_runs,
 file_match_policy, live_photo_mov_filename_policy, keep_unicode_in_filenames, folder_structure,
-paused, apprise_urls, public_url`, plus the notification event switches.
+paused, apprise_urls, public_url, update_check`, plus the notification event switches.
+`update_check` (boolean, default on; preset with `I2N_UPDATE_CHECK` while unset) turns the
+automatic update checks on or off; `POST /api/version/check` works either way.
 
 ## Events
 
@@ -206,6 +220,7 @@ treat events as hints and re-read the resource when in doubt.
 | `space.low`, `space.ok` | `min_free_gb` |
 | `paused` | `paused` |
 | `settings.updated` | `keys` |
+| `version.checked` | none (`{}`); an update check finished, re-read `/api/status` |
 
 `mode` is `auth`, `list`, `sync`, `reconcile`; `trigger` is `onboarding`, `reauth`, `schedule`,
 `nightly`, `chain` (the reconcile that follows a successful nightly sync) or `manual`. The CLI relies on `account.status` (`awaiting_code`), `run.event`

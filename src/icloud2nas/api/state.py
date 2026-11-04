@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+import httpx
+
 from icloud2nas.orchestrator.bus import EventBus
 from icloud2nas.orchestrator.config import Config
 from icloud2nas.orchestrator.housekeeping import Housekeeping
@@ -20,6 +22,7 @@ from icloud2nas.orchestrator.settings import Settings
 from icloud2nas.orchestrator.store.db import Store, make_engine, upgrade_db
 from icloud2nas.orchestrator.store.models import utcnow
 from icloud2nas.orchestrator.store.secrets import Secrets
+from icloud2nas.orchestrator.updates import UpdateChecker, installed_version
 
 if TYPE_CHECKING:
     from icloud2nas.api.events import SseHub
@@ -38,13 +41,18 @@ class AppState:
     ops: Ops
     notifier: Notifier
     housekeeping: Housekeeping
+    updates: UpdateChecker
     sse: SseHub | None  # installed by create_app
     started_at: datetime
     last_origin: str | None
 
 
 def build_state(
-    config: Config, env: Mapping[str, str] | None = None, *, send: Sender | None = None
+    config: Config,
+    env: Mapping[str, str] | None = None,
+    *,
+    send: Sender | None = None,
+    update_transport: httpx.AsyncBaseTransport | None = None,
 ) -> AppState:
     source = os.environ if env is None else env
     config.ensure_layout()
@@ -53,12 +61,13 @@ def build_state(
     config.secure_data()
     store = Store(engine)
     settings = Settings(store)
-    settings.seed_from_env(
-        {
-            "I2N_MAX_WORKERS": str(config.max_workers),
-            "I2N_MIN_FREE_GB": str(config.min_free_gb),
-        }
-    )
+    seeds = {
+        "I2N_MAX_WORKERS": str(config.max_workers),
+        "I2N_MIN_FREE_GB": str(config.min_free_gb),
+    }
+    if "I2N_UPDATE_CHECK" in source:
+        seeds["I2N_UPDATE_CHECK"] = source["I2N_UPDATE_CHECK"]
+    settings.seed_from_env(seeds)
     secrets = Secrets.from_config(config, source)
     bus = EventBus()
     runs = RunManager(config, store, secrets, bus)
@@ -69,6 +78,7 @@ def build_state(
     )
     ops = Ops(config, store, settings, bus, scheduler, onboarding)
     housekeeping = Housekeeping(config, store, settings, bus)
+    updates = UpdateChecker(settings, bus, current=installed_version(), transport=update_transport)
 
     def last_origin() -> str | None:
         return state.last_origin
@@ -90,6 +100,7 @@ def build_state(
         ops,
         notifier,
         housekeeping,
+        updates,
         None,
         utcnow(),
         None,

@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from icloud2nas.engine.job import FILE_MATCH_POLICIES, LIVE_PHOTO_POLICIES
 from icloud2nas.orchestrator.store import repo
@@ -105,6 +105,7 @@ SPECS: dict[str, SettingSpec] = {
         _spec("paused", "0", _bool),
         _spec("apprise_urls", "", _text),
         _spec("public_url", "", _text, _public_url),
+        _spec("update_check", "1", _bool),
         _spec("admin_password_hash", "", _text),
         _spec("admin_password_set_at", "0", int, _int_range(0)),
         _spec("access_mode", "", _text, _one_of(("", "lan"))),
@@ -112,7 +113,13 @@ SPECS: dict[str, SettingSpec] = {
     )
 }
 
-_ENV_SEEDS = {"I2N_MAX_WORKERS": "max_workers", "I2N_MIN_FREE_GB": "min_free_gb"}
+_ENV_SEEDS = {
+    "I2N_MAX_WORKERS": "max_workers",
+    "I2N_MIN_FREE_GB": "min_free_gb",
+    "I2N_UPDATE_CHECK": "update_check",
+}
+
+AccessMode = Literal["setup", "lan", "wan"]
 
 
 class Settings:
@@ -177,3 +184,11 @@ class Settings:
         if event not in NOTIFY_EVENTS:
             raise ValueError(f"unknown notification event {event!r}")
         return bool(self.get(f"notify.{event}.enabled"))
+
+
+def access_mode(settings: Settings) -> AccessMode:
+    # derived, never migrated: a stored password means wan, so an upgrade keeps it locked, and a
+    # passwordless install stays in setup until someone chooses lan
+    if settings.get("admin_password_hash"):
+        return "wan"
+    return "lan" if settings.get("access_mode") == "lan" else "setup"
