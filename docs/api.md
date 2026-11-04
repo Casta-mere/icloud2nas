@@ -59,7 +59,7 @@ Failures are `{"error": "<kind>", "detail": "<text>"}`: `400` invalid input (`Va
 `401` unauthorized, `404` unknown id, `409` busy / already exists / already set up, `415` a
 mutating request without `Content-Type: application/json`, `422` malformed body (FastAPI
 validation), `428` setup required (the install is in `setup` mode; body as shown under Auth),
-`500` cannot decrypt stored passwords, `502` the worker failed.
+`500` cannot decrypt stored passwords / the login run failed to start, `502` the worker failed.
 
 ## Ids
 
@@ -96,7 +96,7 @@ takes effect at the next worker start; existing library files are not re-chowned
 | Method | Path | Body | Response | Errors |
 |---|---|---|---|---|
 | GET | `/api/accounts` | | `[account]` | |
-| POST | `/api/accounts` | `{display_name, apple_id, region: cn\|com, password, target_dir?, owner_uid?, owner_gid?}` (owner: both or neither, integers >= 0) | 201 `{id, run_id}`; the interactive login starts at once and libraries are discovered after a successful login | 400 invalid, 409 Apple ID exists |
+| POST | `/api/accounts` | `{display_name, apple_id, region: cn\|com, password, target_dir?, owner_uid?, owner_gid?}` (owner: both or neither, integers >= 0) | 201 `{id, run_id}`; the interactive login starts at once and libraries are discovered after a successful login | 400 invalid, 409 Apple ID exists, 500 login failed to start (the account is not kept; the same request can be retried) |
 | GET | `/api/accounts/{id}` | | account | 404 |
 | PATCH | `/api/accounts/{id}` | `{display_name?, password?, owner_uid?, owner_gid?}` | account; with `password` it re-authenticates and adds `run_id` | 400 (incl. only one of `owner_uid`/`owner_gid`), 404, 409 busy |
 | DELETE | `/api/accounts/{id}?keep_dir=true\|false` | | 204; `keep_dir=false` renames each library folder to `<parent>/.icloud2nas-deleted/<name>-<YYYY-MM-DD>` (rename only, all or none) and records it in `deleted_dirs`; it is removed for good once the trash retention expires | 400 a folder is on another filesystem / a mount point / cannot be renamed (nothing moved, account kept), 404, 409 busy |

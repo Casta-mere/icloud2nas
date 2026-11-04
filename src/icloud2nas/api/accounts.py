@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -16,6 +17,8 @@ from icloud2nas.orchestrator import owners
 from icloud2nas.orchestrator.onboarding import check_owner
 from icloud2nas.orchestrator.ops import Busy
 from icloud2nas.orchestrator.store import repo
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/accounts", dependencies=[Depends(require_session)])
 
@@ -67,8 +70,8 @@ async def list_accounts(request: Request) -> list[dict[str, Any]]:
         ]
 
 
-@router.post("", status_code=201)
-async def create_account(body: AccountCreate, request: Request) -> dict[str, str]:
+@router.post("", status_code=201, response_model=None)
+async def create_account(body: AccountCreate, request: Request) -> dict[str, str] | JSONResponse:
     state = _state(request)
     account_id = state.onboarding.create_account(
         display_name=body.display_name,
@@ -80,7 +83,21 @@ async def create_account(body: AccountCreate, request: Request) -> dict[str, str
         owner_gid=body.owner_gid,
     )
     state.bus.publish("account.updated", account_id=account_id)
-    run_id = await state.ops.start_auth(account_id)
+    try:
+        run_id = await state.ops.start_auth(account_id)
+    except Exception as exc:  # noqa: BLE001 - any failure here means the login never started
+        # take back what this request made so the wizard's retry is not a 409 (issue #2);
+        # not a 409 either: to the wizard that means the Apple ID is already added
+        try:
+            state.onboarding.discard_account(account_id)
+        except Exception:  # noqa: BLE001 - still report the original failure
+            log.exception("could not roll back account %s", account_id)
+        else:
+            state.bus.publish("account.updated", account_id=account_id, deleted=True)
+        return JSONResponse(
+            {"error": "login failed to start", "detail": str(exc) or type(exc).__name__},
+            status_code=500,
+        )
     return {"id": account_id, "run_id": run_id}
 
 

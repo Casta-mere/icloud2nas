@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import os
 from typing import Any
 
@@ -101,6 +102,56 @@ def test_duplicate_apple_id_is_409(api: API) -> None:
         json={"display_name": "dup", "apple_id": "a@icloud.com", "region": "cn", "password": "p"},
     )
     assert response.status_code == 409
+
+
+def _break_spawn(state: AppState, monkeypatch: pytest.MonkeyPatch, how: str) -> None:
+    if how == "worker":  # the real WorkerProcess.start opens the run log, then the exec fails
+        broken = dataclasses.replace(state.config, worker_cmd=("/definitely/not/a/binary",))
+        monkeypatch.setattr(state.onboarding, "config", broken)
+    else:
+
+        def denied(*_: Any, **__: Any) -> None:
+            raise PermissionError(13, "Permission denied", "/data/accounts")
+
+        monkeypatch.setattr(owners, "prepare_spawn", denied)
+
+
+@pytest.mark.parametrize("how", ["worker", "prepare_spawn"])
+def test_create_account_rolls_back_when_the_login_cannot_start(
+    api: API, monkeypatch: pytest.MonkeyPatch, how: str
+) -> None:
+    client, state = api
+    config = state.config
+    photos = config.photos_dir / "Xugang"  # the user's folder may already hold photos
+    photos.mkdir()
+    (photos / "IMG_0001.JPG").write_bytes(b"jpeg")
+    seen: list[tuple[str, dict[str, Any]]] = []
+    state.bus.subscribe(lambda topic, payload: seen.append((topic, payload)))
+    body = {
+        "display_name": "小明", "apple_id": "a@icloud.com", "region": "cn", "password": "pw",
+        "target_dir": "Xugang",
+    }
+    with monkeypatch.context() as m:
+        _break_spawn(state, m, how)
+        failed = client.post("/api/accounts", json=body)
+    assert failed.status_code == 500, failed.text
+    assert failed.json()["error"] == "login failed to start"
+    assert failed.json()["detail"]
+    with state.store.session() as s:
+        assert repo.list_accounts(s) == []
+        assert repo.list_libraries(s) == [] and repo.list_runs(s) == []
+    assert list(config.accounts_dir.iterdir()) == []
+    assert list(config.plans_dir.iterdir()) == []
+    assert list(config.logs_dir.iterdir()) == []
+    assert (photos / "IMG_0001.JPG").read_bytes() == b"jpeg"
+    updated = [p for t, p in seen if t == "account.updated"]
+    assert updated[-1] == {"account_id": updated[0]["account_id"], "deleted": True}
+
+    retried = client.post("/api/accounts", json=body)
+    assert retried.status_code == 201, retried.text
+    account_id = retried.json()["id"]
+    wait_for(client, lambda c: _status(c, account_id) == "ok" and not state.ops.discovering)
+    assert (photos / "IMG_0001.JPG").read_bytes() == b"jpeg"
 
 
 def test_patch_password_restarts_auth(api: API) -> None:

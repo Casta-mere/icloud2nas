@@ -205,6 +205,60 @@ async def test_start_auth_spawn_failure_fails_the_run(
         assert run.status == "failed" and run.error_kind == "spawn"
 
 
+async def test_discard_account_undoes_create_after_a_failed_start(
+    onboarding: tuple[Onboarding, Store, list[Any]], config: Config
+) -> None:
+    ob, store, _ = onboarding
+    photos_dir = config.photos_dir / "小明"
+    photos_dir.mkdir()
+    (photos_dir / "IMG_0001.JPG").write_bytes(b"jpeg")
+    account_id = ob.create_account(
+        display_name="小明", apple_id="a@icloud.com", region="cn", password="pw",
+        target_dir="小明",
+    )
+    ob.config = Config(
+        data_dir=config.data_dir, photos_dir=config.photos_dir,
+        worker_cmd=("/definitely/not/a/binary",), tz=config.tz,
+    )
+    with pytest.raises(FileNotFoundError):
+        await ob.start_auth(account_id)
+    with store.session() as s:
+        run_id = repo.list_runs(s)[0].id
+    assert (config.logs_dir / f"{run_id}.log").exists()  # opened before the spawn failed
+
+    ob.discard_account(account_id)
+
+    with store.session() as s:
+        assert repo.list_accounts(s) == [] and repo.list_runs(s) == []
+    assert not (config.accounts_dir / account_id).exists()
+    assert not config.account_plans_dir(account_id).exists()
+    assert not (config.logs_dir / f"{run_id}.log").exists()
+    assert (photos_dir / "IMG_0001.JPG").read_bytes() == b"jpeg"  # the photos root is not ours
+
+
+async def test_discard_account_refuses_once_the_login_started(
+    onboarding: tuple[Onboarding, Store, list[Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ob, store, _ = onboarding
+    monkeypatch.setenv(
+        "FAKE_WORKER_SCENARIO",
+        json.dumps({"auth": {"events": [{"ev": "started"}, {"ev": "need_mfa"},
+                                        {"wait_code": "123456"}, {"ev": "done", "stats": {}}],
+                             "exit": 0}}),
+    )
+    account_id = ob.create_account(
+        display_name="小明", apple_id="a@icloud.com", region="cn", password="pw"
+    )
+    session = await ob.start_auth(account_id)
+    await asyncio.wait_for(session.prompted.wait(), 5)
+    with pytest.raises(RuntimeError):
+        ob.discard_account(account_id)
+    await ob.submit_code(account_id, "123456")
+    assert (await ob.wait_auth(account_id)).exit_code == 0
+    with store.session() as s:
+        assert [a.id for a in repo.list_accounts(s)] == [account_id]
+
+
 async def test_submit_code_after_finish_raises(
     onboarding: tuple[Onboarding, Store, list[Any]],
 ) -> None:

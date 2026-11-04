@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 import uuid
 from dataclasses import dataclass
 from typing import Any
+
+from sqlalchemy import select
 
 from icloud2nas.orchestrator import owners
 from icloud2nas.orchestrator.bus import EventBus
@@ -21,7 +24,7 @@ from icloud2nas.orchestrator.runs import RunManager
 from icloud2nas.orchestrator.settings import Settings
 from icloud2nas.orchestrator.store import repo
 from icloud2nas.orchestrator.store.db import Store
-from icloud2nas.orchestrator.store.models import Account
+from icloud2nas.orchestrator.store.models import Account, Run
 from icloud2nas.orchestrator.store.secrets import Secrets
 from icloud2nas.orchestrator.supervisor import WorkerProcess, WorkerResult
 
@@ -118,6 +121,21 @@ class Onboarding:
         owners.ensure_owned_dir(self.config.cookie_dir(account_id), spawn_owner)
         owners.secure_account_dirs(self.config, account_id)
         return account_id
+
+    def discard_account(self, account_id: str) -> None:
+        """Undo create_account when its login run never started: the row with its runs, the
+        account's data and plans dirs, and those runs' logs. Nothing under the photos root is
+        touched: create_account makes nothing there, and the folder may hold the user's photos.
+        """
+        if account_id in self.sessions:
+            raise RuntimeError(f"the login for {account_id} has started; delete the account")
+        with self.store.session() as s:
+            run_ids = list(s.scalars(select(Run.id).where(Run.account_id == account_id)))
+            repo.delete_account_cascade(s, account_id)
+        for run_id in run_ids:
+            (self.config.logs_dir / f"{run_id}.log").unlink(missing_ok=True)
+        shutil.rmtree(self.config.cookie_dir(account_id).parent, ignore_errors=True)
+        shutil.rmtree(self.config.account_plans_dir(account_id), ignore_errors=True)
 
     def set_password(self, account_id: str, password: str) -> None:
         with self.store.session() as s:
