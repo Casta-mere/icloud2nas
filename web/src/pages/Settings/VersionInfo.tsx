@@ -1,4 +1,4 @@
-import { useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ApiError } from "../../api/client";
 import { useCheckForUpdates, useStatus } from "../../api/queries";
 import { useT } from "../../i18n";
@@ -38,6 +38,16 @@ export function VersionInfo() {
     setSentAgainst(checkedAt);
     check.mutate();
   };
+
+  // "checked N ago" is worked out at render and nothing else re-renders an idle tab: tick once a
+  // minute while that line shows (no refetch; the result itself only changes via version.checked)
+  const showsAge = checkedAt !== null && !update?.update_available;
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!showsAge) return;
+    const id = window.setInterval(() => setTick((n) => n + 1), 60_000);
+    return () => window.clearInterval(id);
+  }, [showsAge]);
 
   let line: ReactNode = null;
   if (check.isPending) {

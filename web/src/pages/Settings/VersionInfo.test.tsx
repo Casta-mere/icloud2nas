@@ -130,6 +130,25 @@ describe("About card", () => {
     expect(await card.findByText("检查失败：boom")).toBeInTheDocument();
   });
 
+  test("the 已是最新 age keeps counting in an idle tab", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    db.status.update = {
+      latest: "0.0.1",
+      update_available: false,
+      checked_at: new Date().toISOString(),
+      error: null,
+      compare_url: null,
+    };
+    renderWithProviders(<Settings />);
+    const card = await about();
+    expect(await card.findByText("已是最新 · 0 秒前检查过")).toBeInTheDocument();
+    // no refetch, no event: only the local timer may move the label
+    const statusGets = calls().filter((c) => c.method === "GET" && c.path === "/api/status").length;
+    await act(() => vi.advanceTimersByTimeAsync(2 * 60_000));
+    expect(card.getByText("已是最新 · 2 分钟前检查过")).toBeInTheDocument();
+    expect(calls().filter((c) => c.method === "GET" && c.path === "/api/status")).toHaveLength(statusGets);
+  });
+
   test("a newer check result replaces an old request error", async () => {
     given("post", "/api/version/check", { error: "internal", detail: "boom" }, 500);
     const { user, queryClient } = renderWithProviders(<Settings />);
