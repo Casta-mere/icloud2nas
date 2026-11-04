@@ -188,6 +188,30 @@ async def test_link_to_another_host_is_not_followed(env: Env) -> None:
     assert (r.latest, r.error) == ("0.2.0", None)
 
 
+@pytest.mark.parametrize(
+    "link",
+    [
+        "http://ghcr.io/v2/casta-mere/icloud2nas/tags/list?last=x",  # plaintext: token in the clear
+        "https://ghcr.io:8443/v2/casta-mere/icloud2nas/tags/list?last=x",  # same host, other port
+    ],
+)
+async def test_link_that_changes_scheme_or_port_is_not_followed(env: Env, link: str) -> None:
+    seen: list[httpx.URL] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url)
+        if request.url.path == "/token":
+            return httpx.Response(200, json={"token": "t"})
+        if (request.url.scheme, request.url.port) != ("https", None):
+            raise AssertionError(f"followed a link that left https://ghcr.io: {request.url}")
+        next_link = {"Link": f'<{link}>; rel="next"'}
+        return httpx.Response(200, json={"tags": ["0.2.0"]}, headers=next_link)
+
+    r = await env.checker(transport=httpx.MockTransport(handler)).check()
+    assert (r.latest, r.error) == ("0.2.0", None)
+    assert len(seen) == 2  # the token and the first page only
+
+
 async def test_token_403_is_unexpected_response(env: Env) -> None:
     env.registry.token_status = 403
     r = await env.checker().check()

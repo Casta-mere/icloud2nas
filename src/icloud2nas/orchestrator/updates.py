@@ -117,9 +117,13 @@ async def fetch_tags(client: httpx.AsyncClient) -> list[str]:
 
 
 def _next_page(client: httpx.AsyncClient, response: httpx.Response) -> str | None:
-    # ghcr.io sends a path-only link; the bearer token must never follow one to another host
+    # ghcr.io sends a path-only link; the bearer token must never follow one anywhere else: not to
+    # another host, nor to plain http or another port on the same host
     link = response.links.get("next", {}).get("url")
-    if not link or client.base_url.join(link).host != client.base_url.host:
+    if not link:
+        return None
+    base, target = client.base_url, client.base_url.join(link)
+    if (target.scheme, target.host, target.port) != (base.scheme, base.host, base.port):
         return None
     return link
 
