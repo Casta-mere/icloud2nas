@@ -1,5 +1,6 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, test } from "vitest";
+import { keys } from "../../api/queries";
 import { appEvents } from "../../events/useEventStream";
 import { calls, db, given, ids } from "../../test/msw";
 import { renderWithProviders } from "../../test/render";
@@ -210,6 +211,32 @@ describe("AccountCard session expiry", () => {
     await user.type(input, "654321");
     await waitFor(() => expect(calls().some((c) => c.path === `/api/accounts/${ids.xugang}/code`)).toBe(true));
     expect(calls().find((c) => c.path.endsWith("/code"))!.body).toEqual({ code: "654321" });
+  });
+
+  test("a renewal that ends without a code leaves the card in its normal ok state", async () => {
+    expiresIn(3.5);
+    db.accounts[1]!.status = "ok";
+    const { user, queryClient } = renderWithProviders(<Overview />);
+    const card = await screen.findByRole("article", { name: "小明" });
+    const renew = await within(card).findByRole("button", { name: "立即续期" });
+    db.accounts[0]!.status = "awaiting_code";
+    await user.click(renew);
+    await within(card).findByRole("textbox", { name: "验证码" });
+    // no code in time: the server puts the account back to ok and fails only the run
+    db.accounts[0]!.status = "ok";
+    act(() => {
+      appEvents.dispatchEvent(
+        new CustomEvent("run.finished", {
+          detail: { run_id: "d8000000000000000000000000000008", status: "failed", mode: "auth", account_id: ids.xugang },
+        }),
+      );
+    });
+    await act(() => queryClient.invalidateQueries({ queryKey: keys.accounts }));
+    expect(await within(card).findByRole("button", { name: "立即续期" })).toBeEnabled();
+    expect(within(card).getByText("会话 4 天后到期")).toHaveAttribute("data-tone", "warn");
+    expect(within(card).getByRole("heading")).toHaveTextContent("正常"); // the account chip
+    expect(within(card).queryByRole("textbox", { name: "验证码" })).not.toBeInTheDocument();
+    expect(within(card).queryByRole("status")).not.toBeInTheDocument(); // not 会话仍有效
   });
 
   test("a failed /renew shows its reason on the card", async () => {

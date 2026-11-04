@@ -7,10 +7,12 @@ from typing import Any
 
 import pytest
 
+from icloud2nas.orchestrator import onboarding as onboarding_mod
 from icloud2nas.orchestrator.bus import EventBus
 from icloud2nas.orchestrator.config import Config
 from icloud2nas.orchestrator.onboarding import Onboarding, safe_dir_name
 from icloud2nas.orchestrator.runs import RunManager
+from icloud2nas.orchestrator.scheduler import Scheduler
 from icloud2nas.orchestrator.settings import Settings
 from icloud2nas.orchestrator.store import repo
 from icloud2nas.orchestrator.store.db import Store, make_engine, upgrade_db
@@ -377,3 +379,173 @@ async def test_create_account_with_target_dir_feeds_refresh(
     await ob.refresh_libraries(account_id)
     with store.session() as s:
         assert [lib.target_dir for lib in repo.list_libraries(s)] == ["家/小明"]
+
+
+# -- renewal (立即续期): only success or a rejected password change the account ---------------
+
+
+def _ready_account(ob: Onboarding, store: Store, apple_id: str = "r@icloud.com") -> str:
+    """An account that syncs: status ok, one enabled personal library, an older error text."""
+    account_id = ob.create_account(
+        display_name="小明", apple_id=apple_id, region="cn", password="pw"
+    )
+    with store.session() as s:
+        acc = repo.get_account(s, account_id)
+        assert acc is not None
+        acc.status = "ok"
+        acc.last_error = "an older error"
+        library = repo.upsert_library(
+            s, acc, kind="personal", zone_name="PrimarySync", display_name="小明",
+            target_dir="小明", interval_min=30, nightly_at="03:00",
+        )
+        library.enabled = True
+    return account_id
+
+
+def _scenario(monkeypatch: pytest.MonkeyPatch, events: list[dict[str, Any]], code: int) -> None:
+    monkeypatch.setenv(
+        "FAKE_WORKER_SCENARIO", json.dumps({"auth": {"events": events, "exit": code}})
+    )
+
+
+def _assert_untouched(store: Store, account_id: str) -> None:
+    with store.session() as s:
+        acc = repo.get_account(s, account_id)
+        assert acc is not None
+        assert acc.status == "ok" and acc.failures == 0 and acc.backoff_until is None
+        assert acc.last_error == "an older error"
+
+
+ASKED = [{"ev": "started"}, {"ev": "need_mfa"}]
+
+
+@pytest.mark.parametrize(
+    ("events", "code", "kind"),
+    [
+        (
+            [*ASKED, {"ev": "error", "kind": "mfa_timeout", "message": "no code within 600s"}],
+            1,
+            "mfa_timeout",
+        ),
+        ([*ASKED, {"ev": "error", "kind": "network", "message": "reset"}], 5, "network"),
+        ([{"ev": "started"}, {"ev": "error", "kind": "unavailable", "message": "503"}], 5,
+         "unavailable"),
+        (ASKED, 1, "no terminal event"),
+    ],
+)
+async def test_failed_renewal_leaves_the_account_syncing(
+    onboarding: tuple[Onboarding, Store, list[Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    config: Config,
+    events: list[dict[str, Any]],
+    code: int,
+    kind: str,
+) -> None:
+    ob, store, seen = onboarding
+    account_id = _ready_account(ob, store)
+    _scenario(monkeypatch, events, code)
+    session = await ob.start_auth(account_id, trigger="reauth", renew=True)
+    result = await ob.wait_auth(account_id)
+    assert result.exit_code == code
+    _assert_untouched(store, account_id)
+    with store.session() as s:
+        run = repo.get_run(s, session.run_id)
+        assert run is not None and run.status == "failed" and run.error_kind == kind
+    finished = [p for t, p in seen if t == "run.finished"][-1]
+    assert finished["status"] == "failed" and finished["account_failures"] == 0  # no notify
+    if any(e.get("ev") == "need_mfa" for e in events):
+        statuses = [p["status"] for t, p in seen if t == "account.status"]
+        assert statuses[-2:] == ["awaiting_code", "ok"]  # put back once the renewal gave up
+        position = {t: i for i, (t, _p) in enumerate(seen)}
+        assert position["account.status"] < position["run.finished"]
+    scheduler = Scheduler(
+        config, store, ob.secrets, ob.bus, ob.runs, ob, ob.settings, jitter_s=(0, 0)
+    )
+    assert [job.account_id for job in scheduler.due_jobs()] == [account_id]
+
+
+async def test_killed_renewal_leaves_the_account_syncing(
+    onboarding: tuple[Onboarding, Store, list[Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ob, store, _ = onboarding
+    account_id = _ready_account(ob, store)
+    _scenario(monkeypatch, [*ASKED, {"sleep": 30}], 0)
+    monkeypatch.setattr(onboarding_mod, "MFA_TIMEOUT_S", -59.5)  # wait() gives up after 0.5 s
+    session = await ob.start_auth(account_id, trigger="reauth", renew=True)
+    result = await asyncio.wait_for(ob.wait_auth(account_id), 15)
+    assert result.killed and result.killed_by == "timeout"
+    _assert_untouched(store, account_id)
+    with store.session() as s:
+        run = repo.get_run(s, session.run_id)
+        assert run is not None and run.status == "failed" and run.error_kind == "killed"
+
+
+async def test_renewal_with_a_rejected_password_marks_it(
+    onboarding: tuple[Onboarding, Store, list[Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ob, store, _ = onboarding
+    account_id = _ready_account(ob, store)
+    _scenario(monkeypatch, [{"ev": "started"}, {"ev": "error", "kind": "password",
+                                                "message": "bad"}], 4)
+    await ob.start_auth(account_id, trigger="reauth", renew=True)
+    assert (await ob.wait_auth(account_id)).exit_code == 4
+    with store.session() as s:
+        acc = repo.get_account(s, account_id)
+        assert acc is not None and acc.status == "password_rejected" and acc.last_error == "bad"
+
+
+async def test_successful_renewal_updates_the_account(
+    onboarding: tuple[Onboarding, Store, list[Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ob, store, _ = onboarding
+    account_id = _ready_account(ob, store)
+    _scenario(
+        monkeypatch,
+        [*ASKED, {"wait_code": "123456"}, {"ev": "mfa_result", "ok": True},
+         {"ev": "session", "trust_expires": "2027-01-19T09:12:13+00:00"},
+         {"ev": "done", "stats": {}}],
+        0,
+    )
+    await ob.start_auth(account_id, trigger="reauth", renew=True)
+    await ob.submit_code(account_id, "123456")
+    assert (await ob.wait_auth(account_id)).exit_code == 0
+    with store.session() as s:
+        acc = repo.get_account(s, account_id)
+        assert acc is not None and acc.status == "ok" and acc.last_error is None
+        assert acc.session_expires_at is not None and acc.session_expires_at.year == 2027
+
+
+async def test_renewal_spawn_failure_leaves_the_account_alone(
+    onboarding: tuple[Onboarding, Store, list[Any]], config: Config
+) -> None:
+    ob, store, _ = onboarding
+    account_id = _ready_account(ob, store)
+    ob.config = Config(
+        data_dir=config.data_dir, photos_dir=config.photos_dir,
+        worker_cmd=("/definitely/not/a/binary",), tz=config.tz,
+    )
+    with pytest.raises(FileNotFoundError):
+        await ob.start_auth(account_id, trigger="reauth", renew=True)
+    assert account_id not in ob.sessions
+    _assert_untouched(store, account_id)
+    with store.session() as s:
+        run = repo.list_runs(s)[0]
+        assert run.status == "failed" and run.error_kind == "spawn"
+
+
+async def test_a_plain_reauth_that_times_out_still_backs_off(
+    onboarding: tuple[Onboarding, Store, list[Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unchanged for 重新验证: the account really needs a code then."""
+    ob, store, _ = onboarding
+    account_id = _ready_account(ob, store)
+    _scenario(
+        monkeypatch,
+        [*ASKED, {"ev": "error", "kind": "mfa_timeout", "message": "no code within 600s"}],
+        1,
+    )
+    await ob.start_auth(account_id, trigger="reauth")
+    await ob.wait_auth(account_id)
+    with store.session() as s:
+        acc = repo.get_account(s, account_id)
+        assert acc is not None and acc.failures == 1 and acc.backoff_until is not None

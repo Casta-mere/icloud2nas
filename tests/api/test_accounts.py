@@ -436,3 +436,30 @@ def test_renew_starts_a_renewing_auth_run_without_discovery(
 def test_renew_unknown_account_is_404(api: API) -> None:
     client, _ = api
     assert client.post("/api/accounts/zzzz/renew", json={}).status_code == 404
+
+
+def test_an_abandoned_renewal_keeps_the_account_syncing(
+    api: API, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, state = api
+    account_id, _ = onboard(client)
+    wait_for(client, lambda c: _status(c, account_id) == "ok" and not state.ops.discovering)
+    set_scenario(
+        monkeypatch,
+        {
+            "auth": {
+                "events": [
+                    {"ev": "started"},
+                    {"ev": "need_mfa"},
+                    {"ev": "error", "kind": "mfa_timeout", "message": "no code within 600s"},
+                ],
+                "exit": 1,
+            }
+        },
+    )
+    run_id = client.post(f"/api/accounts/{account_id}/renew", json={}).json()["run_id"]
+    wait_for(client, lambda c: c.get(f"/api/runs/{run_id}").json()["status"] == "failed")
+    wait_for(client, lambda c: account_id not in state.onboarding.sessions)
+    account = client.get(f"/api/accounts/{account_id}").json()
+    assert account["status"] == "ok" and account["failures"] == 0
+    assert account["backoff_until"] is None and account["last_error"] is None
