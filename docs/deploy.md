@@ -21,6 +21,14 @@ run `make image` in a source checkout and set `image: icloud2nas:local` in `comp
 Restarting interrupts a sync that is running: the run is marked failed ("daemon restarted") and
 the next scheduled run picks the library up again. Update between syncs if you can.
 
+The service checks ghcr.io for a newer release about a minute after it starts and then once a
+day (never during first-run setup, before LAN or WAN is chosen), and the web UI announces one;
+it never updates itself. The check goes through the container's `HTTPS_PROXY`/`NO_PROXY` when
+they are set. A failed check only shows in Settings → About. To turn the automatic checks off,
+switch off "Check automatically" in Settings → About, or set `I2N_UPDATE_CHECK=0` on the
+container before its first start (it applies only while the setting has never been saved). The
+"Check for updates" button works either way.
+
 ## Pinning a version / rolling back
 
 `compose.yaml` uses `ghcr.io/casta-mere/icloud2nas:${I2N_TAG:-latest}`, and `:latest` moves only

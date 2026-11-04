@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import json
 import time
+from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
-from icloud2nas.api.state import AppState
+from icloud2nas.api.state import AppState, build_state
+from icloud2nas.orchestrator.config import Config
 from icloud2nas.orchestrator.store import repo
 from icloud2nas.orchestrator.store.models import utcnow
+from tests.conftest import make_env
+from tests.fake_registry import FakeRegistry
 
 
 def test_healthz_and_metrics_open(api: tuple[TestClient, AppState]) -> None:
@@ -154,3 +159,116 @@ def test_mutating_api_requests_must_send_json(api: tuple[TestClient, AppState]) 
     )
     assert ok.status_code == 200 and state.settings.get("paused") is True
     assert client.get("/api/status").status_code == 200  # reads are unaffected
+
+
+NO_UPDATE = {
+    "latest": None, "update_available": False, "checked_at": None, "error": None,
+    "compare_url": None,
+}
+
+
+def test_status_carries_update_before_any_check(
+    api: tuple[TestClient, AppState], registry: FakeRegistry
+) -> None:
+    client, state = api
+    body = client.get("/api/status").json()
+    assert body["version"] == state.updates.current
+    assert body["update"] == NO_UPDATE
+    assert registry.requests == []  # the status read is cached: no network
+
+
+def test_version_check_finds_newer_release(
+    api: tuple[TestClient, AppState], registry: FakeRegistry
+) -> None:
+    client, state = api
+    registry.tags = ["main", "99.0.0", "sha-e80af31"]
+    response = client.post("/api/version/check", json={})
+    assert response.status_code == 200
+    update = response.json()
+    assert (update["latest"], update["update_available"], update["error"]) == (
+        "99.0.0", True, None,
+    )
+    assert update["compare_url"] == (
+        f"https://github.com/Casta-mere/icloud2nas/compare/v{state.updates.current}...v99.0.0"
+    )
+    assert update["checked_at"]
+    assert set(update) == set(NO_UPDATE)
+    assert client.get("/api/status").json()["update"] == update
+
+
+def test_version_check_up_to_date(
+    api: tuple[TestClient, AppState], registry: FakeRegistry
+) -> None:
+    client, state = api
+    registry.tags = [state.updates.current, "latest"]
+    update = client.post("/api/version/check", json={}).json()
+    assert (update["latest"], update["update_available"], update["compare_url"]) == (
+        state.updates.current, False, None,
+    )
+
+
+def test_version_check_reports_failure(
+    api: tuple[TestClient, AppState], registry: FakeRegistry
+) -> None:
+    client, _ = api
+    registry.token_status = 403
+    response = client.post("/api/version/check", json={})
+    assert response.status_code == 200  # a failed check is reported, not an HTTP error
+    update = response.json()
+    assert update["error"] == "unexpected response (HTTP 403)"
+    assert (update["latest"], update["update_available"]) == (None, False)
+    assert client.get("/healthz").json() == {"ok": True}
+
+
+def test_version_check_publishes_version_checked(
+    api: tuple[TestClient, AppState],
+) -> None:
+    client, state = api
+    seen: list[tuple[str, dict[str, object]]] = []
+    state.bus.subscribe(lambda topic, payload: seen.append((topic, payload)))
+    client.post("/api/version/check", json={})
+    assert ("version.checked", {}) in seen
+
+
+def test_version_check_is_session_gated(
+    api: tuple[TestClient, AppState], registry: FakeRegistry
+) -> None:
+    client, state = api
+    client.put("/api/settings", json={"admin_password": "hunter2"})
+    client.cookies.clear()
+    assert client.post("/api/version/check", json={}).status_code == 401
+    assert client.get("/api/status").status_code == 401
+    state.settings.set_many({"admin_password_hash": "", "access_mode": ""})
+    assert client.post("/api/version/check", json={}).status_code == 428  # first-run setup
+    assert registry.requests == []  # no anonymous outbound request
+
+
+def test_update_check_setting_round_trips_and_seeds(
+    api: tuple[TestClient, AppState], config: Config, tmp_path: Path, registry: FakeRegistry
+) -> None:
+    client, _ = api
+    assert client.get("/api/settings").json()["values"]["update_check"] is True
+    saved = client.put("/api/settings", json={"update_check": "0"}).json()
+    assert saved["values"]["update_check"] is False
+    assert client.get("/api/settings").json()["values"]["update_check"] is False
+    # the button still works with automatic checks off
+    assert client.post("/api/version/check", json={}).json()["latest"] == "0.1.1"
+
+    env = {**make_env(config), "I2N_DATA_DIR": str(tmp_path / "fresh-data")}
+    fresh = build_state(
+        Config.from_env(env), {**env, "I2N_UPDATE_CHECK": "0"},
+        update_transport=registry.transport(),
+    )
+    assert fresh.settings.get("update_check") is False
+    unseeded = build_state(
+        Config.from_env(env), env, update_transport=registry.transport()
+    )  # same data dir, no env var: the stored value stays
+    assert unseeded.settings.get("update_check") is False
+
+
+async def test_real_network_is_refused_in_tests(config: Config) -> None:
+    # conftest's no_real_network guard: a checker on httpx's own transport fails loudly here, so
+    # a test that forgot the FakeRegistry cannot reach ghcr.io
+    state = build_state(config, make_env(config))
+    with pytest.raises(AssertionError, match="reach the network"):
+        await state.updates.check()

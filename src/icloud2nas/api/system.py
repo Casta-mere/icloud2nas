@@ -1,8 +1,7 @@
-"""Health, metrics and global status/pause."""
+"""Health, metrics, global status/pause and the update check."""
 
 from __future__ import annotations
 
-import importlib.metadata
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
@@ -20,13 +19,6 @@ router = APIRouter(prefix="/api", dependencies=[Depends(require_session)])
 def _state(request: Request) -> AppState:
     state: AppState = request.app.state.i2n
     return state
-
-
-def _version() -> str:
-    try:
-        return importlib.metadata.version("icloud2nas")
-    except importlib.metadata.PackageNotFoundError:
-        return "0.0.0"
 
 
 @open_router.get("/healthz", response_model=None)
@@ -101,9 +93,16 @@ async def status(request: Request) -> dict[str, Any]:
         "paused": state.settings.get("paused"),
         "space_low": state.scheduler.space_low,
         "workers_running": len(state.scheduler.active),
-        "version": _version(),
+        "version": state.updates.current,
         "started_at": state.started_at.isoformat(),
+        "update": state.updates.result.to_json(),  # cached: never waits on the network
     }
+
+
+@router.post("/version/check")
+async def check_version(request: Request) -> dict[str, Any]:
+    """A fresh check (joins one already running); a failure is reported in `error`."""
+    return (await _state(request).updates.check()).to_json()
 
 
 @router.post("/pause")
