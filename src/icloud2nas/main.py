@@ -163,7 +163,7 @@ def create_app(
         response = await call_next(request)
         host = request.headers.get("host", request.url.netloc)
         if (
-            response.status_code != 401
+            response.status_code not in (401, 428)
             and not request.url.path.startswith(("/healthz", "/metrics"))
             and _is_page_load(request)
             and _hostname(host).lower() not in LOOPBACK_HOSTS
@@ -231,7 +231,10 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument(
         "--reset-admin-password",
         action="store_true",
-        help="clear the web UI admin password and exit (the service must be stopped)",
+        help=(
+            "clear the web UI admin password and the LAN/WAN choice (the web UI shows the"
+            " first-run picker again) and exit; the service must be stopped"
+        ),
     )
     return parser.parse_args(list(argv))
 

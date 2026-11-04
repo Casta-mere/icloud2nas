@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -175,6 +176,16 @@ def test_plan_reject_and_superseded(api: API, monkeypatch: pytest.MonkeyPatch) -
     rc, out = ctl_run(client, ["plan", "reject", new_id])
     assert rc == 0 and "rejected" in out
     assert "rejected" in ctl_run(client, ["plan", "list", "--status", "rejected"])[1]
+
+
+def test_login_refused_without_password_shows_the_reason() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": "invalid", "detail": "no admin password is set"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    api = ctl_follow.Api(client, "http://nas", {}, lambda _prompt: PASSWORD)
+    with pytest.raises(ctl_follow.CtlError, match="no admin password is set"):
+        api.login()
 
 
 def test_admin_password_prompt_and_retry(api: API) -> None:

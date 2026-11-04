@@ -18,6 +18,7 @@ from icloud2nas.api.auth import (
 from icloud2nas.api.state import AppState
 from icloud2nas.orchestrator.config import Config
 from icloud2nas.orchestrator.lock import DaemonLock
+from icloud2nas.orchestrator.store.models import Setting
 
 from .conftest import PASSWORD, login, make_env
 
@@ -67,10 +68,25 @@ def test_fresh_and_passwordless_installs_need_setup(api: tuple[TestClient, AppSt
     client, state = api
     state.settings.set("access_mode", "")
     _assert_needs_setup(client)
-    # an install upgraded from before access modes: no password, nothing chosen
-    state.settings.set("access_mode", "lan")
-    state.settings.set_many({"admin_password_hash": "", "access_mode": ""})
+
+
+def _drop_settings(state: AppState, *keys: str) -> None:
+    with state.store.session() as s:
+        for key in keys:
+            row = s.get(Setting, key)
+            if row is not None:
+                s.delete(row)
+
+
+def test_upgraded_installs_keep_their_lock(api: tuple[TestClient, AppState]) -> None:
+    # rows as an install from before access modes has them: no access_mode row at all
+    client, state = api
+    _drop_settings(state, "access_mode", "admin_password_hash", "admin_password_set_at")
     _assert_needs_setup(client)
+    _set_password(state)
+    _drop_settings(state, "access_mode")
+    assert client.get("/api/session").json()["mode"] == "wan"
+    assert client.get("/api/status").status_code == 401
 
 
 def test_password_means_wan_even_if_lan_flag_set(api: tuple[TestClient, AppState]) -> None:

@@ -73,8 +73,10 @@ class Api:
             response = self.client.post(self.url("/api/session"), json={"password": password})
         except httpx.HTTPError as exc:
             raise CtlError(f"cannot reach {self.base}: {exc}") from exc
-        if response.status_code >= 400:
+        if response.status_code == 401:
             raise CtlError("login failed: wrong admin password")
+        if response.status_code >= 400:  # e.g. 400: the install is no longer in WAN mode
+            raise CtlError(f"login failed: {_error_text(response)}")
         self._logged_in = True
 
     def ensure_session(self) -> None:
