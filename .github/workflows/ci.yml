@@ -48,3 +48,155 @@ jobs:
         run: make web-install DC_FLAGS=-T
       - name: Typecheck, lint, tests
         run: make web-check DC_FLAGS=-T
+
+  release-guard:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Tag matches pyproject.toml version
+        run: |
+          python3 - <<'PY'
+          import os, re, sys, tomllib
+          ref = os.environ["GITHUB_REF_NAME"]
+          with open("pyproject.toml", "rb") as f:
+              v = tomllib.load(f)["project"]["version"]
+          if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", ref) or ref[1:] != v:
+              print(f"::error::tag {ref} does not match pyproject.toml version {v}")
+              sys.exit(1)
+          print(f"tag {ref} matches pyproject.toml version {v}")
+          PY
+
+  # One native build per platform, pushed by digest; `publish` joins them under the tags.
+  image:
+    needs: [python, web, release-guard]
+    # release-guard is skipped on non-tag runs; build anyway unless something failed.
+    if: ${{ !failure() && !cancelled() }}
+    strategy:
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Platform pair
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: echo "PLATFORM_PAIR=${PLATFORM//\//-}" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # tags/flavor must stay identical to the publish job's: they set the version label.
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/casta-mere/icloud2nas
+          flavor: latest=false
+          tags: |
+            type=ref,event=branch
+            type=sha,enable=${{ github.ref == 'refs/heads/main' }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+      - uses: docker/setup-buildx-action@v3
+      - if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: runtime
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=ghcr.io/casta-mere/icloud2nas,push-by-digest=true,name-canonical=true,push=${{ github.event_name == 'push' }}
+          cache-from: type=gha,scope=${{ env.PLATFORM_PAIR }}
+          cache-to: type=gha,mode=max,scope=${{ env.PLATFORM_PAIR }}
+      - if: github.event_name == 'push'
+        name: Export digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+      - if: github.event_name == 'push'
+        uses: actions/upload-artifact@v7
+        with:
+          name: digests-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: image
+    if: ${{ github.event_name == 'push' && !failure() && !cancelled() }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # tags/flavor must stay identical to the image job's.
+      - id: meta
+        uses: docker/metadata-action@v5
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: index
+        with:
+          images: ghcr.io/casta-mere/icloud2nas
+          flavor: latest=false
+          tags: |
+            type=ref,event=branch
+            type=sha,enable=${{ github.ref == 'refs/heads/main' }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+      - name: Create the multi-platform tags
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          ANNOTATIONS: ${{ steps.meta.outputs.annotations }}
+        run: |
+          args=()
+          while IFS= read -r tag; do
+            if [ -n "$tag" ]; then args+=(--tag "$tag"); fi
+          done <<< "$TAGS"
+          while IFS= read -r annotation; do
+            if [ -n "$annotation" ]; then args+=(--annotation "$annotation"); fi
+          done <<< "$ANNOTATIONS"
+          for digest in *; do
+            args+=("ghcr.io/casta-mere/icloud2nas@sha256:$digest")
+          done
+          docker buildx imagetools create "${args[@]}"
+      - name: Check both platforms are published
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          first=$(head -n 1 <<< "$TAGS")
+          out=$(docker buildx imagetools inspect "$first")
+          printf '%s\n' "$out"
+          for platform in linux/amd64 linux/arm64; do
+            if ! grep -qF "$platform" <<< "$out"; then
+              echo "::error::$first has no $platform image"
+              exit 1
+            fi
+          done
