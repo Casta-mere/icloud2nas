@@ -18,6 +18,10 @@ export interface Account {
   failures: number;
   backoff_until: string | null;
   last_auth_ok_at: string | null;
+  /** When Apple stops trusting the login and asks for a code again; null while unknown. */
+  session_expires_at: string | null;
+  /** The expiry is "code accepted + 60 days", not read from Apple's trust cookie. */
+  session_expiry_estimated: boolean;
   last_error: string | null;
   created_at: string;
   primary_dir: string | null;
@@ -126,6 +130,7 @@ export interface SettingsValues {
   "notify.plan_pending.enabled": boolean;
   "notify.space_low.enabled": boolean;
   "notify.first_full.enabled": boolean;
+  "notify.session_expiring.enabled": boolean;
 }
 
 export type SettingsKey = keyof SettingsValues;

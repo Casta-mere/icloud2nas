@@ -6,6 +6,7 @@ const API_KEYS = [
   "apprise_urls", "public_url", "update_check",
   "notify.needs_code.enabled", "notify.password_rejected.enabled", "notify.repeated_failure.enabled",
   "notify.plan_pending.enabled", "notify.space_low.enabled", "notify.first_full.enabled",
+  "notify.session_expiring.enabled",
   "max_workers", "threads_per_worker", "min_free_gb", "file_match_policy", "folder_structure",
   "live_photo_mov_filename_policy", "keep_unicode_in_filenames",
   "trash_retention_days", "log_retention_runs", "admin_password",
@@ -17,7 +18,7 @@ describe("settings schema", () => {
     expect(keys).toEqual(API_KEYS);
     expect(keys).not.toContain("paused");
     expect(new Set(keys).size).toBe(keys.length);
-    expect(keys.filter((k) => k.startsWith("notify.")).length).toBe(6);
+    expect(keys.filter((k) => k.startsWith("notify.")).length).toBe(7);
   });
 
   test("toWire, validate and fromValues", () => {

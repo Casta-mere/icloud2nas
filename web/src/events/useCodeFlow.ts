@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { ApiError } from "../api/client";
-import { useRuns, useStartAuth, useSubmitCode } from "../api/queries";
+import { useRenewSession, useRuns, useStartAuth, useSubmitCode } from "../api/queries";
 import type { AccountStatus, EventPayloads } from "../api/types";
 import { appEvents } from "./useEventStream";
 import { useT } from "../i18n";
@@ -26,6 +26,7 @@ export function useCodeFlow(
   const t = useT();
   const submit = useSubmitCode();
   const start = useStartAuth();
+  const renewal = useRenewSession();
   const runs = useRuns({ account_id: accountId });
   const [wrong, setWrong] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
@@ -117,7 +118,21 @@ export function useCodeFlow(
       setWrong(null);
       setSessionStillValid(false);
       submit.reset();
+      renewal.reset();
       start.mutate(accountId, {
+        onSuccess: (r) => {
+          trackRun(r.run_id);
+          onStarted?.();
+        },
+      });
+    },
+    /** Renew Apple's trust early (`/renew`): a login that asks for a code, taken like any other. */
+    renew: (onStarted?: () => void) => {
+      setWrong(null);
+      setSessionStillValid(false);
+      submit.reset();
+      start.reset();
+      renewal.mutate(accountId, {
         onSuccess: (r) => {
           trackRun(r.run_id);
           onStarted?.();
@@ -127,10 +142,13 @@ export function useCodeFlow(
     track: trackRun,
     error: wrong ?? detail(submit.error),
     /** Failures to show apart from the code field: a failed resend, or a non-API error on submit. */
-    actionError: startMessage(start.error) ?? (submit.error instanceof ApiError ? null : message(submit.error)),
+    actionError:
+      startMessage(start.error) ??
+      startMessage(renewal.error) ??
+      (submit.error instanceof ApiError ? null : message(submit.error)),
     attempt,
     pending: submit.isPending,
-    resending: start.isPending,
+    resending: start.isPending || renewal.isPending,
     authWaiting,
     sessionStillValid,
   };

@@ -43,6 +43,8 @@ const accounts = (): Account[] => [
     failures: 0,
     backoff_until: null,
     last_auth_ok_at: "2026-10-21T09:14:00+00:00",
+    session_expires_at: null,
+    session_expiry_estimated: false,
     last_error: null,
     created_at: "2026-10-14T02:00:00+00:00",
     primary_dir: "小明",
@@ -60,6 +62,8 @@ const accounts = (): Account[] => [
     failures: 0,
     backoff_until: null,
     last_auth_ok_at: null,
+    session_expires_at: null,
+    session_expiry_estimated: false,
     last_error: null,
     created_at: "2026-10-21T12:00:00+00:00",
     primary_dir: "小红",
@@ -224,6 +228,7 @@ const settingsValues = (): SettingsValues => ({
   "notify.plan_pending.enabled": true,
   "notify.space_low.enabled": true,
   "notify.first_full.enabled": true,
+  "notify.session_expiring.enabled": true,
 });
 
 const status = (): Status => ({
@@ -463,6 +468,10 @@ const handlers = [
   route("post", 
     "/api/accounts/:id/auth",
     guarded(() => HttpResponse.json({ run_id: "d7000000000000000000000000000007" }, { status: 202 })),
+  ),
+  route("post", 
+    "/api/accounts/:id/renew",
+    guarded(() => HttpResponse.json({ run_id: "d8000000000000000000000000000008" }, { status: 202 })),
   ),
   route("post", 
     "/api/accounts/:id/code",

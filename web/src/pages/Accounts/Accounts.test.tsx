@@ -259,3 +259,15 @@ describe("Accounts page", () => {
     await waitFor(() => expect(calls().some((c) => c.method === "PATCH")).toBe(true));
   });
 });
+
+describe("Accounts page session expiry", () => {
+  test("the row states when the session expires, in the warning tone within 7 days", async () => {
+    db.accounts[0]!.session_expires_at = new Date(Date.now() + 6.5 * 86_400_000).toISOString();
+    db.accounts[0]!.session_expiry_estimated = true;
+    renderWithProviders(<Accounts />);
+    const row = await screen.findByRole("article", { name: "小明" });
+    expect(await within(row).findByText("会话约 7 天后到期")).toHaveAttribute("data-tone", "warn");
+    const other = await screen.findByRole("article", { name: "小红" });
+    expect(within(other).queryByText(/会话.*到期/)).not.toBeInTheDocument();
+  });
+});

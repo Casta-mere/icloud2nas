@@ -153,3 +153,71 @@ describe("AccountCard 2FA flow", () => {
     expect(screen.getByRole("textbox", { name: "验证码" })).toHaveFocus();
   });
 });
+
+describe("AccountCard session expiry", () => {
+  const DAY = 86_400_000;
+  /** Half-day offsets keep the rounded-up day count stable while the test runs. */
+  const expiresIn = (days: number, estimated = false) => {
+    db.accounts[0]!.session_expires_at = new Date(Date.now() + days * DAY).toISOString();
+    db.accounts[0]!.session_expiry_estimated = estimated;
+  };
+
+  test("会话 N 天后到期 in a neutral tone while more than 7 days are left", async () => {
+    expiresIn(29.5);
+    renderWithProviders(<Overview />);
+    const card = await screen.findByRole("article", { name: "小明" });
+    expect(await within(card).findByText("会话 30 天后到期")).toHaveAttribute("data-tone", "neutral");
+    expect(within(card).getByRole("button", { name: "立即续期" })).toBeEnabled();
+  });
+
+  test("warning tone at 7 days or less", async () => {
+    expiresIn(4.5);
+    renderWithProviders(<Overview />);
+    const card = await screen.findByRole("article", { name: "小明" });
+    expect(await within(card).findByText("会话 5 天后到期")).toHaveAttribute("data-tone", "warn");
+  });
+
+  test("an estimated expiry reads 约", async () => {
+    expiresIn(49.5, true);
+    renderWithProviders(<Overview />);
+    const card = await screen.findByRole("article", { name: "小明" });
+    expect(await within(card).findByText("会话约 50 天后到期")).toBeInTheDocument();
+  });
+
+  test("nothing is shown while the expiry is unknown", async () => {
+    renderWithProviders(<Overview />);
+    const card = await screen.findByRole("article", { name: "小明" });
+    await within(card).findByText("xugang@example.com");
+    expect(within(card).queryByText(/会话.*到期/)).not.toBeInTheDocument();
+    expect(within(card).queryByRole("button", { name: "立即续期" })).not.toBeInTheDocument();
+  });
+
+  test("立即续期 posts /renew, then the code card takes the code", async () => {
+    expiresIn(3.5);
+    db.accounts[1]!.status = "ok"; // only 小明 asks for a code here
+    const { user } = renderWithProviders(<Overview />);
+    const card = await screen.findByRole("article", { name: "小明" });
+    const renew = await within(card).findByRole("button", { name: "立即续期" });
+    db.accounts[0]!.status = "awaiting_code"; // what the refetch after /renew sees: Apple asked for a code
+    await user.click(renew);
+    await waitFor(() =>
+      expect(calls().some((c) => c.method === "POST" && c.path === `/api/accounts/${ids.xugang}/renew`)).toBe(true),
+    );
+    expect(calls().some((c) => c.path.endsWith("/auth"))).toBe(false);
+    emit("d8000000000000000000000000000008", { ev: "need_mfa" });
+    const input = await within(card).findByRole("textbox", { name: "验证码" });
+    expect(within(card).queryByRole("button", { name: "立即续期" })).not.toBeInTheDocument();
+    await user.type(input, "654321");
+    await waitFor(() => expect(calls().some((c) => c.path === `/api/accounts/${ids.xugang}/code`)).toBe(true));
+    expect(calls().find((c) => c.path.endsWith("/code"))!.body).toEqual({ code: "654321" });
+  });
+
+  test("a failed /renew shows its reason on the card", async () => {
+    expiresIn(3.5);
+    given("POST", "/api/accounts/:id/renew", { error: "busy", detail: "account has an active run or auth session" }, 409);
+    const { user } = renderWithProviders(<Overview />);
+    const card = await screen.findByRole("article", { name: "小明" });
+    await user.click(await within(card).findByRole("button", { name: "立即续期" }));
+    expect(await within(card).findByRole("alert")).toHaveTextContent("account has an active run or auth session");
+  });
+});
