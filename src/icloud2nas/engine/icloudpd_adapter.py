@@ -6,16 +6,24 @@ Touchpoints (keep this list in sync with check_touchpoints):
   3. the `notificator` callback icloudpd fires when Apple asks for a 2FA code
   4. PhotoLibrary.all / .recently_deleted iteration and PhotosService.private/shared_libraries
   5. filename/path helpers used by engine.paths (download_builder parity)
+  6. PyiCloudService's cookie layout: `session.cookies` (an http.cookiejar jar, saved in LWP
+     format to the `cookiejar_path` property) holding Apple's X-APPLE-WEBAUTH-HSA-TRUST cookie,
+     plus the `session_path` JSON (session and trust tokens), both inside cookie_directory
 """
 
 from __future__ import annotations
 
+import dataclasses
 import inspect
 import logging
 import os
+import shutil
+import tempfile
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
+from datetime import UTC, datetime
 from functools import partial
+from http.cookiejar import Cookie, LWPCookieJar
 from importlib.metadata import version as installed_version
 
 import icloudpd.base as icloudpd_base
@@ -47,21 +55,27 @@ __all__ = [
     "PhotoLibrary",
     "PyiCloudService",
     "authenticate",
+    "begin_renewal",
     "build_global_config",
     "build_password_providers",
     "build_user_config",
     "check_touchpoints",
+    "commit_renewal",
     "count_all",
+    "discard_renewal",
     "get_library",
     "iter_all",
     "iter_recently_deleted",
     "list_libraries",
+    "trust_expiry",
     "wait_for_photos_index",
     "run_sync",
 ]
 
 ICLOUDPD_VERSION = "1.32.3"
 PRIMARY_ZONE = "PrimarySync"
+HSA_TRUST_COOKIE = "X-APPLE-WEBAUTH-HSA-TRUST"
+RENEW_DIR_PREFIX = ".renew-"
 
 PasswordReader = Callable[[str], str | None]
 PasswordWriter = Callable[[str, str], None]
@@ -112,6 +126,9 @@ def check_touchpoints() -> None:
     for attr in ("private_libraries", "shared_libraries"):
         if not isinstance(getattr(PhotosService, attr, None), property):
             raise RuntimeError(f"PhotosService.{attr} is no longer a property")
+    for attr in ("cookiejar_path", "session_path"):
+        if not isinstance(getattr(PyiCloudService, attr, None), property):
+            raise RuntimeError(f"PyiCloudService.{attr} is no longer a property")
 
 
 def build_global_config(spec: JobSpec) -> GlobalConfig:
@@ -221,6 +238,84 @@ def authenticate(
             logger.info("2FA accepted; re-opening the trusted session")
             return login_once()
         raise
+
+
+def _latest_trust_expiry(cookies: Iterable[Cookie]) -> datetime | None:
+    """The latest HSA-TRUST expiry in a jar (an old jar may still hold an expired copy)."""
+    found = [
+        c.expires for c in cookies if c.name == HSA_TRUST_COOKIE and c.expires is not None
+    ]
+    return datetime.fromtimestamp(max(found), UTC) if found else None
+
+
+def trust_expiry(icloud: PyiCloudService) -> datetime | None:
+    """When Apple stops trusting this device's session, i.e. a new 2FA code is due (touchpoint 6).
+
+    Apple sets the X-APPLE-WEBAUTH-HSA-TRUST cookie when a code is accepted; plain logins renew
+    the session cookies but not this one. Read from the session's in-memory jar, else from the
+    jar file pyicloud saves in cookie_directory. None when neither carries the cookie.
+    """
+    jar = getattr(getattr(icloud, "session", None), "cookies", None)
+    if isinstance(jar, Iterable):
+        found = _latest_trust_expiry(jar)
+        if found is not None:
+            return found
+    path = getattr(icloud, "cookiejar_path", None)
+    if not isinstance(path, str) or not os.path.isfile(path):
+        return None
+    saved = LWPCookieJar(path)
+    try:
+        saved.load(ignore_discard=True, ignore_expires=True)
+    except OSError:  # http.cookiejar.LoadError included: an unreadable jar is "unknown"
+        return None
+    return _latest_trust_expiry(saved)
+
+
+def _stale_renewals(cookie_dir: str) -> list[str]:
+    try:
+        names = os.listdir(cookie_dir)
+    except FileNotFoundError:
+        return []
+    return [
+        os.path.join(cookie_dir, name)
+        for name in names
+        if name.startswith(RENEW_DIR_PREFIX) and os.path.isdir(os.path.join(cookie_dir, name))
+    ]
+
+
+def begin_renewal(spec: JobSpec) -> JobSpec:
+    """The job pointed at a new empty cookie dir inside spec.cookie_dir (same client_id).
+
+    Logging in there finds no stored session, trust token or cookies, so Apple asks for a code
+    and sets a new HSA-TRUST cookie. The account's own files are left alone until
+    commit_renewal. Leftovers of a renewal that was killed are removed first.
+    """
+    os.makedirs(spec.cookie_dir, exist_ok=True)
+    for stale in _stale_renewals(spec.cookie_dir):
+        shutil.rmtree(stale, ignore_errors=True)
+    fresh = tempfile.mkdtemp(prefix=RENEW_DIR_PREFIX, dir=spec.cookie_dir)
+    return dataclasses.replace(spec, cookie_dir=fresh)
+
+
+def commit_renewal(icloud: PyiCloudService, cookie_dir: str) -> None:
+    """Replace the account's cookie jar and session file with the ones the renewal login wrote.
+
+    Each file moves with os.replace inside cookie_dir (atomic per file). Raises before touching
+    anything when either file is missing, so a half-written renewal never replaces a working one.
+    """
+    renewed = [icloud.cookiejar_path, icloud.session_path]
+    missing = [path for path in renewed if not os.path.isfile(path)]
+    if missing:
+        raise RuntimeError(f"renewed session files missing: {missing}")
+    for path in renewed:
+        os.replace(path, os.path.join(cookie_dir, os.path.basename(path)))
+
+
+def discard_renewal(renewal: JobSpec) -> None:
+    """Remove the renewal's cookie dir (whatever is left in it); the account's files stay."""
+    if not os.path.basename(os.path.normpath(renewal.cookie_dir)).startswith(RENEW_DIR_PREFIX):
+        raise ValueError(f"not a renewal cookie dir: {renewal.cookie_dir}")
+    shutil.rmtree(renewal.cookie_dir, ignore_errors=True)
 
 
 def wait_for_photos_index(

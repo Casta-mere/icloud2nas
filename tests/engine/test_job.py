@@ -132,3 +132,15 @@ def test_retry_waits_default_custom_and_disabled() -> None:
 def test_retry_waits_rejects_bad_values(bad: object) -> None:
     with pytest.raises(ValueError, match="retry_waits_s"):
         JobSpec.load("auth", "r", json.dumps({**BASE, "retry_waits_s": bad}))
+
+
+def test_renew_is_for_interactive_auth_only() -> None:
+    assert JobSpec.load("auth", "r", json.dumps(BASE)).renew is False
+    spec = JobSpec.load("auth", "r", json.dumps({**BASE, "interactive": True, "renew": True}))
+    assert spec.renew is True
+    with pytest.raises(ValueError, match="renew"):
+        JobSpec.load("auth", "r", json.dumps({**BASE, "renew": True}))  # not interactive
+    with pytest.raises(ValueError, match="renew"):
+        JobSpec.load("list", "r", json.dumps({**BASE, "interactive": True, "renew": True}))
+    with pytest.raises(ValueError, match="renew"):
+        JobSpec.load("auth", "r", json.dumps({**BASE, "interactive": True, "renew": "yes"}))

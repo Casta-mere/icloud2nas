@@ -38,6 +38,7 @@ Unknown keys are rejected (`config` error).
 | `target_dir` | absolute path | null | required for `sync`/`reconcile`; must be inside `photos_root` and not equal to it |
 | `plan_dir` | string | null | required for `reconcile` unless `--apply-plan` |
 | `interactive` | bool | false | true: wait for a 2FA code on stdin; false: exit 3 when 2FA is needed |
+| `renew` | bool | false | `auth` with `interactive` only: renew Apple's trust instead of reusing it. The worker logs in from a new empty directory inside `cookie_dir` (same `client_id`), so Apple asks for a code (`need_mfa`, stdin as usual) and sets a new trust cookie; only after that login succeeded does it replace the cookie jar and session file in `cookie_dir` (one `rename` each). On any failure the old files stay and the new directory is removed |
 | `full` | bool | false | sync: scan the whole library instead of stopping early |
 | `until_found` | int | 50 | sync: stop after this many consecutive already-downloaded assets |
 | `recent` | int | null | sync: only the N most recent assets |
@@ -77,6 +78,7 @@ redirects its own `sys.stdout` to stderr, so stray prints cannot corrupt the str
 | `started` | `mode`, `pid`, `run_id` | first event, after the job parsed |
 | `need_mfa` | none | Apple wants a 2FA code (non-interactive: followed by exit 3) |
 | `mfa_result` | `ok`, `error?` | after a code was submitted; `ok=false` carries the reason and the wait restarts |
+| `session` | `trust_expires` (ISO 8601 UTC or null) | after every successful login (every mode that logs in). `trust_expires` is when Apple stops trusting this login and asks for a code again: the expiry of the `X-APPLE-WEBAUTH-HSA-TRUST` cookie, set when a code is accepted and not moved by later logins; null when the cookie is absent |
 | `libraries` | `personal: [str]`, `shared: [str]` | `list` mode |
 | `progress` | sync: `downloaded`, `scanned`, `total`, `last`; reconcile: `scanned` | sync every 60 s; reconcile every 1000 assets. `total` is 0 under `until_found` |
 | `retry` | `attempt`, `of`, `wait_s`, `kind`, `message` | sync: the download pass hit an Apple connection stall (`kind` `network` or `unavailable`); `attempt` is the 1-based retry about to start after `wait_s` seconds, `of` the number of retries allowed (`retry_waits_s`). Never sent for other kinds |
