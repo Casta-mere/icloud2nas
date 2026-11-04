@@ -199,7 +199,12 @@ class Onboarding:
             status_before = account.status
         validate_job("auth", job)
         run_id = self.runs.start_run(
-            account_id=account_id, library_id=None, mode="auth", trigger=trigger
+            account_id=account_id,
+            library_id=None,
+            mode="auth",
+            trigger=trigger,
+            # persisted, so a restart mid-renewal can still put the account back (startup sweep)
+            stats={repo.RENEW_FROM: status_before} if renew else None,
         )
         prompted = asyncio.Event()
 

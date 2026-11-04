@@ -48,12 +48,23 @@ class RunManager:
 
     # -- creation ------------------------------------------------------------------------------
 
-    def start_run(self, *, account_id: str, library_id: str | None, mode: str, trigger: str) -> str:
+    def start_run(
+        self,
+        *,
+        account_id: str,
+        library_id: str | None,
+        mode: str,
+        trigger: str,
+        stats: dict[str, Any] | None = None,
+    ) -> str:
+        """Create the run row as running; `stats` seeds run.stats (e.g. renew_from)."""
         with self.store.session() as s:
             run = repo.create_run(
                 s, account_id=account_id, library_id=library_id, mode=mode, trigger=trigger
             )
             run.status = "running"
+            if stats:
+                run.stats_json = json.dumps(stats, ensure_ascii=False)
             run.log_path = str(self.config.logs_dir / f"{run.id}.log")
             run_id = run.id
         self.bus.publish(

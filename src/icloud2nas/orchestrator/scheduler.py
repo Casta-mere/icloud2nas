@@ -532,11 +532,17 @@ class Scheduler:
 
     async def run_forever(self, stop: asyncio.Event) -> None:
         with self.store.session() as s:
+            renewals = repo.restore_stale_renewals(s)  # before the sweep marks their runs killed
             swept = repo.sweep_stale_runs(s, "daemon restarted")
             plans = repo.sweep_approved_plans(s)
             self._space_low = any(lib.status == "space_paused" for lib in repo.list_libraries(s))
         if swept:
             log.warning("marked %d stale runs as killed", swept)
+        if renewals:
+            log.warning("restored %d accounts a cut-short renewal left awaiting_code",
+                        len(renewals))
+        for account_id in renewals:  # the notifier ignores it; web clients re-read the account
+            self.bus.publish("account.updated", account_id=account_id)
         if plans:
             log.warning("reset %d approved plans to pending", plans)
         await self._startup_jitter(stop)

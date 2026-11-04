@@ -162,6 +162,9 @@ its own once the folder exists again.
 
 Run object: `id, account_id, library_id, mode, trigger, status, started_at, ended_at,
 exit_code, stats, error_kind, error_message, plan_file`.
+An `auth` run started by `/renew` carries `stats.renew_from`, the account status it started from: if
+the service restarts while that renewal waits for its code, the startup sweep marks the run
+`killed` and puts the account back to it (only while the account is still `awaiting_code`).
 
 | Method | Path | Body | Response | Errors |
 |---|---|---|---|---|

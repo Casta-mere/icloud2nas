@@ -19,6 +19,8 @@ from icloud2nas.orchestrator.store.models import (
     utcnow,
 )
 
+# run.stats key of an auth run started by /renew: the account status the renewal started from
+RENEW_FROM = "renew_from"
 RESERVED_TOP_DIRS = {".trash", "kept"}
 SHARED_TOP_DIR = "shared"
 
@@ -286,6 +288,30 @@ def sweep_approved_plans(s: Session) -> int:
     for plan in approved:
         plan.status = "pending"
     return len(approved)
+
+
+def restore_stale_renewals(s: Session) -> list[str]:
+    """Run before sweep_stale_runs: undo what a renewal cut short by a restart left behind.
+
+    A renewal turns its account awaiting_code while it waits for the code; if the daemon stopped
+    then, nothing put it back and the scheduler (status ok only) would skip it for good. Each
+    stale renewal run whose account is still awaiting_code gets back the status in its
+    `renew_from`; an account something else moved since is left alone. Returns the account ids.
+    """
+    stale = s.scalars(
+        select(Run).where(Run.status.in_(("queued", "running")), Run.mode == "auth")
+    )
+    restored: list[str] = []
+    for run in stale:
+        before = run.stats.get(RENEW_FROM)
+        if not isinstance(before, str) or not before or before == "awaiting_code":
+            continue
+        account = s.get(Account, run.account_id)
+        if account is None or account.status != "awaiting_code":
+            continue
+        account.status = before
+        restored.append(account.id)
+    return restored
 
 
 def sweep_stale_runs(s: Session, message: str) -> int:

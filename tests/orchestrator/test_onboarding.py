@@ -549,3 +549,39 @@ async def test_a_plain_reauth_that_times_out_still_backs_off(
     with store.session() as s:
         acc = repo.get_account(s, account_id)
         assert acc is not None and acc.failures == 1 and acc.backoff_until is not None
+
+
+async def test_renewal_records_where_it_started_for_a_restart(
+    onboarding: tuple[Onboarding, Store, list[Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """While a renewal waits for its code the run row knows the account's previous status, so
+    the next process start can put the account back (Scheduler.run_forever's sweep)."""
+    ob, store, _ = onboarding
+    account_id = _ready_account(ob, store)
+    _scenario(monkeypatch, [*ASKED, {"wait_code": "123456"}, {"ev": "done", "stats": {}}], 0)
+    session = await ob.start_auth(account_id, trigger="reauth", renew=True)
+    await asyncio.wait_for(session.prompted.wait(), 5)
+    with store.session() as s:
+        run = repo.get_run(s, session.run_id)
+        acc = repo.get_account(s, account_id)
+        assert run is not None and run.stats == {"renew_from": "ok"}
+        assert acc is not None and acc.status == "awaiting_code"
+    with store.session() as s:  # what the next start does if this process dies now
+        assert repo.restore_stale_renewals(s) == [account_id]
+        acc = repo.get_account(s, account_id)
+        assert acc is not None and acc.status == "ok"
+    await session.process.kill()
+    await asyncio.wait_for(session.finished.wait(), 10)
+    _assert_untouched(store, account_id)
+
+
+async def test_plain_auth_records_no_renew_from(
+    onboarding: tuple[Onboarding, Store, list[Any]],
+) -> None:
+    ob, store, _ = onboarding
+    account_id = _ready_account(ob, store)
+    session = await ob.start_auth(account_id, trigger="reauth")
+    await ob.wait_auth(account_id)
+    with store.session() as s:
+        run = repo.get_run(s, session.run_id)
+        assert run is not None and "renew_from" not in run.stats
