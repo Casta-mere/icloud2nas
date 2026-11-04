@@ -84,3 +84,21 @@ def test_validate_job_rejects_bool_for_optional_int(config: Config, store: Store
         job = build_job(config, acc, None, interactive=True)
     with pytest.raises(ValueError, match="recent"):
         validate_job("auth", dict(job, recent=True))
+
+
+def test_validate_job_accepts_retry_waits(config: Config, store: Store) -> None:
+    with store.session() as s:
+        acc = repo.create_account(
+            s, display_name="x", apple_id="d@icloud.com", region="cn",
+            password_enc=b"x", client_id="44444444-4444-4444-4444-444444444444",
+        )
+        lib = repo.upsert_library(
+            s, acc, kind="personal", zone_name="PrimarySync", display_name="x",
+            target_dir="x", interval_min=30, nightly_at="03:00",
+        )
+        job = build_job(config, acc, lib, interactive=False)
+    validate_job("sync", dict(job, retry_waits_s=[]))
+    validate_job("sync", dict(job, retry_waits_s=[5, 0, 3600]))
+    for bad in (10, [-1], [True]):
+        with pytest.raises(ValueError, match="retry_waits_s"):
+            validate_job("sync", dict(job, retry_waits_s=bad))
