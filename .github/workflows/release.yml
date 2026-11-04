@@ -1,0 +1,232 @@
+name: release
+
+# After the owner comments `/approve` on a pull request, a bot comment offers Major / Minor / Patch /
+# No release. Merging the pull request with a release ticked bumps the version on `main`, commits
+# `Release X.Y.Z` and pushes the tag `vX.Y.Z`; the tag's ci.yml run publishes the image. A manual
+# run (Actions → release → Run workflow) releases without a pull request. See docs/release.md.
+#
+# Security:
+# - No job checks out or runs a pull request's code: every checkout is `main`.
+# - Event text reaches the shell only through `env`, never as `${{ }}` inside `run:`.
+# - Only the repository owner triggers anything: `/approve` comments, merges and manual runs.
+# - RELEASE_TOKEN (Contents read/write on this repository) is used by the release job only.
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_target:
+    types: [closed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      part:
+        description: Version part to bump
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+        required: true
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # The owner's `/approve` on an open pull request: post the choice comment, or refresh its
+  # numbers and keep its tick.
+  offer:
+    # `contains` only prefilters; release_choice.py is-approve checks the first line exactly.
+    if: >-
+      github.event_name == 'issue_comment'
+      && github.event.issue.pull_request
+      && github.event.issue.state == 'open'
+      && github.event.comment.user.login == github.repository_owner
+      && contains(github.event.comment.body, '/approve')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    concurrency:
+      group: release-offer-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          persist-credentials: false
+      - name: First line is /approve
+        id: approve
+        env:
+          BODY: ${{ github.event.comment.body }}
+        run: |
+          if python3 scripts/release_choice.py is-approve <<< "$BODY"; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "The comment's first line is not /approve; nothing to offer."
+          fi
+      - name: Acknowledge the comment
+        if: steps.approve.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+        run: |
+          gh api --method POST --silent \
+            "repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT_ID/reactions" -f content=+1
+      - name: Post or refresh the choice comment
+        if: steps.approve.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.issue.number }}
+        run: |
+          id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments" \
+            | python3 scripts/release_choice.py find)
+          selected=none
+          if [ -n "$id" ]; then
+            old=$(gh api "repos/$GITHUB_REPOSITORY/issues/comments/$id" --jq .body)
+            selected=$(python3 scripts/release_choice.py parse <<< "$old") || selected=none
+          fi
+          current=$(python3 scripts/bump_version.py current)
+          body=$(python3 scripts/release_choice.py render --current "$current" --selected "$selected")
+          if [ -n "$id" ]; then
+            gh api --method PATCH --silent "repos/$GITHUB_REPOSITORY/issues/comments/$id" \
+              -f body="$body"
+          else
+            gh api --method POST --silent "repos/$GITHUB_REPOSITORY/issues/$PR/comments" \
+              -f body="$body"
+          fi
+
+  # A merged pull request or a manual run: which part to bump, if any. Kept apart from `release`
+  # so that merges without a release never enter (and never cancel) the release queue.
+  decide:
+    if: >-
+      github.actor == github.repository_owner
+      && (github.event_name == 'workflow_dispatch'
+        || (github.event_name == 'pull_request_target'
+          && github.event.pull_request.merged == true))
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    outputs:
+      part: ${{ steps.part.outputs.part }}
+      comment: ${{ steps.part.outputs.comment }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Read the ticked option
+        id: part
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          INPUT_PART: ${{ inputs.part }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          if [ "$EVENT" = workflow_dispatch ]; then
+            case "$INPUT_PART" in
+              patch | minor | major) echo "part=$INPUT_PART" >> "$GITHUB_OUTPUT" ;;
+              *)
+                echo "::error::part must be patch, minor or major"
+                exit 1
+                ;;
+            esac
+            exit 0
+          fi
+          id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments" \
+            | python3 scripts/release_choice.py find)
+          if [ -z "$id" ]; then
+            echo "::notice::#$PR has no release choice comment (no /approve); not releasing."
+            exit 0
+          fi
+          echo "comment=$id" >> "$GITHUB_OUTPUT"
+          body=$(gh api "repos/$GITHUB_REPOSITORY/issues/comments/$id" --jq .body)
+          status=0
+          choice=$(python3 scripts/release_choice.py parse <<< "$body") || status=$?
+          if [ "$status" -ne 0 ] && [ "$status" -ne 2 ]; then
+            exit "$status"
+          fi
+          if [ "$status" -eq 2 ]; then
+            dispatch="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/workflows/release.yml"
+            note="Not released: more than one option was ticked. Tick exactly one option; to"
+            note="$note release this merge now, use [Actions → release → Run workflow]($dispatch)."
+            gh api --method POST --silent "repos/$GITHUB_REPOSITORY/issues/$PR/comments" \
+              -f body="$note"
+            echo "::error::more than one option is ticked on #$PR; nothing was released"
+            exit 1
+          fi
+          if [ "$choice" = none ]; then
+            echo "::notice::#$PR chose no release."
+            exit 0
+          fi
+          echo "part=$choice" >> "$GITHUB_OUTPUT"
+
+  # One release at a time, always computed from the tip of `main`.
+  release:
+    needs: decide
+    if: needs.decide.outputs.part != ''
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    # GITHUB_TOKEN only comments on the pull request; checkout and push use RELEASE_TOKEN.
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - name: RELEASE_TOKEN is set and valid
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          if [ -z "$RELEASE_TOKEN" ]; then
+            echo "::error::the RELEASE_TOKEN secret is missing; see docs/release.md"
+            exit 1
+          fi
+          if ! GH_TOKEN=$RELEASE_TOKEN gh api --silent "repos/$GITHUB_REPOSITORY"; then
+            echo "::error::the RELEASE_TOKEN secret is expired or cannot read $GITHUB_REPOSITORY; see docs/release.md"
+            exit 1
+          fi
+      # A pushed tag starts ci.yml only when the push is not made with GITHUB_TOKEN.
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          token: ${{ secrets.RELEASE_TOKEN }}
+      - name: Build the dev image
+        run: make build
+      - name: Bump the version
+        id: bump
+        env:
+          PART: ${{ needs.decide.outputs.part }}
+        run: |
+          make bump PART="$PART" DC_FLAGS=-T
+          version=$(python3 scripts/bump_version.py current)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Commit, tag and push
+        env:
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Release $VERSION"
+          git tag "v$VERSION"
+          git push --atomic origin HEAD:main "v$VERSION"
+          echo "::notice::released $VERSION: tag v$VERSION pushed; its ci run publishes the image"
+      - name: Tell the pull request
+        if: github.event_name == 'pull_request_target'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          COMMENT_ID: ${{ needs.decide.outputs.comment }}
+          PART: ${{ needs.decide.outputs.part }}
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          runs="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/workflows/ci.yml?query=branch%3Av$VERSION"
+          note=$(python3 scripts/release_choice.py released-note --version "$VERSION" --runs-url "$runs")
+          gh api --method POST --silent "repos/$GITHUB_REPOSITORY/issues/$PR/comments" \
+            -f body="$note"
+          body=$(python3 scripts/release_choice.py render-released --version "$VERSION" --part "$PART")
+          gh api --method PATCH --silent "repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT_ID" \
+            -f body="$body"
