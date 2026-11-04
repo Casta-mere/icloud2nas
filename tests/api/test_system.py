@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -272,3 +273,24 @@ async def test_real_network_is_refused_in_tests(config: Config) -> None:
     state = build_state(config, make_env(config))
     with pytest.raises(AssertionError, match="reach the network"):
         await state.updates.check()
+
+
+def test_metrics_export_the_session_expiry_per_account(api: tuple[TestClient, AppState]) -> None:
+    client, state = api
+    expires = datetime(2027, 1, 19, 9, 12, 13, tzinfo=UTC)
+    with state.store.session() as s:
+        known = repo.create_account(
+            s, display_name="小明", apple_id="a@example.com", region="cn",
+            password_enc=b"x", client_id="c1",
+        )
+        known.status = "ok"
+        known.session_expires_at = expires
+        repo.create_account(
+            s, display_name="小红", apple_id="b@example.com", region="cn",
+            password_enc=b"x", client_id="c2",
+        )
+    text = client.get("/metrics").text
+    assert "# TYPE i2n_account_session_expiry_timestamp_seconds gauge" in text
+    sample = 'i2n_account_session_expiry_timestamp_seconds{account="小明",status="ok"}'
+    assert f"{sample} {expires.timestamp()}" in text
+    assert 'i2n_account_session_expiry_timestamp_seconds{account="小红"' not in text  # unknown

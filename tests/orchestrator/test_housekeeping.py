@@ -268,3 +268,28 @@ async def test_purge_logs_and_skips_a_library_behind_a_symlinked_parent(
     assert any("not purging the trash" in r.message and "symlink" in r.message
                for r in caplog.records)
     assert hk.hk.refresh_trash_bytes() == 0  # never counted through the link either
+
+
+async def test_run_forever_checks_session_expiry(hk: Env) -> None:
+    with hk.store.session() as s:
+        acc = repo.get_account(s, hk.account_id)
+        assert acc is not None
+        acc.status = "ok"
+        acc.session_expires_at = T0 + timedelta(days=5)
+    seen: list[dict[str, object]] = []
+    hk.bus.subscribe(lambda topic, p: seen.append(p) if topic == "session.expiring" else None)
+    stop = asyncio.Event()
+    task = asyncio.create_task(hk.hk.run_forever(stop))
+    for _ in range(200):
+        if seen:
+            break
+        await asyncio.sleep(0.01)
+    stop.set()
+    await task
+    assert seen[0] == {
+        "account_id": hk.account_id,
+        "days": 7,
+        "expires_at": "2026-10-21T01:00:00+00:00",
+        "expires_local": "2026-10-21 09:00",
+        "estimated": False,
+    }

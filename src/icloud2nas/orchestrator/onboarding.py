@@ -176,7 +176,10 @@ class Onboarding:
 
     # -- interactive auth ----------------------------------------------------------------------
 
-    async def start_auth(self, account_id: str, *, trigger: str = "onboarding") -> AuthSession:
+    async def start_auth(
+        self, account_id: str, *, trigger: str = "onboarding", renew: bool = False
+    ) -> AuthSession:
+        """Start an interactive login; `renew` makes Apple ask for a code and trust us anew."""
         if account_id in self.sessions:
             raise ValueError(f"an auth session is already active for {account_id}")
         with self.store.session() as s:
@@ -184,7 +187,12 @@ class Onboarding:
             if account is None:
                 raise KeyError(account_id)
             job = build_job(
-                self.config, account, None, interactive=True, policy=self.settings.policy()
+                self.config,
+                account,
+                None,
+                interactive=True,
+                renew=renew,
+                policy=self.settings.policy(),
             )
             password = self.password_for(account)
             owner = owners.owner_for(account)

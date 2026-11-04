@@ -54,6 +54,8 @@ def account_json(
         "failures": a.failures,
         "backoff_until": _iso(a.backoff_until),
         "last_auth_ok_at": _iso(a.last_auth_ok_at),
+        "session_expires_at": _iso(a.session_expires_at),
+        "session_expiry_estimated": a.session_expiry_estimated,
         "last_error": a.last_error,
         "created_at": _iso(a.created_at),
         "primary_dir": a.primary_dir,

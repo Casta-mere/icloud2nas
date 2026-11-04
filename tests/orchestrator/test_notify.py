@@ -8,6 +8,7 @@ import pytest
 
 from icloud2nas.orchestrator.bus import EventBus
 from icloud2nas.orchestrator.config import Config
+from icloud2nas.orchestrator.housekeeping import Housekeeping
 from icloud2nas.orchestrator.notify import Notifier
 from icloud2nas.orchestrator.settings import Settings
 from icloud2nas.orchestrator.store import repo
@@ -253,3 +254,88 @@ async def test_stop_unsubscribes_and_drains(nw: dict[str, Any]) -> None:
     nw["bus"].publish(topic, **payload)
     await asyncio.sleep(0.01)
     assert len(nw["rec"].sent) == 1
+
+
+# -- session_expiring: housekeeping's tick publishes, the notifier sends once per threshold ------
+
+
+def _expiring(nw: dict[str, Any], config: Config, expires: datetime, **extra: Any) -> Housekeeping:
+    with nw["store"].session() as s:
+        acc = repo.get_account(s, nw["acc"])
+        assert acc is not None
+        acc.status = extra.get("status", "ok")
+        acc.session_expires_at = expires
+        acc.session_expiry_estimated = extra.get("estimated", False)
+    return Housekeeping(config, nw["store"], nw["settings"], nw["bus"], clock=nw["clock"])
+
+
+async def _tick(nw: dict[str, Any], hk: Housekeeping, at: datetime) -> int:
+    nw["clock"].now = at
+    hk.check_session_expiry()
+    await _settle(nw)
+    return len(nw["rec"].sent)
+
+
+async def test_session_expiring_fires_at_7d_and_1d_once_each(
+    nw: dict[str, Any], config: Config
+) -> None:
+    expires = T0 + timedelta(days=30)
+    hk = _expiring(nw, config, expires)
+    assert await _tick(nw, hk, expires - timedelta(days=8)) == 0
+    assert await _tick(nw, hk, expires - timedelta(days=7)) == 1
+    assert await _tick(nw, hk, expires - timedelta(days=6)) == 1
+    assert await _tick(nw, hk, expires - timedelta(days=1, seconds=1)) == 1
+    assert await _tick(nw, hk, expires - timedelta(days=1)) == 2
+    assert await _tick(nw, hk, expires - timedelta(hours=1)) == 2
+    assert await _tick(nw, hk, expires + timedelta(hours=1)) == 2  # lapsed: needs_code's job
+    (_, first, body), (_, second, _) = nw["rec"].sent
+    assert first == (
+        "icloud2nas：小明 的 Apple 会话 7 天内到期 / Apple session expires within 7 days"
+    )
+    assert second == (
+        "icloud2nas：小明 的 Apple 会话 1 天内到期 / Apple session expires within a day"
+    )
+    assert "立即续期" in body and "Renew now" in body
+    assert "到期时间 / expires: 2026-11-15 09:00" in body  # T0 + 30 d in Asia/Shanghai
+    assert "estimated" not in body
+
+
+async def test_session_expiring_fires_again_after_a_renewal(
+    nw: dict[str, Any], config: Config
+) -> None:
+    expires = T0 + timedelta(days=30)
+    hk = _expiring(nw, config, expires)
+    assert await _tick(nw, hk, expires - timedelta(days=3)) == 1
+    assert await _tick(nw, hk, expires - timedelta(hours=2)) == 2
+    renewed = expires - timedelta(hours=2) + timedelta(days=90)  # code entered just now
+    _expiring(nw, config, renewed)
+    assert await _tick(nw, hk, expires) == 2  # 90 days left: quiet again
+    assert await _tick(nw, hk, renewed - timedelta(days=7)) == 3
+    assert await _tick(nw, hk, renewed - timedelta(days=5)) == 3
+    assert await _tick(nw, hk, renewed - timedelta(hours=23)) == 4
+    assert "7 天内" in nw["rec"].sent[2][1] and "1 天内" in nw["rec"].sent[3][1]
+
+
+async def test_session_expiring_skips_and_retries(nw: dict[str, Any], config: Config) -> None:
+    expires = T0 + timedelta(days=30)
+    hk = _expiring(nw, config, expires, status="needs_reauth")
+    assert await _tick(nw, hk, expires - timedelta(days=2)) == 0  # a code is already asked for
+    hk = _expiring(nw, config, expires, estimated=True)
+    nw["settings"].set("notify.session_expiring.enabled", "0")
+    assert await _tick(nw, hk, expires - timedelta(days=2)) == 0
+    nw["settings"].set("notify.session_expiring.enabled", "1")
+    nw["rec"].result = False  # not delivered: not recorded, so the next tick tries again
+    assert await _tick(nw, hk, expires - timedelta(days=2)) == 1
+    nw["rec"].result = True
+    assert await _tick(nw, hk, expires - timedelta(days=2) + timedelta(hours=1)) == 2
+    assert await _tick(nw, hk, expires - timedelta(days=2) + timedelta(hours=2)) == 2
+    assert "（估计 / estimated）" in nw["rec"].sent[-1][2]
+
+
+def test_session_expiring_subject_carries_threshold_and_expiry(nw: dict[str, Any]) -> None:
+    payload = {"account_id": nw["acc"], "days": 7, "expires_at": "2027-01-19T09:12:13+00:00"}
+    decision = nw["notifier"].decide("session.expiring", payload)
+    assert decision is not None
+    assert decision[:2] == ("session_expiring", f"{nw['acc']}:7d:2027-01-19T09:12:13+00:00")
+    assert "2027-01-19T09:12:13+00:00" in decision[3]  # no local time given: the ISO value
+    assert nw["notifier"].decide("session.expiring", {**payload, "account_id": "gone"}) is None

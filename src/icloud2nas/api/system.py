@@ -54,6 +54,7 @@ def render_metrics(state: AppState) -> str:
     files: list[tuple[str, float | int]] = []
     last_success: list[tuple[str, float | int]] = []
     statuses: list[tuple[str, float | int]] = []
+    session_expiry: list[tuple[str, float | int]] = []
     with state.store.session() as s:
         for lib in repo.list_libraries(s):
             label = _labels(library_id=lib.id, library=lib.display_name)  # names can repeat
@@ -63,7 +64,10 @@ def render_metrics(state: AppState) -> str:
             if lib.last_success_at is not None:
                 last_success.append((label, lib.last_success_at.timestamp()))
         for account in repo.list_accounts(s):
-            statuses.append((_labels(account=account.display_name, status=account.status), 1))
+            label = _labels(account=account.display_name, status=account.status)
+            statuses.append((label, 1))
+            if account.session_expires_at is not None:
+                session_expiry.append((label, account.session_expires_at.timestamp()))
     metric("i2n_library_files", "Files mirrored per library at the last run.", files)
     metric(
         "i2n_library_last_success_timestamp",
@@ -71,6 +75,11 @@ def render_metrics(state: AppState) -> str:
         last_success,
     )
     metric("i2n_account_status", "Current account status (value is always 1).", statuses)
+    metric(
+        "i2n_account_session_expiry_timestamp_seconds",
+        "Unix time Apple stops trusting the account's session and asks for a code again.",
+        session_expiry,
+    )
     metric("i2n_trash_bytes", "Bytes held in the trash.", [("", state.housekeeping.trash_bytes)])
     metric(
         "i2n_workers_running", "Worker processes running.", [("", len(state.scheduler.active))]

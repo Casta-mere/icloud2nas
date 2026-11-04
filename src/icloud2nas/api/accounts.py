@@ -156,6 +156,14 @@ async def reauth(account_id: str, request: Request) -> dict[str, str]:
     return {"run_id": await state.ops.start_auth(resolve_account(state, account_id))}
 
 
+@router.post("/{account_id}/renew", status_code=202)
+async def renew(account_id: str, request: Request) -> dict[str, str]:
+    """Renew Apple's trust before it lapses: a login that asks for a code (same busy rules)."""
+    state = _state(request)
+    resolved = resolve_account(state, account_id)
+    return {"run_id": await state.ops.start_auth(resolved, renew=True)}
+
+
 @router.post("/{account_id}/code", status_code=204)
 async def submit_code(account_id: str, body: CodeBody, request: Request) -> Response:
     state = _state(request)

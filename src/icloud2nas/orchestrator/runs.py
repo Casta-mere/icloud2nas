@@ -23,6 +23,20 @@ BACKOFF_MAX_S = 3600
 EXIT_OK, EXIT_FAILED, EXIT_NEED_MFA, EXIT_PASSWORD, EXIT_UNAVAILABLE, EXIT_FUSED = (
     0, 1, 3, 4, 5, 6,
 )
+# no trust cookie: assume Apple trusts a code this long (it is 90 days in practice)
+SESSION_ESTIMATE = timedelta(days=60)
+
+
+def _parse_utc(value: object) -> datetime | None:
+    """An ISO 8601 timestamp from a worker event as aware UTC; None when unparseable."""
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except ValueError:
+        log.warning("ignoring bad timestamp %r in a worker event", value)
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 class RunManager:
@@ -218,6 +232,7 @@ class RunManager:
                     account.failures = 0
                     account.backoff_until = None
                     account.last_auth_ok_at = now
+                    self._record_session_expiry(account, result.events, now)
                     account.last_error = None
                     if account.status != "ok":
                         account.status = "ok"
@@ -304,7 +319,29 @@ class RunManager:
             account.backoff_until,
             account.last_error,
             account.last_auth_ok_at,
+            account.session_expires_at,
+            account.session_expiry_estimated,
         )
+
+    @staticmethod
+    def _record_session_expiry(
+        account: Account, events: list[dict[str, Any]], now: datetime
+    ) -> None:
+        """Store when Apple's trust lapses, from the run's `session` event.
+
+        The cookie's expiry is stored as reported. Without one, a code accepted in this run
+        starts the conservative estimate (now + SESSION_ESTIMATE); otherwise nothing changes.
+        """
+        reported: datetime | None = None
+        for event in events:
+            if event.get("ev") == "session" and event.get("trust_expires"):
+                reported = _parse_utc(event["trust_expires"]) or reported
+        if reported is not None:
+            account.session_expires_at = reported
+            account.session_expiry_estimated = False
+        elif any(e.get("ev") == "mfa_result" and e.get("ok") is True for e in events):
+            account.session_expires_at = now + SESSION_ESTIMATE
+            account.session_expiry_estimated = True
 
     @staticmethod
     def _record_library_stats(

@@ -102,3 +102,20 @@ def test_validate_job_accepts_retry_waits(config: Config, store: Store) -> None:
     for bad in (10, [-1], [True]):
         with pytest.raises(ValueError, match="retry_waits_s"):
             validate_job("sync", dict(job, retry_waits_s=bad))
+
+
+def test_build_job_passes_renew(config: Config, store: Store) -> None:
+    with store.session() as s:
+        acc = repo.create_account(
+            s, display_name="x", apple_id="e@icloud.com", region="cn",
+            password_enc=b"x", client_id="55555555-5555-5555-5555-555555555555",
+        )
+        plain = build_job(config, acc, None, interactive=True)
+        renew = build_job(config, acc, None, interactive=True, renew=True)
+    assert plain["renew"] is False and renew["renew"] is True
+    assert renew["cookie_dir"] == plain["cookie_dir"]  # the worker picks the fresh dir itself
+    validate_job("auth", renew)
+    with pytest.raises(ValueError, match="renew"):
+        validate_job("list", renew)
+    with pytest.raises(ValueError, match="renew"):
+        validate_job("auth", dict(renew, renew="1"))

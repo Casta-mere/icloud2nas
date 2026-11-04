@@ -72,7 +72,7 @@ ambiguous prefix is a `400`, no match a `404`.
 | Method | Path | Body | Response | Errors |
 |---|---|---|---|---|
 | GET | `/healthz` | | `{ok: true}` (open) | 503 `{ok: false, detail}` database or scheduler down |
-| GET | `/metrics` | | Prometheus text (open); library series are labelled `library_id` and `library` (display name) | |
+| GET | `/metrics` | | Prometheus text (open); library series are labelled `library_id` and `library` (display name); account series (`i2n_account_status`, `i2n_account_session_expiry_timestamp_seconds`) are labelled `account` (display name) and `status`; the session expiry is omitted while unknown | |
 | GET | `/api/status` | | `{paused, space_low, workers_running, version, started_at, update}`; `version` is the running version, `update` the last update check (below; cached, no network) | |
 | POST | `/api/pause` | | `{paused: true}`; stops scheduled runs, manual requests still run | |
 | POST | `/api/resume` | | `{paused: false}` | |
@@ -92,8 +92,17 @@ minute after start and then daily while `update_check` is on and the access mode
 ## Accounts
 
 Account object: `id, display_name, apple_id, region, status, failures, backoff_until,
-last_auth_ok_at, last_error, created_at, primary_dir, library_ids, owner_uid, owner_gid,
-owner_name`. `status` is one of `new, awaiting_code, ok, needs_reauth, password_rejected`.
+last_auth_ok_at, session_expires_at, session_expiry_estimated, last_error, created_at, primary_dir,
+library_ids, owner_uid, owner_gid, owner_name`. `status` is one of `new, awaiting_code, ok,
+needs_reauth, password_rejected`.
+
+Session expiry: `session_expires_at` is when Apple stops trusting the account's login and asks for a
+code again (null while unknown). After each successful run it is taken from the worker's `session`
+event (the `X-APPLE-WEBAUTH-HSA-TRUST` cookie, about 90 days after the code; plain logins do not
+move it), with `session_expiry_estimated: false`. When the cookie is absent but a code was accepted
+in that run, it is set to 60 days later with `session_expiry_estimated: true`; otherwise it is
+kept. A `session_expiring` notification goes out 7 days and again 1 day before it (once each per
+expiry value, for accounts in `ok`).
 
 File owner (spec §16.3): `owner_uid`/`owner_gid` are the NAS user and group the account's workers
 run as, and that the folders the service creates for its libraries (`.icloud2nas/…`, new parent
@@ -113,6 +122,7 @@ takes effect at the next worker start; existing library files are not re-chowned
 | PATCH | `/api/accounts/{id}` | `{display_name?, password?, owner_uid?, owner_gid?}` | account; with `password` it re-authenticates and adds `run_id` | 400 (incl. only one of `owner_uid`/`owner_gid`), 404, 409 busy |
 | DELETE | `/api/accounts/{id}?keep_dir=true\|false` | | 204; `keep_dir=false` renames each library folder to `<parent>/.icloud2nas-deleted/<name>-<YYYY-MM-DD>` (rename only, all or none) and records it in `deleted_dirs`; it is removed for good once the trash retention expires | 400 a folder is on another filesystem / a mount point / cannot be renamed (nothing moved, account kept), 404, 409 busy |
 | POST | `/api/accounts/{id}/auth` | | 202 `{run_id}` (re-login, 2FA again) | 404, 409 busy |
+| POST | `/api/accounts/{id}/renew` | | 202 `{run_id}`; an `auth` run with `renew`: the worker logs in from an empty cookie jar so Apple asks for a code (enter it with `/code`, as for `/auth`) and issues a new trust, which moves `session_expires_at`. The account's cookies are replaced only when that login succeeds. No library discovery follows | 404, 409 busy |
 | POST | `/api/accounts/{id}/code` | `{code}` | 204 | 409 no login is waiting for a code |
 | POST | `/api/accounts/{id}/refresh` | | `{personal: [zone], shared: [zone]}`; re-discovers libraries without a login | 404, 409 busy, 502 worker failed |
 
@@ -218,6 +228,7 @@ treat events as hints and re-read the resource when in doubt.
 | `plan.pending` | `plan_id, extraneous, library_id` |
 | `plan.resolved` | `plan_id, library_id, status` |
 | `space.low`, `space.ok` | `min_free_gb` |
+| `session.expiring` | `account_id, days, expires_at, expires_local, estimated`; published by housekeeping every hour while an `ok` account's session expires within `days` (7, then 1) |
 | `paused` | `paused` |
 | `settings.updated` | `keys` |
 | `version.checked` | none (`{}`); an update check finished, re-read `/api/status` |

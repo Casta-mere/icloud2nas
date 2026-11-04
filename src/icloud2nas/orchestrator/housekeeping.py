@@ -1,4 +1,5 @@
-"""Periodic housekeeping: trash purge, run/log retention, trash size cache, legacy migration."""
+"""Periodic housekeeping: trash purge, run/log retention, trash size cache, legacy migration,
+session-expiry warnings."""
 
 from __future__ import annotations
 
@@ -25,6 +26,8 @@ from icloud2nas.orchestrator.store.db import Store
 from icloud2nas.orchestrator.store.models import utcnow
 
 log = logging.getLogger(__name__)
+# days before Apple's trust lapses at which session.expiring is published (each sent once)
+SESSION_WARN_DAYS = (7, 1)
 
 
 class Housekeeping:
@@ -112,6 +115,41 @@ class Housekeeping:
         self.trash_bytes = trash_bytes(self._library_dirs(), photos=self.config.photos_dir)
         return self.trash_bytes
 
+    def check_session_expiry(self) -> list[dict[str, Any]]:
+        """Publish `session.expiring` for each ok account whose trust lapses within a threshold.
+
+        Only the nearest threshold is published (1 day once under it, else 7). Repeats on every
+        tick are expected: the notifier sends each (account, threshold, expiry) once and retries
+        a failed delivery on a later tick. Already expired: nothing (needs_code takes over).
+        """
+        now = self.clock()
+        due: list[dict[str, Any]] = []
+        with self.store.session() as s:
+            for account in repo.list_accounts(s):
+                expires = account.session_expires_at
+                if expires is None or account.status != "ok" or expires <= now:
+                    continue
+                left = expires - now
+                days = next(
+                    (d for d in sorted(SESSION_WARN_DAYS) if left <= timedelta(days=d)), None
+                )
+                if days is None:
+                    continue
+                due.append(
+                    {
+                        "account_id": account.id,
+                        "days": days,
+                        "expires_at": expires.isoformat(),
+                        "expires_local": local_now(expires, self.config.tz).strftime(
+                            "%Y-%m-%d %H:%M"
+                        ),
+                        "estimated": account.session_expiry_estimated,
+                    }
+                )
+        for payload in due:
+            self.bus.publish("session.expiring", **payload)
+        return due
+
     def start(self) -> None:
         self.migrate_legacy_layout()  # before run_forever's first purge
         if self._unsubscribe is None:
@@ -136,6 +174,7 @@ class Housekeeping:
                     self._last_purge = today
                 self.prune_runs()  # DB rows plus a few log files
                 await asyncio.to_thread(self.refresh_trash_bytes)
+                self.check_session_expiry()
             except Exception:  # noqa: BLE001 - housekeeping must never stop the loop
                 log.exception("housekeeping iteration failed")
             with contextlib.suppress(TimeoutError):
