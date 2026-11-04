@@ -4,12 +4,35 @@
 
     cp compose.example.yaml compose.yaml
     cp .env.example .env        # set PHOTOS_ROOT (see below) and TZ
-    make image                  # builds icloud2nas:local
-    docker compose up -d
+    docker compose up -d        # pulls ghcr.io/casta-mere/icloud2nas:latest
 
 Open `http://<nas>:4871`, choose LAN or WAN mode (next section), add an Apple ID, then add its
 libraries. State (database, cookies, logs) lives in `./data` (`/data` in the container); photos
 are written under `/photos`.
+
+The image is public and built for `linux/amd64` and `linux/arm64`. To build it yourself instead,
+run `make image` in a source checkout and set `image: icloud2nas:local` in `compose.yaml`.
+
+## Updating
+
+    docker compose pull && docker compose up -d
+
+`up -d` recreates the container only when the pulled image differs from the running one.
+Restarting interrupts a sync that is running: the run is marked failed ("daemon restarted") and
+the next scheduled run picks the library up again. Update between syncs if you can.
+
+## Pinning a version / rolling back
+
+`compose.yaml` uses `ghcr.io/casta-mere/icloud2nas:${I2N_TAG:-latest}`, and `:latest` moves only
+when a release is published. To stay on one version, or to go back to an earlier one, set it in
+`.env` next to `compose.yaml`:
+
+    I2N_TAG=0.1.1
+
+then run `docker compose pull && docker compose up -d`. Delete the line and do the same to follow
+`:latest` again. The tags are listed in [release.md](release.md#image-tags). The database is only
+ever migrated forward: an older version refuses to start on a database a newer one has upgraded,
+so back up `./data` before an update you might want to roll back.
 
 ## First visit: LAN or WAN
 

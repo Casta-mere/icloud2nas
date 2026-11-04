@@ -1,6 +1,8 @@
 services:
   icloud2nas:
-    image: icloud2nas:local   # build with `make image`, or point at your registry
+    # The published image (linux/amd64 + linux/arm64). I2N_TAG in .env pins a version.
+    # To build locally instead, run `make image` and use `image: icloud2nas:local`.
+    image: ghcr.io/casta-mere/icloud2nas:${I2N_TAG:-latest}
     container_name: icloud2nas
     restart: unless-stopped
     ports:

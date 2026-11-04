@@ -5,6 +5,8 @@ copy of each shared library, trash-first deletes, nightly reconcile.
 
 **Status:** worker, orchestrator, HTTP API and web UI (Plans 1–2c). Deploy with the runtime image: see [docs/deploy.md](docs/deploy.md).
 
+**Image:** `ghcr.io/casta-mere/icloud2nas` (linux/amd64 and linux/arm64); how to run, update and pin it is in [docs/deploy.md](docs/deploy.md).
+
 The web UI has five pages: Overview (accounts and recent runs, with a code box when Apple asks for a
 verification code), Accounts (add, rename, change password, delete), Libraries (per-library sync
 settings and the reconcile approval card), Trash (keep or permanently delete) and Settings
