@@ -16,8 +16,8 @@ release is a choice made in the pull request being merged.
    - No release (ticked to start with)
 
    Commenting `/approve` again refreshes the numbers and keeps the tick.
-2. **Move the tick** to the release you want, and untick No release. Exactly one box may be
-   ticked.
+2. **Tick the release you want.** No release can stay ticked: a ticked release wins over it.
+   Tick only one of Major, Minor and Patch.
 3. **Merge.** The workflow's `release` job then:
    - checks out `main` (never the pull request's code) and runs `make bump PART=<part>`
    - commits `Release X.Y.Z` as `github-actions[bot]` and tags it `vX.Y.Z`
@@ -33,8 +33,8 @@ When the merge doesn't release:
 
 | At merge | What happens |
 | --- | --- |
-| No choice comment (nobody commented `/approve`), or No release ticked | Nothing. The run says so and passes. |
-| More than one box ticked | Nothing is released. A comment on the pull request says why and the run fails. Release with a [manual run](#releasing-without-a-pull-request). |
+| No choice comment (nobody commented `/approve`), or none of Major, Minor and Patch ticked | Nothing. The run says so and passes. |
+| More than one of Major, Minor and Patch ticked | Nothing is released. A comment on the pull request says why and the run fails. Release with a [manual run](#releasing-without-a-pull-request). |
 | Merged by anyone but the owner | Nothing. The jobs are skipped. |
 | `RELEASE_TOKEN` missing or expired | The release job fails before changing anything. Fix the secret ([setup](#one-time-setup-release_token)), then do a [manual run](#releasing-without-a-pull-request). |
 | `main` moved while the release job ran | The atomic push is rejected and nothing is pushed. Do a [manual run](#releasing-without-a-pull-request). |

@@ -55,16 +55,25 @@ def test_parse_by_token_not_wording() -> None:
     assert parse("- [x] Patch: **0.1.3**") == "none"
 
 
-def test_parse_two_ticks_is_an_error() -> None:
-    body = render("0.1.2", "minor").replace("- [ ] Patch", "- [x] Patch")
-    with pytest.raises(ValueError, match="tick exactly one option"):
-        parse(body)
-    capital_and_none = render("0.1.2", "major").replace("- [x] Major", "- [X] Major")
-    with pytest.raises(ValueError, match="tick exactly one option"):
-        parse(capital_and_none.replace("- [ ] No release", "- [x] No release"))
+def test_parse_a_ticked_release_wins_over_none() -> None:
+    assert parse("- [x] No release <!-- none -->\n- [x] Patch <!-- patch -->") == "patch"
+    # The owner only ticks Patch; No release stays ticked from the start.
+    assert parse(render("0.1.2").replace("- [ ] Patch", "- [X] Patch")) == "patch"
 
 
-def test_parse_no_ticks_means_none() -> None:
+def test_parse_two_release_ticks_is_an_error() -> None:
+    with pytest.raises(ValueError, match="tick exactly one release option"):
+        parse("- [x] Minor <!-- minor -->\n- [x] Patch <!-- patch -->")
+    with pytest.raises(ValueError, match="tick exactly one release option"):
+        parse(render("0.1.2", "major").replace("- [ ] Minor", "- [X] Minor"))
+    # No release ticked as well doesn't help.
+    all_but_major = render("0.1.2").replace("[ ]", "[x]").replace("[x] Major", "[ ] Major")
+    with pytest.raises(ValueError, match="tick exactly one release option"):
+        parse(all_but_major)
+
+
+def test_parse_no_release_ticked_means_none() -> None:
+    assert parse("- [x] No release <!-- none -->") == "none"
     assert parse(render("0.1.2").replace("[x]", "[ ]")) == "none"
     assert parse("") == "none"
 
@@ -104,11 +113,13 @@ def test_cli_render_and_parse_round_trip() -> None:
     assert (parsed.returncode, parsed.stdout) == (0, "minor\n")
 
 
-def test_cli_parse_two_ticks_exits_2() -> None:
+def test_cli_parse_two_release_ticks_exits_2() -> None:
     result = run("parse", stdin="- [x] a <!-- major -->\n- [x] b <!-- patch -->\n")
     assert result.returncode == 2
     assert result.stdout == ""
-    assert "tick exactly one option" in result.stderr
+    assert "tick exactly one release option" in result.stderr
+    with_none = run("parse", stdin="- [x] a <!-- none -->\n- [x] b <!-- patch -->\n")
+    assert (with_none.returncode, with_none.stdout) == (0, "patch\n")
 
 
 def test_cli_is_approve() -> None:

@@ -3,8 +3,9 @@
     python scripts/release_choice.py render --current X.Y.Z [--selected CHOICE]
     python scripts/release_choice.py render-released --version X.Y.Z --part PART
     python scripts/release_choice.py released-note --version X.Y.Z --runs-url URL
-    python scripts/release_choice.py parse        body on stdin; print the ticked choice (exit 2
-                                                  when more than one box is ticked)
+    python scripts/release_choice.py parse        body on stdin; print the ticked release, which
+                                                  wins over No release, or `none` (exit 2 when
+                                                  more than one of Major/Minor/Patch is ticked)
     python scripts/release_choice.py is-approve   body on stdin; exit 0 if it is /approve, else 1
     python scripts/release_choice.py find         `gh api --paginate .../comments` on stdin; print
                                                   the id of the bot's choice comment, if any
@@ -46,8 +47,8 @@ def render(current: str, selected: Choice = "none") -> str:
     labels["none"] = "No release"
     lines = [
         MARKER,
-        f"**Release after merge?** Move the tick to one option (two ticks release nothing). "
-        f"Current version: `{current}`; the number is worked out again at merge.",
+        "**Release after merge?** Tick Major, Minor or Patch to release; a ticked release wins "
+        f"over No release. Current version: `{current}`; the number is worked out again at merge.",
         "",
     ]
     for choice in CHOICES:
@@ -62,15 +63,16 @@ def render_released(version: str, part: Part) -> str:
 
 
 def parse(body: str) -> Choice:
-    """The ticked option; `none` when nothing is ticked. Two or more ticks raise ValueError."""
-    ticked = []
+    """The ticked release option, which wins over a ticked No release; `none` when no release
+    option is ticked. Two or more ticked release options raise ValueError."""
+    releases = []
     for line in body.splitlines():
         m = _OPTION.match(line)
-        if m is not None and m[1] != " ":
-            ticked.append(m[2])
-    if len(ticked) > 1:
-        raise ValueError("tick exactly one option")
-    return cast(Choice, ticked[0]) if ticked else "none"
+        if m is not None and m[1] != " " and m[2] != "none":
+            releases.append(m[2])
+    if len(releases) > 1:
+        raise ValueError("tick exactly one release option")
+    return cast(Choice, releases[0]) if releases else "none"
 
 
 def find_comment(comments: Iterable[Mapping[str, Any]]) -> int | None:

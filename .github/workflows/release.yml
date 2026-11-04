@@ -151,11 +151,12 @@ jobs:
           fi
           if [ "$status" -eq 2 ]; then
             dispatch="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/workflows/release.yml"
-            note="Not released: more than one option was ticked. Tick exactly one option; to"
-            note="$note release this merge now, use [Actions → release → Run workflow]($dispatch)."
+            note="Not released: more than one release option (Major, Minor, Patch) was ticked."
+            note="$note To release this merge now, use"
+            note="$note [Actions → release → Run workflow]($dispatch)."
             gh api --method POST --silent "repos/$GITHUB_REPOSITORY/issues/$PR/comments" \
               -f body="$note"
-            echo "::error::more than one option is ticked on #$PR; nothing was released"
+            echo "::error::more than one release option is ticked on #$PR; nothing was released"
             exit 1
           fi
           if [ "$choice" = none ]; then
