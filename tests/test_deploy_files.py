@@ -34,3 +34,8 @@ def test_healthcheck_honours_the_port_and_waits_for_startup() -> None:
 def test_compose_example_requires_photos_root() -> None:
     text = (ROOT / "compose.example.yaml").read_text(encoding="utf-8")
     assert "${PHOTOS_ROOT:?" in text
+
+
+def test_compose_example_pulls_the_published_image() -> None:
+    text = (ROOT / "compose.example.yaml").read_text(encoding="utf-8")
+    assert "image: ghcr.io/casta-mere/icloud2nas:${I2N_TAG:-latest}" in text
