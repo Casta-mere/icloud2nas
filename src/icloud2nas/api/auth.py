@@ -15,7 +15,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from icloud2nas.api.state import AppState
-from icloud2nas.orchestrator.settings import Settings
+from icloud2nas.orchestrator.settings import AccessMode as AccessMode
+from icloud2nas.orchestrator.settings import access_mode as access_mode
 
 COOKIE = "i2n_session"
 MAX_AGE_S = 30 * 86400
@@ -25,8 +26,6 @@ SETUP_REQUIRED = {
     "detail": "choose LAN or WAN mode in the web UI first",
 }
 _PROXY_HEADERS = ("forwarded", "x-forwarded-for", "x-real-ip")
-
-AccessMode = Literal["setup", "lan", "wan"]
 
 
 def hash_password(password: str) -> str:
@@ -83,14 +82,6 @@ def _authenticated(state: AppState, request: Request) -> bool:
         not_before=state.settings.get("admin_password_set_at"),
         now=int(time.time()),
     )
-
-
-def access_mode(settings: Settings) -> AccessMode:
-    # derived, never migrated: a stored password means wan, so an upgrade keeps it locked, and a
-    # passwordless install stays in setup until someone chooses lan
-    if settings.get("admin_password_hash"):
-        return "wan"
-    return "lan" if settings.get("access_mode") == "lan" else "setup"
 
 
 def is_remote(request: Request) -> bool:
