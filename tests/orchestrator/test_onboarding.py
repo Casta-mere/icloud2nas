@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -234,6 +235,44 @@ async def test_discard_account_undoes_create_after_a_failed_start(
     assert not config.account_plans_dir(account_id).exists()
     assert not (config.logs_dir / f"{run_id}.log").exists()
     assert (photos_dir / "IMG_0001.JPG").read_bytes() == b"jpeg"  # the photos root is not ours
+
+
+async def test_discard_account_file_cleanup_is_best_effort(
+    onboarding: tuple[Onboarding, Store, list[Any]],
+    config: Config,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    ob, store, _ = onboarding
+    account_id = ob.create_account(
+        display_name="小明", apple_id="a@icloud.com", region="cn", password="pw"
+    )
+    ob.config = Config(
+        data_dir=config.data_dir, photos_dir=config.photos_dir,
+        worker_cmd=("/definitely/not/a/binary",), tz=config.tz,
+    )
+    with pytest.raises(FileNotFoundError):
+        await ob.start_auth(account_id)
+    with store.session() as s:
+        run_log = config.logs_dir / f"{repo.list_runs(s)[0].id}.log"
+    assert config.account_plans_dir(account_id).is_dir()  # prepare_spawn made it
+    real_unlink = Path.unlink
+
+    def denied(self: Path, missing_ok: bool = False) -> None:
+        if self == run_log:  # say the logs dir lost its search permission
+            raise PermissionError(13, "Permission denied", str(self))
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", denied)
+
+    ob.discard_account(account_id)  # returns normally
+
+    with store.session() as s:
+        assert repo.list_accounts(s) == [] and repo.list_runs(s) == []
+    assert not (config.accounts_dir / account_id).exists()
+    assert not config.account_plans_dir(account_id).exists()
+    assert run_log.exists()
+    assert f"could not remove {run_log}" in caplog.text
 
 
 async def test_discard_account_refuses_once_the_login_started(

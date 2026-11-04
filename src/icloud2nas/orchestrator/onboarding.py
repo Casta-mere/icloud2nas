@@ -6,6 +6,7 @@ import asyncio
 import logging
 import shutil
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -29,6 +30,12 @@ from icloud2nas.orchestrator.store.secrets import Secrets
 from icloud2nas.orchestrator.supervisor import WorkerProcess, WorkerResult
 
 log = logging.getLogger(__name__)
+
+
+def _log_rmtree_error(_func: Callable[..., object], path: str, exc: BaseException) -> None:
+    """rmtree onexc: log what could not be removed and go on with the rest of the tree."""
+    if not isinstance(exc, FileNotFoundError):
+        log.warning("rollback: could not remove %s: %s", path, exc)
 
 
 def safe_dir_name(name: str, fallback: str) -> str:
@@ -129,13 +136,21 @@ class Onboarding:
         """
         if account_id in self.sessions:
             raise RuntimeError(f"the login for {account_id} has started; delete the account")
-        with self.store.session() as s:
+        with self.store.session() as s:  # first: if the row stays, nothing on disk goes
             run_ids = list(s.scalars(select(Run.id).where(Run.account_id == account_id)))
             repo.delete_account_cascade(s, account_id)
+        # the row is gone; the files are best effort, each step runs whatever the others hit
         for run_id in run_ids:
-            (self.config.logs_dir / f"{run_id}.log").unlink(missing_ok=True)
-        shutil.rmtree(self.config.cookie_dir(account_id).parent, ignore_errors=True)
-        shutil.rmtree(self.config.account_plans_dir(account_id), ignore_errors=True)
+            run_log = self.config.logs_dir / f"{run_id}.log"
+            try:
+                run_log.unlink(missing_ok=True)
+            except OSError as exc:
+                log.warning("rollback of %s: could not remove %s: %s", account_id, run_log, exc)
+        for directory in (
+            self.config.cookie_dir(account_id).parent,
+            self.config.account_plans_dir(account_id),
+        ):
+            shutil.rmtree(directory, onexc=_log_rmtree_error)
 
     def set_password(self, account_id: str, password: str) -> None:
         with self.store.session() as s:
