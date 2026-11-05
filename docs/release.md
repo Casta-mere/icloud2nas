@@ -13,11 +13,12 @@ release is a choice made in the pull request being merged.
    - Major **1.0.0**
    - Minor **0.2.0**
    - Patch **0.1.3**
-   - No release (ticked to start with)
+   - No release
 
-   Commenting `/approve` again refreshes the numbers and keeps the tick.
-2. **Tick the release you want.** No release can stay ticked: a ticked release wins over it.
-   Tick only one of Major, Minor and Patch.
+   Nothing is ticked to start with. Commenting `/approve` again refreshes the numbers and keeps a
+   ticked release.
+2. **Tick the release you want**: one of Major, Minor and Patch. Nothing ticked, or only No
+   release, merges without a release. If No release is ticked too, the ticked release wins.
 3. **Merge.** The workflow's `release` job then:
    - checks out `main` (never the pull request's code) and runs `make bump PART=<part>`
    - commits `Release X.Y.Z (#N)` (`N` is the pull request) as `github-actions[bot]` and tags it

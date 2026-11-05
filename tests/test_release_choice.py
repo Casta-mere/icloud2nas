@@ -39,13 +39,22 @@ def test_render_shows_real_numbers_and_defaults_to_none() -> None:
     assert "**1.0.0**" in body and "**0.2.0**" in body and "**0.1.3**" in body
     assert "`0.1.2`" in body
     assert parse(body) == "none"
+    # nothing is pre-ticked: the owner ticks the one release they want
+    assert not any("[x]" in line for line in body.splitlines())
 
 
-@pytest.mark.parametrize("choice", ["major", "minor", "patch", "none"])
+@pytest.mark.parametrize("choice", ["major", "minor", "patch"])
 def test_render_keeps_a_selection(choice: Choice) -> None:
     body = render("0.1.2", choice)
     assert parse(body) == choice
     assert sum("[x]" in line for line in body.splitlines()) == 1
+
+
+def test_render_never_ticks_no_release() -> None:
+    # a refresh of a comment with No release ticked shows it unticked; both mean no release
+    body = render("0.1.2", "none")
+    assert parse(body) == "none"
+    assert not any("[x]" in line for line in body.splitlines())
 
 
 def test_parse_by_token_not_wording() -> None:
