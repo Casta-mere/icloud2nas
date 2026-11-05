@@ -36,7 +36,6 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_index("ix_notifications_event_subject_key", table_name="notifications")
     op.drop_table("notifications")
-    with op.batch_alter_table("libraries") as batch:
-        batch.drop_column("first_full_at")
-    with op.batch_alter_table("accounts") as batch:
-        batch.drop_column("primary_dir")
+    # plain DROP COLUMN: a batch rebuild drops the table, which foreign keys forbid (see 0004)
+    op.drop_column("libraries", "first_full_at")
+    op.drop_column("accounts", "primary_dir")

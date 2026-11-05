@@ -3,6 +3,10 @@
 
 Revision ID: 0004
 Revises: 0003
+
+Plain ALTER TABLE ADD/DROP COLUMN, never a batch rebuild: the app runs with foreign keys on,
+libraries and runs reference accounts, so a rebuild's DROP TABLE accounts fails (the 0.2.0
+outage). That failed attempt left an empty _alembic_tmp_accounts behind; drop it first.
 """
 
 import sqlalchemy as sa
@@ -17,19 +21,19 @@ depends_on = None
 
 
 def upgrade() -> None:
-    with op.batch_alter_table("accounts") as batch:
-        batch.add_column(sa.Column("session_expires_at", UTCDateTime, nullable=True))
-        batch.add_column(
-            sa.Column(
-                "session_expiry_estimated",
-                sa.Boolean(),
-                nullable=False,
-                server_default=sa.false(),
-            )
-        )
+    op.execute("DROP TABLE IF EXISTS _alembic_tmp_accounts")
+    op.add_column("accounts", sa.Column("session_expires_at", UTCDateTime, nullable=True))
+    op.add_column(
+        "accounts",
+        sa.Column(
+            "session_expiry_estimated",
+            sa.Boolean(),
+            nullable=False,
+            server_default=sa.false(),
+        ),
+    )
 
 
 def downgrade() -> None:
-    with op.batch_alter_table("accounts") as batch:
-        batch.drop_column("session_expiry_estimated")
-        batch.drop_column("session_expires_at")
+    op.drop_column("accounts", "session_expiry_estimated")
+    op.drop_column("accounts", "session_expires_at")
