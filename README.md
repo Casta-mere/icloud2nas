@@ -3,18 +3,56 @@
 Mirror a household's iCloud Photos libraries to a NAS. Multiple Apple IDs, one
 copy of each shared library, trash-first deletes, nightly reconcile.
 
-**Status:** worker, orchestrator, HTTP API and web UI (Plans 1–2c). Deploy with the runtime image: see [docs/deploy.md](docs/deploy.md).
-
-**Image:** `ghcr.io/casta-mere/icloud2nas` (linux/amd64 and linux/arm64); how to run, update and pin it is in [docs/deploy.md](docs/deploy.md).
-
-The web UI has five pages: Overview (accounts and recent runs, with a code box when Apple asks for a
-verification code), Accounts (add, rename, change password, delete), Libraries (per-library sync
-settings and the reconcile approval card), Trash (keep or permanently delete) and Settings
-(notifications, sync, retention, admin password). It is bilingual (中文 / English) and works on a
-phone. See [docs/web.md](docs/web.md).
-
 Apple offers no third-party authorization: this tool needs each Apple ID's
 password and a one-time 2FA code. Credentials never leave your NAS.
+
+## Status
+
+What works today:
+
+- **Sync.** Each Apple ID (icloud.com or icloud.com.cn) mirrors its own photo library into a
+  folder under `/photos`: a quick sync every 30 minutes, and every night at 03:00 a full sync
+  followed by a reconcile. Both are per-library settings. When Apple's connection stalls mid-sync,
+  the run waits and retries on the same session a few times before it fails.
+- **Trash-first deletes.** A file whose photo is gone from iCloud is moved to the library's trash,
+  never unlinked, and purged once the retention (30 days by default) runs out; any file can be
+  kept instead. A reconcile that would trash a large share of a library stops and waits for your
+  approval.
+- **Web UI** with five pages: Overview (accounts and recent runs, with a code box when Apple asks
+  for a verification code), Accounts (add, rename, change password, delete), Libraries (per-library
+  sync settings and the reconcile approval card), Trash (keep or permanently delete) and Settings
+  (notifications, sync, retention, admin password, About). It is bilingual (中文 / English) and
+  works on a phone. See [docs/web.md](docs/web.md).
+- **Access mode.** On the first visit you choose LAN (no password) or WAN (an admin password).
+- **Notifications** through [Apprise](https://github.com/caronc/apprise) URLs.
+- **Update check.** Settings → About shows the running version; once a day the service looks for
+  a newer release on ghcr.io and the web UI announces it. It never updates itself.
+- **File owners.** Each account's files are written as the NAS user you pick for it, or the whole
+  container runs as one user (`PUID`/`PGID`).
+- **Image** `ghcr.io/casta-mere/icloud2nas` for linux/amd64 and linux/arm64. Each release tag
+  publishes it and a [GitHub Release](https://github.com/Casta-mere/icloud2nas/releases); see
+  [docs/release.md](docs/release.md).
+
+Not yet: shared libraries are discovered and recorded, but not synced.
+
+## Quick start
+
+On the NAS, in a folder holding this repository's [`compose.example.yaml`](compose.example.yaml)
+and [`.env.example`](.env.example):
+
+    cp compose.example.yaml compose.yaml
+    cp .env.example .env        # set PHOTOS_ROOT and TZ
+    docker compose up -d        # pulls ghcr.io/casta-mere/icloud2nas:latest
+
+1. Open `http://<nas>:4871` and choose an access mode. **LAN** needs no password, so use it only
+   when nothing outside your home network reaches the port. **WAN** asks for an admin password,
+   which every visitor then has to enter; choose it for anything reachable from the internet.
+2. Accounts → Add account: a display name, the photo folder (relative to `/photos`), its owner
+   and the region; then the Apple ID and its password; then the code Apple sends to your trusted
+   devices. The account's library is found and its first full sync starts.
+
+[docs/deploy.md](docs/deploy.md) covers what to mount as `/photos`, file owners, updating, pinning
+a version, reverse proxies and backing up the secret key.
 
 ## Development
 

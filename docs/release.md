@@ -1,9 +1,9 @@
 # Releasing
 
 A release is a `vX.Y.Z` git tag on a commit of `main` whose version fields all say `X.Y.Z`. CI
-(`.github/workflows/ci.yml`) builds it and publishes the image `ghcr.io/casta-mere/icloud2nas`.
-The release workflow (`.github/workflows/release.yml`) makes the version commit and the tag, so a
-release is a choice made in the pull request being merged.
+(`.github/workflows/ci.yml`) builds it, publishes the image `ghcr.io/casta-mere/icloud2nas` and
+creates a GitHub Release. The release workflow (`.github/workflows/release.yml`) makes the version
+commit and the tag, so a release is a choice made in the pull request being merged.
 
 ## Releasing from a pull request
 
@@ -30,7 +30,8 @@ release is a choice made in the pull request being merged.
 
    The number is worked out from `main` at that moment, and releases run one at a time, so two
    pull requests merged close together get consecutive versions.
-4. **Watch the tag's CI run**, as in [The tag's CI run](#the-tags-ci-run), then
+4. **Watch the tag's CI run**, as in [The tag's CI run](#the-tags-ci-run): it publishes the image
+   and creates the [GitHub Release](#the-github-release). Then
    [update your hosts](deploy.md#updating).
 
 When the merge doesn't release:
@@ -77,8 +78,24 @@ The fallback when the workflow can't be used:
 
 The tag's `release-guard` job fails unless the tag is `v` plus digits only (`vX.Y.Z`) and `X.Y.Z`
 equals `pyproject.toml`'s version. If it fails, nothing is built or published. Otherwise the
-checks run, both platforms build, and `publish` pushes the tags below. Then update your hosts, as
-in [Updating](deploy.md#updating).
+checks run, both platforms build, `publish` pushes the tags below, and `github-release` creates
+the GitHub Release. Then update your hosts, as in [Updating](deploy.md#updating).
+
+### The GitHub Release
+
+ci.yml's `github-release` job runs only once `publish` has succeeded, so a Release never points
+at an image that is not there. It runs
+
+    gh release create vX.Y.Z --verify-tag --generate-notes --title vX.Y.Z
+
+with the built-in `GITHUB_TOKEN` (`contents: write` on that job only; `RELEASE_TOKEN` is not
+used). The notes open with the image tags `publish` pushed, followed by GitHub's generated notes:
+the pull requests merged since the previous Release. When the Release already exists (a re-run of
+the tag's CI run), the job leaves it as it is.
+
+v0.1.0 to v0.1.3 were tagged before this job existed and have no Release. The owner may create
+them by hand with the command above, oldest first so that the newest ends up as the latest
+Release. Do it before the next tag if that tag's generated notes should start at v0.1.3.
 
 ## One-time setup: `RELEASE_TOKEN`
 
