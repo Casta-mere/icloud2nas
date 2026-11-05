@@ -1,4 +1,4 @@
-"""The `release` job in .github/workflows/ci.yml: its wiring, and its script against a fake gh."""
+"""ci.yml's `github-release` job: its wiring, and its script run against a fake gh."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ def _jobs() -> dict[str, Any]:
 def _run_release(tmp_path: Path, *, release_exists: bool, tags: str = TAGS) -> tuple[
     subprocess.CompletedProcess[str], list[list[str]]
 ]:
-    (step,) = _jobs()["release"]["steps"]
+    (step,) = _jobs()["github-release"]["steps"]
     script = tmp_path / "release.sh"
     script.write_text(step["run"], encoding="utf-8")
     bin_dir = tmp_path / "bin"
@@ -64,33 +64,33 @@ def _run_release(tmp_path: Path, *, release_exists: bool, tags: str = TAGS) -> t
 
 
 def test_release_runs_on_version_tags_after_publish() -> None:
-    release = _jobs()["release"]
+    release = _jobs()["github-release"]
     assert release["needs"] == "publish"
     assert release["if"] == "startsWith(github.ref, 'refs/tags/v')"
 
 
-def test_only_the_release_job_may_write_contents() -> None:
+def test_only_the_github_release_job_may_write_contents() -> None:
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     assert workflow["permissions"] == {"contents": "read"}
     writers = [
         name for name, job in workflow["jobs"].items()
         if job.get("permissions", {}).get("contents") == "write"
     ]
-    assert writers == ["release"]
-    assert workflow["jobs"]["release"]["permissions"] == {"contents": "write"}
+    assert writers == ["github-release"]
+    assert workflow["jobs"]["github-release"]["permissions"] == {"contents": "write"}
 
 
 def test_release_uses_the_built_in_token_only() -> None:
-    release = _jobs()["release"]
+    release = _jobs()["github-release"]
     (step,) = release["steps"]
     assert step["env"]["GH_TOKEN"] == "${{ github.token }}"
     assert "secrets." not in yaml.safe_dump(release)
 
 
-def test_publish_hands_its_image_tags_to_release() -> None:
+def test_publish_hands_its_image_tags_to_github_release() -> None:
     jobs = _jobs()
     assert jobs["publish"]["outputs"]["tags"] == "${{ steps.meta.outputs.tags }}"
-    (step,) = jobs["release"]["steps"]
+    (step,) = jobs["github-release"]["steps"]
     assert step["env"]["TAGS"] == "${{ needs.publish.outputs.tags }}"
 
 

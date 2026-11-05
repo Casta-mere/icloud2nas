@@ -12,7 +12,8 @@ What works today:
 
 - **Sync.** Each Apple ID (icloud.com or icloud.com.cn) mirrors its own photo library into a
   folder under `/photos`: a quick sync every 30 minutes, and every night at 03:00 a full sync
-  followed by a reconcile. Both are per-library settings.
+  followed by a reconcile. Both are per-library settings. When Apple's connection stalls mid-sync,
+  the run waits and retries on the same session a few times before it fails.
 - **Trash-first deletes.** A file whose photo is gone from iCloud is moved to the library's trash,
   never unlinked, and purged once the retention (30 days by default) runs out; any file can be
   kept instead. A reconcile that would trash a large share of a library stops and waits for your
@@ -20,10 +21,12 @@ What works today:
 - **Web UI** with five pages: Overview (accounts and recent runs, with a code box when Apple asks
   for a verification code), Accounts (add, rename, change password, delete), Libraries (per-library
   sync settings and the reconcile approval card), Trash (keep or permanently delete) and Settings
-  (notifications, sync, retention, admin password). It is bilingual (中文 / English) and works on
-  a phone. See [docs/web.md](docs/web.md).
+  (notifications, sync, retention, admin password, About). It is bilingual (中文 / English) and
+  works on a phone. See [docs/web.md](docs/web.md).
 - **Access mode.** On the first visit you choose LAN (no password) or WAN (an admin password).
 - **Notifications** through [Apprise](https://github.com/caronc/apprise) URLs.
+- **Update check.** Settings → About shows the running version; once a day the service looks for
+  a newer release on ghcr.io and the web UI announces it. It never updates itself.
 - **File owners.** Each account's files are written as the NAS user you pick for it, or the whole
   container runs as one user (`PUID`/`PGID`).
 - **Image** `ghcr.io/casta-mere/icloud2nas` for linux/amd64 and linux/arm64. Each release tag

@@ -2,8 +2,8 @@
 
 A release is a `vX.Y.Z` git tag on a commit of `main` whose version fields all say `X.Y.Z`. CI
 (`.github/workflows/ci.yml`) builds it, publishes the image `ghcr.io/casta-mere/icloud2nas` and
-creates a GitHub Release. The release workflow (`.github/workflows/release.yml`) makes the version commit and the tag, so a
-release is a choice made in the pull request being merged.
+creates a GitHub Release. The release workflow (`.github/workflows/release.yml`) makes the version
+commit and the tag, so a release is a choice made in the pull request being merged.
 
 ## Releasing from a pull request
 
@@ -78,13 +78,13 @@ The fallback when the workflow can't be used:
 
 The tag's `release-guard` job fails unless the tag is `v` plus digits only (`vX.Y.Z`) and `X.Y.Z`
 equals `pyproject.toml`'s version. If it fails, nothing is built or published. Otherwise the
-checks run, both platforms build, `publish` pushes the tags below, and ci.yml's `release` job
-creates the GitHub Release. Then update your hosts, as in [Updating](deploy.md#updating).
+checks run, both platforms build, `publish` pushes the tags below, and `github-release` creates
+the GitHub Release. Then update your hosts, as in [Updating](deploy.md#updating).
 
 ### The GitHub Release
 
-ci.yml's `release` job (not the release workflow's) runs only once `publish` has succeeded, so a
-Release never points at an image that is not there. It runs
+ci.yml's `github-release` job runs only once `publish` has succeeded, so a Release never points
+at an image that is not there. It runs
 
     gh release create vX.Y.Z --verify-tag --generate-notes --title vX.Y.Z
 
