@@ -45,19 +45,24 @@ def is_approve_command(body: str) -> bool:
 
 
 def render(current: str, selected: Choice = "none") -> str:
-    """The choice comment for a repository at version `current`, with `selected` ticked."""
+    """The choice comment for a repository at version `current`, with `selected` ticked.
+
+    Nothing is pre-ticked: the owner ticks the one release they want. No release is never
+    ticked by the bot, since nothing ticked already means no release.
+    """
     if selected not in CHOICES:
         raise ValueError(f"unknown choice {selected!r}; expected one of {', '.join(CHOICES)}")
     labels = {p: f"{p.capitalize()}: **{next_version(current, cast(Part, p))}**" for p in PARTS}
     labels["none"] = "No release"
     lines = [
         MARKER,
-        "**Release after merge?** Tick Major, Minor or Patch to release; a ticked release wins "
-        f"over No release. Current version: `{current}`; the number is worked out again at merge.",
+        "**Release after merge?** Tick one of Major, Minor or Patch, then merge. Nothing ticked "
+        f"merges without a release. Current version: `{current}`; the number is worked out again "
+        "at merge.",
         "",
     ]
     for choice in CHOICES:
-        tick = "x" if choice == selected else " "
+        tick = "x" if choice == selected and choice != "none" else " "
         lines.append(f"- [{tick}] {labels[choice]} <!-- {choice} -->")
     return "\n".join(lines)
 
