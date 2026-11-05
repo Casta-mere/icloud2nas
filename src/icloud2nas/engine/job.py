@@ -20,6 +20,23 @@ PRIMARY_ZONE = "PrimarySync"
 JOB_ENV = "I2N_JOB"
 PASSWORD_ENV = "I2N_PASSWORD"
 
+MAX_RETRIES = 10
+MAX_RETRY_WAIT_S = 3600
+
+
+def _retry_waits(raw: Any) -> tuple[int, ...]:
+    """`retry_waits_s` from JSON: a list of whole seconds, one wait per retry; [] disables."""
+    if not isinstance(raw, list):
+        raise ValueError("retry_waits_s must be a list of seconds")
+    if len(raw) > MAX_RETRIES:
+        raise ValueError(f"retry_waits_s allows at most {MAX_RETRIES} retries")
+    for wait in raw:
+        if isinstance(wait, bool) or not isinstance(wait, int):
+            raise ValueError(f"retry_waits_s entries must be whole seconds, got {wait!r}")
+        if not 0 <= wait <= MAX_RETRY_WAIT_S:
+            raise ValueError(f"retry_waits_s entries must be within 0..{MAX_RETRY_WAIT_S}")
+    return tuple(raw)
+
 
 @dataclass(frozen=True)
 class FilePolicy:
@@ -69,6 +86,7 @@ class JobSpec:
     dry_run: bool = False
     mfa_timeout_s: int = 600
     index_wait_s: int = 300
+    retry_waits_s: tuple[int, ...] = (10, 30, 60)
     apply_plan: str | None = None
     policy: FilePolicy = field(default_factory=FilePolicy)
 
@@ -96,6 +114,8 @@ class JobSpec:
         if not isinstance(data, dict):
             raise ValueError(f"{JOB_ENV} must be a JSON object")
         policy = FilePolicy.from_dict(data.pop("policy", {}))
+        if "retry_waits_s" in data:
+            data["retry_waits_s"] = _retry_waits(data["retry_waits_s"])
         for key in ("account_id", "apple_id", "region", "client_id", "cookie_dir"):
             if not data.get(key):
                 raise ValueError(f"{JOB_ENV} missing {key}")

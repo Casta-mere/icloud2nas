@@ -44,6 +44,7 @@ Unknown keys are rejected (`config` error).
 | `dry_run` | bool | false | nothing is written or moved |
 | `mfa_timeout_s` | int | 600 | interactive only: give up waiting for a code after this long |
 | `index_wait_s` | int | 300 | list/sync/reconcile: how long to wait for Apple's photo-library web index (`CheckIndexingState`) to report FINISHED before failing with `error kind=not_activated`; Apple starts an index job on each new session and it takes 30 s to a few minutes |
+| `retry_waits_s` | list of int | `[10, 30, 60]` | sync: when the download pass fails with `network` or `unavailable`, wait this many seconds and run it again on the same session, one entry per retry (at most 10, each 0..3600); `[]` disables. Already-downloaded files are skipped, so a retry resumes (under `until_found` it stops, as any run does, after that many existing files in a row). After the last retry the run fails as usual |
 | `policy` | object | see below | |
 
 `policy` (`FilePolicy`; unknown keys rejected):
@@ -78,6 +79,7 @@ redirects its own `sys.stdout` to stderr, so stray prints cannot corrupt the str
 | `mfa_result` | `ok`, `error?` | after a code was submitted; `ok=false` carries the reason and the wait restarts |
 | `libraries` | `personal: [str]`, `shared: [str]` | `list` mode |
 | `progress` | sync: `downloaded`, `scanned`, `total`, `last`; reconcile: `scanned` | sync every 60 s; reconcile every 1000 assets. `total` is 0 under `until_found` |
+| `retry` | `attempt`, `of`, `wait_s`, `kind`, `message` | sync: the download pass hit an Apple connection stall (`kind` `network` or `unavailable`); `attempt` is the 1-based retry about to start after `wait_s` seconds, `of` the number of retries allowed (`retry_waits_s`). Never sent for other kinds |
 | `reconcile_plan` | `remote_total`, `local_total`, `extraneous`, `missing`, `plan_file`, `fused` | after listing, before any deletion |
 | `done` | `stats` | success, see below |
 | `error` | `kind`, `message` | failure |

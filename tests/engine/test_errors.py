@@ -1,3 +1,4 @@
+import pytest
 from pyicloud_ipd.exceptions import (
     PyiCloudAPIResponseException,
     PyiCloudConnectionErrorException,
@@ -7,7 +8,7 @@ from pyicloud_ipd.exceptions import (
     PyiCloudServiceUnavailableException,
 )
 
-from icloud2nas.engine.errors import ExitCode, HardExit, classify
+from icloud2nas.engine.errors import ExitCode, HardExit, classify, retryable
 
 
 def test_exit_code_values_are_the_protocol() -> None:
@@ -60,3 +61,26 @@ def test_classify_rate_limit_by_code_or_reason() -> None:
 
 def test_classify_unknown() -> None:
     assert classify(RuntimeError("x")) == (ExitCode.FAILED, "unknown")
+
+
+@pytest.mark.parametrize("kind", ["network", "unavailable"])
+def test_connection_stalls_are_retryable(kind: str) -> None:
+    assert retryable(kind)
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "ratelimit",
+        "password",
+        "auth",
+        "mfa_timeout",
+        "not_activated",
+        "api",
+        "icloudpd",
+        "unknown",
+        "config",
+    ],
+)
+def test_other_kinds_are_not_retryable(kind: str) -> None:
+    assert not retryable(kind)

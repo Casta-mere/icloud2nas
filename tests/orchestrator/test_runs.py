@@ -170,6 +170,50 @@ async def test_execute_runs_the_fake_worker_and_records_progress(
     assert topics.count("run.event") == 3 and topics.index("run.finished") == 4
 
 
+async def test_execute_records_the_latest_retry(
+    world: dict[str, Any], config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    retry = {"attempt": 1, "of": 3, "wait_s": 10, "kind": "network", "message": "stall"}
+    monkeypatch.setenv(
+        "FAKE_WORKER_SCENARIO",
+        json.dumps({"sync": {"events": [
+            {"ev": "started"},
+            {"ev": "retry", **retry},
+            {"ev": "retry", **retry, "attempt": 2, "wait_s": 30},
+            {"ev": "done", "stats": {"downloaded": 2, "trashed": 0, "full": False}},
+        ], "exit": 0}}),
+    )
+    with world["store"].session() as s:
+        acc = repo.get_account(s, world["account"])
+        lib = repo.get_library(s, world["library"])
+        assert acc is not None and lib is not None
+        job = build_job(config, acc, lib, interactive=False)
+    run_id = world["manager"].start_run(
+        account_id=world["account"], library_id=world["library"], mode="sync", trigger="manual"
+    )
+    seen_while_running: list[Any] = []
+
+    def peek(event: dict[str, Any]) -> None:
+        if event.get("ev") == "retry":
+            with world["store"].session() as s:
+                run = repo.get_run(s, run_id)
+                assert run is not None
+                seen_while_running.append((run.status, run.stats.get("retry")))
+
+    result = await world["manager"].execute(
+        run_id, mode="sync", job=job, password="pw", interactive=False, on_event=peek
+    )
+    assert result.exit_code == 0
+    assert seen_while_running == [
+        ("running", retry), ("running", {**retry, "attempt": 2, "wait_s": 30}),
+    ]
+    with world["store"].session() as s:
+        run = repo.get_run(s, run_id)
+        assert run is not None and run.status == "ok" and run.stats["downloaded"] == 2
+        assert run.stats["retry"] == {**retry, "attempt": 2, "wait_s": 30}  # kept after the end
+    assert [t for t, _ in world["seen"]].count("run.event") == 4
+
+
 async def test_progress_db_failure_does_not_drop_events(
     world: dict[str, Any], config: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:

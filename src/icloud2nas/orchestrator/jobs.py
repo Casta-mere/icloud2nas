@@ -31,6 +31,7 @@ JOB_FIELD_TYPES: dict[str, type | tuple[type, ...]] = {
     "dry_run": bool,
     "mfa_timeout_s": int,
     "index_wait_s": int,
+    "retry_waits_s": list,
     "policy": dict,
 }
 POLICY_FIELD_TYPES: dict[str, type] = {

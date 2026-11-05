@@ -175,6 +175,16 @@ test("run.event is re-dispatched on appEvents", () => {
   expect(seen).toEqual([{ run_id: "r1", event: { ev: "need_mfa" } }]);
 });
 
+test("a retry run.event refreshes the runs (their stats carry the note); other run events do not", () => {
+  const { queryClient } = mount();
+  const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+  const es = FakeEventSource.latest();
+  act(() => es.emit("run.event", { run_id: "r1", event: { ev: "progress", downloaded: 1 } }));
+  expect(invalidate).not.toHaveBeenCalled();
+  act(() => es.emit("run.event", { run_id: "r1", event: { ev: "retry", attempt: 1, of: 3 } }));
+  expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([["runs"]]);
+});
+
 test("run.finished is re-dispatched on appEvents", () => {
   mount();
   const seen: unknown[] = [];

@@ -4,6 +4,7 @@ import type { Run } from "../../api/types";
 import { useT } from "../../i18n";
 import { fmtDateTime, fmtDuration, fmtTime } from "../../lib/format";
 import { libraryName } from "../../lib/names";
+import { runRetry } from "../../lib/runRetry";
 import { Button } from "../../ui/Button";
 import { Chip } from "../../ui/Chip";
 import { Drawer } from "../../ui/Drawer";
@@ -29,6 +30,11 @@ export function LogDrawer({ run, onClose }: { run: Run; onClose: () => void }) {
     add("stat-downloaded", run.stats.downloaded);
     add("stat-trashed", run.stats.trashed);
     if (run.stats.full === true) stats.push(t("stat-full"));
+    const retry = runRetry(run);
+    if (retry) {
+      const key = run.status === "running" ? "stat-retry" : "stat-retried";
+      stats.push(t(key, { n: retry.attempt, of: retry.of }));
+    }
   } else if (run.mode === "reconcile") {
     add("stat-remote", run.stats.remote_total);
     add("stat-local", run.stats.local_total);

@@ -113,3 +113,22 @@ def test_from_env_reads_job_env() -> None:
     assert spec.policy.threads_num == 4
     with pytest.raises(ValueError, match=JOB_ENV):
         JobSpec.from_env("list", "r", env={})
+
+
+def test_retry_waits_default_custom_and_disabled() -> None:
+    assert JobSpec.load("auth", "r", json.dumps(BASE)).retry_waits_s == (10, 30, 60)
+    custom = JobSpec.load("auth", "r", json.dumps({**BASE, "retry_waits_s": [5, 0, 3600]}))
+    assert custom.retry_waits_s == (5, 0, 3600)  # a tuple: the spec is frozen
+    off = JobSpec.load("auth", "r", json.dumps({**BASE, "retry_waits_s": []}))
+    assert off.retry_waits_s == ()
+    ten = JobSpec.load("auth", "r", json.dumps({**BASE, "retry_waits_s": [1] * 10}))
+    assert ten.retry_waits_s == (1,) * 10
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [[-1], [3601], [1] * 11, [1.5], [True], ["10"], 10, "10", None, {"a": 1}],
+)
+def test_retry_waits_rejects_bad_values(bad: object) -> None:
+    with pytest.raises(ValueError, match="retry_waits_s"):
+        JobSpec.load("auth", "r", json.dumps({**BASE, "retry_waits_s": bad}))
