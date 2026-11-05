@@ -4,7 +4,7 @@ DC_RUN := docker compose run --rm$(if $(DC_FLAGS), $(DC_FLAGS))
 RUN := $(DC_RUN) dev
 WEB := $(DC_RUN) --no-deps web
 
-.PHONY: build sync test lint typecheck check shell web-install web-check web-test web-build web-dev image
+.PHONY: build sync test lint typecheck check bump shell web-install web-check web-test web-build web-dev image
 
 build:
 	docker compose build dev
@@ -22,6 +22,13 @@ typecheck:
 	$(RUN) uv run mypy
 
 check: lint typecheck test
+
+# Set every version field and regenerate uv.lock. PART=patch|minor|major, or an exact X.Y.Z.
+bump:
+	$(if $(PART),,$(error usage: make bump PART=patch|minor|major|X.Y.Z))
+	$(RUN) uv run python scripts/bump_version.py set '$(PART)'
+	$(RUN) uv lock
+	$(RUN) uv run python scripts/bump_version.py check
 
 shell:
 	$(RUN) bash
