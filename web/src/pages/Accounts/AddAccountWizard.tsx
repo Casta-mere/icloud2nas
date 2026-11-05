@@ -82,6 +82,9 @@ export function AddAccountWizard({ onDone }: { onDone: () => void }) {
           } else if (err instanceof ApiError && err.status === 400 && /target_dir|directory/i.test(detail)) {
             setServerDirError(detail);
             setStep(1);
+          } else if (err instanceof ApiError && err.status >= 500) {
+            // the login could not start and the server took the account back: 下一步 retries
+            setFormError(t("login-start-failed", { detail: err.message }));
           } else {
             setFormError(detail);
           }

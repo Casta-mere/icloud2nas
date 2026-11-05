@@ -223,6 +223,7 @@ export const zh = {
   "retention-days": "{days} 天内可找回",
   "retention-forever": "不会自动清理",
   "apple-id-exists-detail": "这个 Apple ID 已经添加过：{detail}",
+  "login-start-failed": "没能开始登录：{detail}。可以再点「下一步」重试",
   "auth-failed-detail": "登录失败：{detail}",
   "discover-failed-detail": "发现图库失败：{detail}",
   "mode-sync": "同步",

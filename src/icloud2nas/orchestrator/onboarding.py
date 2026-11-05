@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
+
+from sqlalchemy import select
 
 from icloud2nas.orchestrator import owners
 from icloud2nas.orchestrator.bus import EventBus
@@ -21,11 +25,17 @@ from icloud2nas.orchestrator.runs import RunManager
 from icloud2nas.orchestrator.settings import Settings
 from icloud2nas.orchestrator.store import repo
 from icloud2nas.orchestrator.store.db import Store
-from icloud2nas.orchestrator.store.models import Account
+from icloud2nas.orchestrator.store.models import Account, Run
 from icloud2nas.orchestrator.store.secrets import Secrets
 from icloud2nas.orchestrator.supervisor import WorkerProcess, WorkerResult
 
 log = logging.getLogger(__name__)
+
+
+def _log_rmtree_error(_func: Callable[..., object], path: str, exc: BaseException) -> None:
+    """rmtree onexc: log what could not be removed and go on with the rest of the tree."""
+    if not isinstance(exc, FileNotFoundError):
+        log.warning("rollback: could not remove %s: %s", path, exc)
 
 
 def safe_dir_name(name: str, fallback: str) -> str:
@@ -118,6 +128,29 @@ class Onboarding:
         owners.ensure_owned_dir(self.config.cookie_dir(account_id), spawn_owner)
         owners.secure_account_dirs(self.config, account_id)
         return account_id
+
+    def discard_account(self, account_id: str) -> None:
+        """Undo create_account when its login run never started: the row with its runs, the
+        account's data and plans dirs, and those runs' logs. Nothing under the photos root is
+        touched: create_account makes nothing there, and the folder may hold the user's photos.
+        """
+        if account_id in self.sessions:
+            raise RuntimeError(f"the login for {account_id} has started; delete the account")
+        with self.store.session() as s:  # first: if the row stays, nothing on disk goes
+            run_ids = list(s.scalars(select(Run.id).where(Run.account_id == account_id)))
+            repo.delete_account_cascade(s, account_id)
+        # the row is gone; the files are best effort, each step runs whatever the others hit
+        for run_id in run_ids:
+            run_log = self.config.logs_dir / f"{run_id}.log"
+            try:
+                run_log.unlink(missing_ok=True)
+            except OSError as exc:
+                log.warning("rollback of %s: could not remove %s: %s", account_id, run_log, exc)
+        for directory in (
+            self.config.cookie_dir(account_id).parent,
+            self.config.account_plans_dir(account_id),
+        ):
+            shutil.rmtree(directory, onexc=_log_rmtree_error)
 
     def set_password(self, account_id: str, password: str) -> None:
         with self.store.session() as s:

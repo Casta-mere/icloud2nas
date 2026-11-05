@@ -113,6 +113,29 @@ describe("AddAccountWizard", () => {
     expect(screen.getByRole("textbox", { name: "Apple ID" })).toBeInTheDocument();
   });
 
+  test("a 5xx (the login could not start) stays on step 2 with the error; 下一步 again retries into step 3", async () => {
+    given(
+      "POST",
+      "/api/accounts",
+      { error: "login failed to start", detail: "[Errno 2] No such file or directory: 'worker'" },
+      500,
+    );
+    const { user } = renderWithProviders(<AddAccountWizard onDone={vi.fn()} />);
+    await toStep2(user);
+    await fillStep2AndSubmit(user);
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("没能开始登录：[Errno 2] No such file or directory: 'worker'");
+    expect(screen.getByRole("textbox", { name: "Apple ID" })).toHaveValue("new@icloud.com");
+    expect(screen.queryByRole("textbox", { name: "验证码" })).not.toBeInTheDocument();
+
+    createdAccount();
+    await user.click(screen.getByRole("button", { name: /下一步/ }));
+    expect(await screen.findByRole("textbox", { name: "验证码" })).toBeInTheDocument();
+    const posts = calls().filter((c) => c.method === "POST" && c.path === "/api/accounts");
+    expect(posts).toHaveLength(2);
+    expect(posts[1]!.body).toEqual(posts[0]!.body);
+  });
+
   test("step 1 has a 文件属主 row under 照片目录 that follows the folder; the POST carries owner_uid/owner_gid", async () => {
     const { user } = renderWithProviders(<AddAccountWizard onDone={vi.fn()} />);
     await fillStep1(user, "小红");
