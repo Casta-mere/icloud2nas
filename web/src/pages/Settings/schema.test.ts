@@ -35,6 +35,6 @@ describe("settings schema", () => {
     const wire = fromValues(db.settings.values);
     expect(wire.max_workers).toBe("2");
     expect(wire["notify.needs_code.enabled"]).toBe("1");
-    expect(Object.keys(wire)).toHaveLength(18);
+    expect(Object.keys(wire)).toHaveLength(19);
   });
 });
