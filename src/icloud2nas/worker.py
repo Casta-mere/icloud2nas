@@ -13,7 +13,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import TextIO
 
 from icloud2nas.engine import icloudpd_adapter as adapter
@@ -153,14 +153,48 @@ class Worker:
         self.exchange.abandon_mfa_wait()
 
     def _login(self) -> adapter.PyiCloudService:
-        return adapter.authenticate(
+        icloud = adapter.authenticate(
             self.spec, self.password, self.exchange, self.notificator, self.logger
         )
+        self._report_session(adapter.trust_expiry(icloud))
+        return icloud
+
+    def _report_session(self, trust_expires: datetime | None) -> None:
+        """The `session` event: when Apple's trust of this login lapses (null when unknown)."""
+        self.emitter.emit(
+            "session",
+            trust_expires=(
+                None
+                if trust_expires is None
+                else trust_expires.astimezone(UTC).isoformat(timespec="seconds")
+            ),
+        )
+
+    def _renew(self) -> None:
+        """Log in from an empty cookie dir so Apple asks for a code and trusts us anew.
+
+        A login with the stored session would reuse the old trust and move no expiry. The
+        account's cookie files are replaced only after that login succeeded; on any failure they
+        stay as they were, so a failed renewal never breaks syncing.
+        """
+        renewal = adapter.begin_renewal(self.spec)
+        try:
+            icloud = adapter.authenticate(
+                renewal, self.password, self.exchange, self.notificator, self.logger
+            )
+            trust_expires = adapter.trust_expiry(icloud)  # before its files move away
+            adapter.commit_renewal(icloud, self.spec.cookie_dir)
+        finally:
+            adapter.discard_renewal(renewal)
+        self._report_session(trust_expires)
 
     def _dispatch(self) -> ExitCode:
         mode = self.spec.mode
         if mode == "auth":
-            self._login()
+            if self.spec.renew:
+                self._renew()
+            else:
+                self._login()
             self.emitter.emit("done", stats={})
             return ExitCode.OK
         if mode == "list":

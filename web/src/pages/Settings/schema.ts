@@ -33,6 +33,7 @@ export const FIELDS: readonly Field[] = [
   event("plan_pending", "event-plan-pending"),
   event("space_low", "event-space-low"),
   event("first_full", "event-first-full"),
+  event("session_expiring", "event-session-expiring"),
   { key: "max_workers", group: "sync", kind: "int", labelKey: "field-max-workers", min: 1, max: 8, hintKey: "hint-max-workers" },
   { key: "threads_per_worker", group: "sync", kind: "int", labelKey: "field-threads", min: 1, max: 8 },
   { key: "min_free_gb", group: "sync", kind: "float", labelKey: "field-min-free", min: 0, hintKey: "hint-min-free" },

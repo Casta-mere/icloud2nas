@@ -102,7 +102,7 @@ CREATE TABLE reconcile_plans (
 
 def test_fresh_db_is_upgraded_to_head(tmp_path: Path) -> None:
     engine = make_engine(tmp_path / "x.db")
-    assert upgrade_db(engine) == "0003"
+    assert upgrade_db(engine) == "0004"
     assert inspect(engine).has_table("notifications")
     assert "first_full_at" in {c["name"] for c in inspect(engine).get_columns("libraries")}
 
@@ -123,11 +123,11 @@ def test_plan2a_db_is_stamped_then_migrated(tmp_path: Path) -> None:
             " status, failures, created_at) VALUES ('a1', 'A', 'a@x.com', 'cn', x'00', 'c1',"
             " 'ok', 0, '2026-01-01 00:00:00')"
         )
-    assert upgrade_db(engine) == "0003"
+    assert upgrade_db(engine) == "0004"
     assert "primary_dir" in {c["name"] for c in inspect(engine).get_columns("accounts")}
     with engine.connect() as c:
         assert c.exec_driver_sql("SELECT apple_id FROM accounts").scalar_one() == "a@x.com"
-    assert upgrade_db(engine) == "0003"  # idempotent
+    assert upgrade_db(engine) == "0004"  # idempotent
 
 
 def test_migration_0003_upgrades_plan2c_db(tmp_path: Path) -> None:
@@ -144,7 +144,7 @@ def test_migration_0003_upgrades_plan2c_db(tmp_path: Path) -> None:
             " x'00', 'c1', 'ok', 0, '2026-01-01 00:00:00', '小明')"
         )
     assert not inspect(engine).has_table("deleted_dirs")
-    assert upgrade_db(engine) == "0003"
+    assert upgrade_db(engine) == "0004"
     assert inspect(engine).has_table("deleted_dirs")
     cols = {c["name"]: c for c in inspect(engine).get_columns("accounts")}
     assert cols["owner_uid"]["nullable"] and cols["owner_gid"]["nullable"]
@@ -161,3 +161,34 @@ def test_models_match_head(tmp_path: Path) -> None:
     with engine.connect() as c:
         diffs = compare_metadata(MigrationContext.configure(c), Base.metadata)
     assert diffs == []
+
+
+def test_migration_0004_adds_session_expiry_and_downgrades(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path / "x.db")
+    cfg = Config()
+    cfg.set_main_option("script_location", str(MIGRATIONS_DIR))
+    with engine.begin() as connection:
+        cfg.attributes["connection"] = connection
+        command.upgrade(cfg, "0003")
+    with engine.begin() as c:
+        c.exec_driver_sql(
+            "INSERT INTO accounts (id, display_name, apple_id, region, password_enc, client_id,"
+            " status, failures, created_at) VALUES ('a1', 'A', 'a@x.com', 'cn', x'00', 'c1',"
+            " 'ok', 0, '2026-01-01 00:00:00')"
+        )
+    assert upgrade_db(engine) == "0004"
+    cols = {c["name"]: c for c in inspect(engine).get_columns("accounts")}
+    assert cols["session_expires_at"]["nullable"]
+    assert not cols["session_expiry_estimated"]["nullable"]
+    with engine.connect() as c:
+        row = c.exec_driver_sql(
+            "SELECT apple_id, session_expires_at, session_expiry_estimated FROM accounts"
+        ).one()
+    assert tuple(row) == ("a@x.com", None, 0)  # existing accounts: expiry unknown
+    with engine.begin() as connection:
+        cfg.attributes["connection"] = connection
+        command.downgrade(cfg, "0003")
+    names = {c["name"] for c in inspect(engine).get_columns("accounts")}
+    assert "session_expires_at" not in names and "session_expiry_estimated" not in names
+    with engine.connect() as c:
+        assert c.exec_driver_sql("SELECT apple_id FROM accounts").scalar_one() == "a@x.com"

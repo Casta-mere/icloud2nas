@@ -1,5 +1,9 @@
 import json
 import logging
+import os
+from datetime import UTC, datetime
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -12,7 +16,15 @@ from pyicloud_ipd.version_size import AssetVersionSize, LivePhotoVersionSize
 
 from icloud2nas.engine import icloudpd_adapter as adapter
 from icloud2nas.engine.job import JobSpec
-from tests.fakes import FakeICloud, FakeLibrary
+from tests.fakes import (
+    FAKE_CLIENT_ID,
+    TRUST_COOKIE,
+    FakeICloud,
+    FakeLibrary,
+    make_cookie,
+    offline_service,
+    write_jar,
+)
 
 BASE = {
     "account_id": "acc1",
@@ -280,3 +292,193 @@ def test_run_sync_without_session_leaves_authenticator_alone(
     monkeypatch.setattr(adapter, "core_single_run", fake_core)
     rc = adapter.run_sync(_spec(), "pw", StatusExchange(), lambda: None, logging.getLogger("t"))
     assert rc == 0
+
+
+# -- session expiry and renewal (touchpoint 6) -----------------------------------------------
+
+TRUST_AT = datetime(2027, 1, 19, 9, 12, 13, tzinfo=UTC)
+SESSION_AT = datetime(2026, 11, 22, 9, 12, 13, tzinfo=UTC)
+
+
+def _account_jar(cookie_dir: Path, cookies: list[Any]) -> Path:
+    """The jar file where pyicloud_ipd looks for it (its own cookiejar_path)."""
+    cookie_dir.mkdir(parents=True, exist_ok=True)
+    path = Path(offline_service(str(cookie_dir)).cookiejar_path)
+    write_jar(str(path), cookies)
+    return path
+
+
+def test_check_touchpoints_fails_when_the_cookie_layout_moves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(adapter.PyiCloudService, "cookiejar_path", "elsewhere")
+    with pytest.raises(RuntimeError, match="cookiejar_path"):
+        adapter.check_touchpoints()
+
+
+def test_trust_expiry_reads_the_hsa_trust_cookie(tmp_path: Path) -> None:
+    jar = _account_jar(
+        tmp_path / "cookies",
+        [
+            make_cookie("X-APPLE-WEBAUTH-TOKEN", SESSION_AT),
+            make_cookie(TRUST_COOKIE, TRUST_AT),
+            make_cookie("X-APPLE-DS-WEB-SESSION-TOKEN", SESSION_AT),
+        ],
+    )
+    assert jar.name == "userexamplecom"  # pyicloud's file name: the Apple ID's word characters
+    icloud = offline_service(str(tmp_path / "cookies"))
+    assert adapter.trust_expiry(icloud) == TRUST_AT
+
+
+def test_trust_expiry_is_none_without_the_cookie(tmp_path: Path) -> None:
+    _account_jar(tmp_path / "cookies", [make_cookie("X-APPLE-WEBAUTH-TOKEN", SESSION_AT)])
+    assert adapter.trust_expiry(offline_service(str(tmp_path / "cookies"))) is None
+    assert adapter.trust_expiry(offline_service(str(tmp_path / "empty"))) is None
+
+
+def test_trust_expiry_takes_the_latest_copy(tmp_path: Path) -> None:
+    older = datetime(2026, 8, 1, tzinfo=UTC)  # an expired copy kept by ignore_expires
+    _account_jar(
+        tmp_path / "cookies",
+        [
+            make_cookie(TRUST_COOKIE, older, domain=".example.org"),
+            make_cookie(TRUST_COOKIE, TRUST_AT),
+        ],
+    )
+    assert adapter.trust_expiry(offline_service(str(tmp_path / "cookies"))) == TRUST_AT
+
+
+def test_trust_expiry_falls_back_to_the_jar_file(tmp_path: Path) -> None:
+    jar = _account_jar(tmp_path / "cookies", [make_cookie(TRUST_COOKIE, TRUST_AT)])
+    no_session = SimpleNamespace(cookiejar_path=str(jar))  # in-memory jar not exposed
+    assert adapter.trust_expiry(no_session) == TRUST_AT  # type: ignore[arg-type]
+    garbage = tmp_path / "garbage"
+    garbage.write_text("not a cookie jar\n")
+    assert adapter.trust_expiry(SimpleNamespace(cookiejar_path=str(garbage))) is None  # type: ignore[arg-type]
+    assert adapter.trust_expiry(FakeICloud()) is None  # type: ignore[arg-type]
+
+
+def test_begin_renewal_points_the_job_at_a_fresh_dir(tmp_path: Path) -> None:
+    cookie_dir = tmp_path / "cookies"
+    old_jar = _account_jar(cookie_dir, [make_cookie(TRUST_COOKIE, TRUST_AT)])
+    stale = cookie_dir / ".renew-killed"
+    stale.mkdir()
+    (stale / "userexamplecom").write_text("left by a killed renewal")
+    spec = _spec("auth", cookie_dir=str(cookie_dir), interactive=True, renew=True)
+    renewal = adapter.begin_renewal(spec)
+    fresh = Path(renewal.cookie_dir)
+    assert fresh.parent == cookie_dir and fresh.name.startswith(".renew-")
+    assert fresh.is_dir() and list(fresh.iterdir()) == []
+    assert not stale.exists()
+    assert old_jar.is_file()  # the account's files stay until commit
+    assert renewal.client_id == spec.client_id and renewal.apple_id == spec.apple_id
+    assert renewal.renew and renewal.interactive and renewal.mode == "auth"
+
+
+def test_commit_renewal_replaces_the_account_files(tmp_path: Path) -> None:
+    cookie_dir = tmp_path / "cookies"
+    old_jar = _account_jar(cookie_dir, [make_cookie(TRUST_COOKIE, SESSION_AT)])
+    old_session = cookie_dir / "userexamplecom.session"
+    old_session.write_text(json.dumps({"client_id": FAKE_CLIENT_ID, "trust_token": "old"}))
+    renewal = adapter.begin_renewal(_spec("auth", cookie_dir=str(cookie_dir)))
+    icloud = offline_service(renewal.cookie_dir)
+    write_jar(icloud.cookiejar_path, [make_cookie(TRUST_COOKIE, TRUST_AT)])
+    new_session = {"client_id": FAKE_CLIENT_ID, "trust_token": "new"}
+    Path(icloud.session_path).write_text(json.dumps(new_session))
+    adapter.commit_renewal(icloud, str(cookie_dir))
+    adapter.discard_renewal(renewal)
+    assert json.loads(old_session.read_text())["trust_token"] == "new"
+    assert adapter.trust_expiry(offline_service(str(cookie_dir))) == TRUST_AT
+    assert sorted(p.name for p in cookie_dir.iterdir()) == [old_jar.name, old_session.name]
+
+
+def test_commit_renewal_without_both_files_keeps_the_old_ones(tmp_path: Path) -> None:
+    cookie_dir = tmp_path / "cookies"
+    old_jar = _account_jar(cookie_dir, [make_cookie(TRUST_COOKIE, SESSION_AT)])
+    before = old_jar.read_bytes()
+    renewal = adapter.begin_renewal(_spec("auth", cookie_dir=str(cookie_dir)))
+    icloud = offline_service(renewal.cookie_dir)
+    write_jar(icloud.cookiejar_path, [make_cookie(TRUST_COOKIE, TRUST_AT)])  # no session file
+    with pytest.raises(RuntimeError, match="missing"):
+        adapter.commit_renewal(icloud, str(cookie_dir))
+    adapter.discard_renewal(renewal)
+    assert old_jar.read_bytes() == before
+    assert not Path(renewal.cookie_dir).exists()
+
+
+def test_discard_renewal_refuses_the_account_dir(tmp_path: Path) -> None:
+    cookie_dir = tmp_path / "cookies"
+    jar = _account_jar(cookie_dir, [make_cookie(TRUST_COOKIE, TRUST_AT)])
+    with pytest.raises(ValueError, match="renewal"):
+        adapter.discard_renewal(_spec("auth", cookie_dir=str(cookie_dir)))
+    assert jar.is_file()
+
+
+def _fail_second_replace(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
+    """os.replace that raises on its second call (the session file); later calls are real."""
+    real = os.replace
+    calls: list[tuple[str, str]] = []
+
+    def replace(src: Any, dst: Any) -> None:
+        calls.append((str(src), str(dst)))
+        if len(calls) == 2:
+            raise OSError(28, "No space left on device")
+        real(src, dst)
+
+    monkeypatch.setattr(adapter.os, "replace", replace)
+    return calls
+
+
+def _renewed(cookie_dir: Path) -> tuple[Any, Any]:
+    renewal = adapter.begin_renewal(_spec("auth", cookie_dir=str(cookie_dir)))
+    icloud = offline_service(renewal.cookie_dir)
+    write_jar(icloud.cookiejar_path, [make_cookie(TRUST_COOKIE, TRUST_AT)])
+    Path(icloud.session_path).write_text(json.dumps({"trust_token": "new"}))
+    return renewal, icloud
+
+
+def test_commit_renewal_puts_the_original_pair_back_when_a_move_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cookie_dir = tmp_path / "cookies"
+    _account_jar(cookie_dir, [make_cookie(TRUST_COOKIE, SESSION_AT)])
+    (cookie_dir / "userexamplecom.session").write_text(json.dumps({"trust_token": "old"}))
+    before = {p.name: p.read_bytes() for p in cookie_dir.iterdir()}
+    renewal, icloud = _renewed(cookie_dir)
+    calls = _fail_second_replace(monkeypatch)
+    with pytest.raises(OSError, match="No space"):
+        adapter.commit_renewal(icloud, str(cookie_dir))
+    assert len(calls) == 3  # jar moved, session failed, jar put back
+    adapter.discard_renewal(renewal)
+    assert {p.name: p.read_bytes() for p in cookie_dir.iterdir()} == before
+
+
+def test_commit_renewal_removes_a_file_the_account_did_not_have(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cookie_dir = tmp_path / "cookies"
+    cookie_dir.mkdir()
+    (cookie_dir / "userexamplecom.session").write_text(json.dumps({"trust_token": "old"}))
+    renewal, icloud = _renewed(cookie_dir)  # no jar in the account: nothing to keep for it
+    _fail_second_replace(monkeypatch)
+    with pytest.raises(OSError):
+        adapter.commit_renewal(icloud, str(cookie_dir))
+    adapter.discard_renewal(renewal)
+    assert [p.name for p in cookie_dir.iterdir()] == ["userexamplecom.session"]
+    assert json.loads((cookie_dir / "userexamplecom.session").read_text())["trust_token"] == "old"
+
+
+def test_commit_renewal_success_leaves_no_kept_originals(tmp_path: Path) -> None:
+    cookie_dir = tmp_path / "cookies"
+    _account_jar(cookie_dir, [make_cookie(TRUST_COOKIE, SESSION_AT)])
+    (cookie_dir / "userexamplecom.session").write_text(json.dumps({"trust_token": "old"}))
+    renewal, icloud = _renewed(cookie_dir)
+    adapter.commit_renewal(icloud, str(cookie_dir))
+    assert sorted(p.name for p in Path(renewal.cookie_dir).iterdir()) == [
+        "userexamplecom.orig", "userexamplecom.session.orig"
+    ]  # the kept originals, removed with the renewal dir
+    adapter.discard_renewal(renewal)
+    assert sorted(p.name for p in cookie_dir.iterdir()) == [
+        "userexamplecom", "userexamplecom.session"
+    ]
+    assert json.loads((cookie_dir / "userexamplecom.session").read_text())["trust_token"] == "new"

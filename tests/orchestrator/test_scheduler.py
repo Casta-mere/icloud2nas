@@ -922,3 +922,67 @@ async def test_a_store_symlinked_to_another_library_fails_the_run_before_any_cho
         assert run.status == "failed" and run.error_kind == "internal"
         assert "symlink" in (run.error_message or "")
     assert not any(p.startswith(str(other.parent)) or p.startswith(str(folder)) for p in chowned)
+
+
+# -- a restart during a renewal (立即续期) must not leave the account awaiting a code --------------
+
+
+def _stale_auth(world: dict[str, Any], *, account_status: str, stats: dict[str, Any]) -> str:
+    """An auth run the previous process left running, its account in `account_status`."""
+    with world["store"].session() as s:
+        run = repo.create_run(
+            s, account_id=world["小明_acc"], library_id=None, mode="auth", trigger="reauth"
+        )
+        run.status = "running"
+        run.stats_json = json.dumps(stats)
+        account = repo.get_account(s, world["小明_acc"])
+        assert account is not None
+        account.status = account_status
+        return run.id
+
+
+async def _restart(world: dict[str, Any]) -> None:
+    stop = asyncio.Event()
+    stop.set()  # only the startup sweep runs
+    await asyncio.wait_for(world["sched"].run_forever(stop), 5)
+
+
+def _account_status(world: dict[str, Any]) -> str:
+    with world["store"].session() as s:
+        account = repo.get_account(s, world["小明_acc"])
+        assert account is not None
+        return account.status
+
+
+async def test_startup_puts_back_an_account_a_renewal_left_awaiting_a_code(
+    world: dict[str, Any],
+) -> None:
+    run_id = _stale_auth(world, account_status="awaiting_code", stats={"renew_from": "ok"})
+    await _restart(world)
+    with world["store"].session() as s:
+        run = repo.get_run(s, run_id)
+        assert run is not None and run.status == "failed" and run.error_kind == "killed"
+    assert _account_status(world) == "ok"
+    assert ("account.updated", {"account_id": world["小明_acc"]}) in world["seen"]
+    due = {job.library_id for job in world["sched"].due_jobs()}
+    assert world["小明"] in due  # schedulable again
+
+
+async def test_startup_leaves_a_plain_reauth_as_before(world: dict[str, Any]) -> None:
+    run_id = _stale_auth(world, account_status="awaiting_code", stats={})
+    await _restart(world)
+    with world["store"].session() as s:
+        run = repo.get_run(s, run_id)
+        assert run is not None and run.status == "failed"
+    assert _account_status(world) == "awaiting_code"
+    assert not any(t == "account.updated" for t, _ in world["seen"])
+
+
+@pytest.mark.parametrize("moved_to", ["ok", "password_rejected", "needs_reauth"])
+async def test_startup_leaves_an_account_something_else_moved(
+    world: dict[str, Any], moved_to: str
+) -> None:
+    _stale_auth(world, account_status=moved_to, stats={"renew_from": "new"})
+    await _restart(world)
+    assert _account_status(world) == moved_to
+    assert not any(t == "account.updated" for t, _ in world["seen"])

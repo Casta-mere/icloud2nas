@@ -5,6 +5,7 @@ import type { Account, EventPayloads } from "../../api/types";
 import { appEvents } from "../../events/useEventStream";
 import { useT, type Key } from "../../i18n";
 import { fmtDateTime } from "../../lib/format";
+import { sessionExpiry } from "../../lib/session";
 import { guardImeSubmit } from "../../lib/ime";
 import { Button } from "../../ui/Button";
 import { Chip, type ChipTone } from "../../ui/Chip";
@@ -84,6 +85,7 @@ export function AccountRow({ account, onDelete }: { account: Account; onDelete: 
   }, [flow.sessionStillValid]);
 
   const chip = statusChip(account.status);
+  const expiry = account.status === "ok" ? sessionExpiry(account) : null;
   const pick = (what: Editing) => {
     setMenu(false);
     setEditing(what);
@@ -148,6 +150,14 @@ export function AccountRow({ account, onDelete }: { account: Account; onDelete: 
             <span className="font-mono">{account.apple_id}</span> · {account.region}
             {ownerText ? ` · ${ownerText}` : ""}
             {account.last_auth_ok_at ? ` · ${t("last-login", { time: fmtDateTime(account.last_auth_ok_at) })}` : ""}
+            {expiry ? (
+              <>
+                {" · "}
+                <span data-tone={expiry.warn ? "warn" : "neutral"} className={expiry.warn ? "font-bold text-[#9a3412]" : ""}>
+                  {t(expiry.key, { n: expiry.days })}
+                </span>
+              </>
+            ) : null}
           </div>
         </div>
         <div className="flex flex-wrap gap-2">

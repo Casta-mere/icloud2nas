@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -450,3 +450,69 @@ def test_unattributed_run_publishes_zero_account_failures(world: dict[str, Any])
     with world["store"].session() as s:
         acc = repo.get_account(s, world["account"])
         assert acc is not None and acc.failures == 3
+
+
+TRUST_ISO = "2027-01-19T09:12:13+00:00"
+TRUST_AT = datetime(2027, 1, 19, 9, 12, 13, tzinfo=UTC)
+DONE = {"ev": "done", "stats": {}}
+
+
+def _expiry(world: dict[str, Any]) -> tuple[datetime | None, bool]:
+    with world["store"].session() as s:
+        acc = repo.get_account(s, world["account"])
+        assert acc is not None
+        return acc.session_expires_at, acc.session_expiry_estimated
+
+
+def test_finish_run_stores_the_trust_cookie_expiry(world: dict[str, Any]) -> None:
+    events = [{"ev": "started"}, {"ev": "session", "trust_expires": TRUST_ISO}, DONE]
+    _finish(world, "auth", WorkerResult(0, events, DONE), library=False)
+    assert _expiry(world) == (TRUST_AT, False)
+    assert _last(world["seen"], "account.updated")["account_id"] == world["account"]
+
+
+def test_finish_run_estimates_60_days_after_an_accepted_code(world: dict[str, Any]) -> None:
+    events = [
+        {"ev": "started"},
+        {"ev": "need_mfa"},
+        {"ev": "mfa_result", "ok": False, "error": "wrong"},
+        {"ev": "mfa_result", "ok": True},
+        {"ev": "session", "trust_expires": None},
+        DONE,
+    ]
+    before = datetime.now(UTC)
+    _finish(world, "auth", WorkerResult(0, events, DONE), library=False)
+    expires, estimated = _expiry(world)
+    assert estimated is True and expires is not None
+    assert before + timedelta(days=60) <= expires <= datetime.now(UTC) + timedelta(days=60)
+
+
+def test_finish_run_keeps_the_expiry_without_cookie_or_code(world: dict[str, Any]) -> None:
+    events = [{"ev": "started"}, {"ev": "session", "trust_expires": TRUST_ISO}, DONE]
+    _finish(world, "auth", WorkerResult(0, events, DONE), library=False)
+    sync_done = {"ev": "done", "stats": {"downloaded": 0, "trashed": 0, "full": False}}
+    plain = [{"ev": "started"}, {"ev": "session", "trust_expires": None}, sync_done]
+    _finish(world, "sync", WorkerResult(0, plain, sync_done))
+    assert _expiry(world) == (TRUST_AT, False)
+    _finish(world, "sync", WorkerResult(0, [{"ev": "started"}, sync_done], sync_done))
+    assert _expiry(world) == (TRUST_AT, False)  # an older worker without `session`
+    bad = [{"ev": "started"}, {"ev": "session", "trust_expires": "soon"}, sync_done]
+    _finish(world, "sync", WorkerResult(0, bad, sync_done))
+    assert _expiry(world) == (TRUST_AT, False)
+
+
+def test_finish_run_cookie_beats_the_estimate_and_failures_change_nothing(
+    world: dict[str, Any],
+) -> None:
+    renewed = [
+        {"ev": "started"},
+        {"ev": "need_mfa"},
+        {"ev": "mfa_result", "ok": True},
+        {"ev": "session", "trust_expires": "2027-02-01T00:00:00Z"},
+        DONE,
+    ]
+    _finish(world, "auth", WorkerResult(0, renewed, DONE), library=False)
+    assert _expiry(world) == (datetime(2027, 2, 1, tzinfo=UTC), False)
+    failed = [{"ev": "started"}, {"ev": "mfa_result", "ok": True}, {"ev": "error", "kind": "x"}]
+    _finish(world, "auth", WorkerResult(1, failed, failed[-1]), library=False)
+    assert _expiry(world) == (datetime(2027, 2, 1, tzinfo=UTC), False)

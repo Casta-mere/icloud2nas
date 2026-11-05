@@ -18,6 +18,7 @@ NOTIFY_EVENTS = (
     "plan_pending",
     "space_low",
     "first_full",
+    "session_expiring",
 )
 INTERNAL_KEYS = frozenset({"admin_password_hash", "admin_password_set_at", "access_mode"})
 

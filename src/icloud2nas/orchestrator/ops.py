@@ -324,15 +324,21 @@ class Ops:
         self._discovering.discard(account_id)
         self.scheduler.release_account(account_id, owner)
 
-    async def start_auth(self, account_id: str, *, discover: bool = True) -> str:
+    async def start_auth(
+        self, account_id: str, *, discover: bool = True, renew: bool = False
+    ) -> str:
+        """Interactive login (reauth). `renew` logs in so that Apple asks for a code and moves
+        the session expiry; the libraries are known already, so no discovery follows it."""
         auth_owner = f"auth:{account_id}"
         self._claim(account_id, auth_owner)  # before the first await: no window for a 2nd claim
         try:
-            session = await self.onboarding.start_auth(account_id, trigger="reauth")
+            session = await self.onboarding.start_auth(
+                account_id, trigger="reauth", renew=renew
+            )
         finally:
             # from here on onboarding.sessions keeps the account busy
             self.scheduler.release_account(account_id, auth_owner)
-        if discover:
+        if discover and not renew:
             owner = f"discovery:{account_id}"
             self.scheduler.hold_account(account_id, owner)  # busy through discovery, no gap
             self._discovering.add(account_id)

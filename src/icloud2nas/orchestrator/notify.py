@@ -29,6 +29,7 @@ WINDOWS: dict[str, timedelta | None] = {
     "plan_pending": DAY,
     "space_low": DAY,
     "first_full": None,
+    "session_expiring": None,  # once per (account, threshold, expiry): a renewal starts over
 }
 
 TITLE_NEEDS_CODE = "icloud2nas：{name} 需要验证码 / needs a 2FA code"
@@ -59,6 +60,15 @@ BODY_SPACE_LOW = (
 TITLE_FIRST_FULL = "icloud2nas：{name} 初次全量完成 / first full sync complete"
 BODY_FIRST_FULL = (
     "该图库已完整镜像一次。/ The library has been mirrored in full for the first time."
+)
+TITLE_SESSION_EXPIRING = (
+    "icloud2nas：{name} 的 Apple 会话 {days} 天内到期 / Apple session expires within {days_en}"
+)
+BODY_SESSION_EXPIRING = (
+    "到期后同步会停下，直到重新输入验证码。请打开网页，在账号卡片上点「立即续期」提前输入验证码。/ "
+    "When it lapses, syncing stops until a new 2FA code is entered. Open the web page and use "
+    "Renew now on the account card to enter a code early.\n"
+    "到期时间 / expires: {when}{estimated}"
 )
 
 
@@ -163,6 +173,8 @@ class Notifier:
                     TITLE_PLAN_PENDING.format(name=library.display_name),
                     BODY_PLAN_PENDING.format(extraneous=payload.get("extraneous", "?")),
                 )
+            if topic == "session.expiring":
+                return self._classify_session(s, payload)
             if topic == "space.low":
                 return (
                     "space_low",
@@ -205,6 +217,25 @@ class Notifier:
                 reason += "\n" + run.error_message
             return "repeated_failure", subject, TITLE_REPEATED_FAILURE.format(name=name), reason
         return None
+
+    @staticmethod
+    def _classify_session(s: Any, payload: dict[str, Any]) -> tuple[str, str, str, str] | None:
+        account = repo.get_account(s, str(payload.get("account_id")))
+        if account is None:
+            return None
+        days = int(payload.get("days", 0))
+        expires_at = str(payload.get("expires_at", ""))
+        title = TITLE_SESSION_EXPIRING.format(
+            name=account.display_name,
+            days=days,
+            days_en="a day" if days == 1 else f"{days} days",
+        )
+        reason = BODY_SESSION_EXPIRING.format(
+            when=payload.get("expires_local") or expires_at,
+            estimated="（估计 / estimated）" if payload.get("estimated") else "",
+        )
+        # the threshold and the expiry are in the key: each fires once, a renewal fires anew
+        return "session_expiring", f"{account.id}:{days}d:{expires_at}", title, reason
 
     async def _deliver(self, event: str, subject: str, title: str, body: str) -> None:
         try:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -272,3 +273,36 @@ async def test_real_network_is_refused_in_tests(config: Config) -> None:
     state = build_state(config, make_env(config))
     with pytest.raises(AssertionError, match="reach the network"):
         await state.updates.check()
+
+
+def test_metrics_export_the_session_expiry_per_account(api: tuple[TestClient, AppState]) -> None:
+    client, state = api
+    expires = datetime(2027, 1, 19, 9, 12, 13, tzinfo=UTC)
+    later = datetime(2027, 2, 1, tzinfo=UTC)
+    with state.store.session() as s:
+        first = repo.create_account(
+            s, display_name="小明", apple_id="a@example.com", region="cn",
+            password_enc=b"x", client_id="c1",
+        )
+        first.status = "ok"
+        first.session_expires_at = expires
+        twin = repo.create_account(  # display names are not unique
+            s, display_name="小明", apple_id="c@example.com", region="cn",
+            password_enc=b"x", client_id="c3",
+        )
+        twin.status = "needs_reauth"
+        twin.session_expires_at = later
+        repo.create_account(
+            s, display_name="小红", apple_id="b@example.com", region="cn",
+            password_enc=b"x", client_id="c2",
+        )
+        s.flush()
+        first_id, twin_id = first.id, twin.id
+    text = client.get("/metrics").text
+    assert "# TYPE i2n_account_session_expiry_timestamp_seconds gauge" in text
+    name = "i2n_account_session_expiry_timestamp_seconds"
+    assert f'{name}{{account_id="{first_id}",account="小明"}} {expires.timestamp()}' in text
+    assert f'{name}{{account_id="{twin_id}",account="小明"}} {later.timestamp()}' in text
+    samples = [line for line in text.splitlines() if line.startswith(name + "{")]
+    assert len(samples) == 2  # one series each, no status label; 小红's expiry is unknown
+    assert all("status=" not in line for line in samples)

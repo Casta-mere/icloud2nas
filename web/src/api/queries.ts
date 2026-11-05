@@ -181,6 +181,13 @@ export const useStartAuth = () =>
     [keys.accounts, keys.runsAll, keys.status],
   );
 
+/** `/renew`: an auth run that makes Apple ask for a code and trust the login anew. */
+export const useRenewSession = () =>
+  useAction(
+    (id: string) => request<{ run_id: string }>("POST", `/api/accounts/${enc(id)}/renew`),
+    [keys.accounts, keys.runsAll, keys.status],
+  );
+
 export const useSubmitCode = () =>
   useAction(
     ({ id, code }: { id: string; code: string }) =>

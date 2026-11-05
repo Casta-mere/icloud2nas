@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -384,3 +385,81 @@ def test_owner_cannot_change_after_the_account_is_added(
         assert _owner(client, target) == before
         assert client.get(f"/api/accounts/{target}").json()["display_name"] != "new"
     assert chowned == []
+
+
+def test_renew_starts_a_renewing_auth_run_without_discovery(
+    api: API, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    client, state = api
+    account_id, _ = onboard(client)
+    wait_for(client, lambda c: _status(c, account_id) == "ok" and not state.ops.discovering)
+    before = client.get(f"/api/accounts/{account_id}").json()
+    assert before["session_expires_at"] is None and before["session_expiry_estimated"] is False
+    calls = tmp_path / "calls.jsonl"
+    monkeypatch.setenv("FAKE_WORKER_CALLS", str(calls))
+    set_scenario(
+        monkeypatch,
+        {
+            "auth": {
+                "events": [
+                    {"ev": "started"},
+                    {"ev": "need_mfa"},
+                    {"wait_code": "123456"},
+                    {"ev": "mfa_result", "ok": True},
+                    {"ev": "session", "trust_expires": "2027-01-19T09:12:13+00:00"},
+                    {"ev": "done", "stats": {}},
+                ],
+                "exit": 0,
+            }
+        },
+    )
+    renew = client.post(f"/api/accounts/{account_id}/renew", json={})
+    assert renew.status_code == 202 and renew.json()["run_id"]
+    wait_for(client, lambda c: _status(c, account_id) == "awaiting_code")
+    assert client.post(f"/api/accounts/{account_id}/renew", json={}).status_code == 409
+    assert client.post(f"/api/accounts/{account_id}/auth", json={}).status_code == 409
+    code = client.post(f"/api/accounts/{account_id}/code", json={"code": "123456"})
+    assert code.status_code == 204
+    wait_for(client, lambda c: _status(c, account_id) == "ok")
+    after = client.get(f"/api/accounts/{account_id}").json()
+    assert after["session_expires_at"] == "2027-01-19T09:12:13+00:00"
+    assert after["session_expiry_estimated"] is False
+    jobs = [json.loads(line) for line in calls.read_text().splitlines()]
+    assert [(j["argv"][1], j["job"]["renew"], j["job"]["interactive"]) for j in jobs] == [
+        ("auth", True, True)
+    ]  # no list run: a renewal is not followed by library discovery
+    assert not state.ops.discovering and account_id not in state.scheduler.running_accounts
+    run = client.get(f"/api/runs/{renew.json()['run_id']}").json()
+    assert run["mode"] == "auth" and run["status"] == "ok"
+
+
+def test_renew_unknown_account_is_404(api: API) -> None:
+    client, _ = api
+    assert client.post("/api/accounts/zzzz/renew", json={}).status_code == 404
+
+
+def test_an_abandoned_renewal_keeps_the_account_syncing(
+    api: API, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, state = api
+    account_id, _ = onboard(client)
+    wait_for(client, lambda c: _status(c, account_id) == "ok" and not state.ops.discovering)
+    set_scenario(
+        monkeypatch,
+        {
+            "auth": {
+                "events": [
+                    {"ev": "started"},
+                    {"ev": "need_mfa"},
+                    {"ev": "error", "kind": "mfa_timeout", "message": "no code within 600s"},
+                ],
+                "exit": 1,
+            }
+        },
+    )
+    run_id = client.post(f"/api/accounts/{account_id}/renew", json={}).json()["run_id"]
+    wait_for(client, lambda c: c.get(f"/api/runs/{run_id}").json()["status"] == "failed")
+    wait_for(client, lambda c: account_id not in state.onboarding.sessions)
+    account = client.get(f"/api/accounts/{account_id}").json()
+    assert account["status"] == "ok" and account["failures"] == 0
+    assert account["backoff_until"] is None and account["last_error"] is None

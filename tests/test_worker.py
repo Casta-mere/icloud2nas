@@ -3,9 +3,10 @@ from __future__ import annotations
 import io
 import json
 import logging
+import os
 import threading
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -22,9 +23,17 @@ from pyicloud_ipd.exceptions import (
 
 from icloud2nas import worker as worker_mod
 from icloud2nas.engine.errors import ExitCode, HardExit
-from icloud2nas.engine.job import JOB_ENV, PASSWORD_ENV, FilePolicy
+from icloud2nas.engine.job import JOB_ENV, PASSWORD_ENV, FilePolicy, JobSpec
 from icloud2nas.engine.paths import expected_paths
-from tests.fakes import FakeICloud, FakeLibrary, make_asset
+from tests.fakes import (
+    TRUST_COOKIE,
+    FakeICloud,
+    FakeLibrary,
+    make_asset,
+    make_cookie,
+    offline_service,
+    write_jar,
+)
 
 BASE = {
     "account_id": "acc1",
@@ -120,8 +129,11 @@ def test_auth_interactive_round_trips_code(monkeypatch: pytest.MonkeyPatch) -> N
         "auth", {**BASE, "interactive": True}, stdin='{"code": "000000"}\n{"code": "123456"}\n'
     )
     assert rc == 0
-    assert evs(events) == ["started", "need_mfa", "mfa_result", "mfa_result", "done"]
+    assert evs(events) == [
+        "started", "need_mfa", "mfa_result", "mfa_result", "session", "done"
+    ]
     assert events[2]["ok"] is False and events[3]["ok"] is True
+    assert events[4]["trust_expires"] is None  # FakeICloud carries no cookie jar
     assert events[0]["mode"] == "auth" and events[0]["run_id"] == "run-1"
 
 
@@ -665,3 +677,142 @@ def test_sync_retry_forgets_the_previous_attempts_exception(
     assert rc == 1 and events[-1]["ev"] == "error" and events[-1]["kind"] == "icloudpd"
     (retry,) = [e for e in events if e["ev"] == "retry"]
     assert retry["of"] == 2 and retry["wait_s"] == 2 and len(sessions) == 2
+
+
+# -- session expiry and renewal ---------------------------------------------------------------
+
+TRUST_AT = datetime(2027, 1, 19, 9, 12, 13, tzinfo=UTC)
+OLD_TRUST_AT = datetime(2026, 11, 10, 9, 0, 0, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("mode", ["list", "sync"])
+def test_session_event_follows_every_login(
+    mode: str, photos_tree: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    photos, lib = photos_tree
+    icloud = FakeICloud()
+    icloud.photos.private_libraries = {"PrimarySync": icloud.photos}
+    monkeypatch.setattr(worker_mod.adapter, "authenticate", lambda *a: icloud)
+    monkeypatch.setattr(worker_mod.adapter, "run_sync", lambda *a, **k: 0)
+    seen: list[Any] = []
+    monkeypatch.setattr(
+        worker_mod.adapter, "trust_expiry", lambda i: seen.append(i) or TRUST_AT
+    )
+    rc, events = run_main(mode, _sync_job(photos, lib))
+    assert rc == 0 and seen == [icloud]
+    session = [e for e in events if e["ev"] == "session"]
+    assert session == [{**session[0], "trust_expires": "2027-01-19T09:12:13+00:00"}]
+    assert evs(events).index("session") == 1  # right after the login, before the work
+
+
+def _account_files(cookie_dir: Path, trust_at: datetime, token: str) -> None:
+    cookie_dir.mkdir(parents=True, exist_ok=True)
+    icloud = offline_service(str(cookie_dir), BASE["apple_id"])
+    write_jar(icloud.cookiejar_path, [make_cookie(TRUST_COOKIE, trust_at)])
+    Path(icloud.session_path).write_text(json.dumps({"trust_token": token}))
+
+
+def renewing_login(code: str, seen: list[JobSpec], *, write: bool = True) -> Callable[..., Any]:
+    """Like Apple on an empty jar: asks for a code, then the cookie dir holds a new trust."""
+    mfa = fake_login_with_mfa(code)
+
+    def authenticate(spec: JobSpec, *args: Any) -> Any:
+        seen.append(spec)
+        if write:  # pyicloud saves after every request, so files appear before the code
+            _account_files(Path(spec.cookie_dir), TRUST_AT, "new")
+        mfa(spec, *args)
+        return offline_service(spec.cookie_dir, spec.apple_id)
+
+    return authenticate
+
+
+def test_renew_logs_in_from_a_fresh_dir_and_swaps_the_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cookie_dir = tmp_path / "cookies"
+    _account_files(cookie_dir, OLD_TRUST_AT, "old")
+    seen: list[JobSpec] = []
+    monkeypatch.setattr(worker_mod.adapter, "authenticate", renewing_login("123456", seen))
+    job = {**BASE, "cookie_dir": str(cookie_dir), "interactive": True, "renew": True}
+    rc, events = run_main("auth", job, stdin='{"code": "123456"}\n')
+    assert rc == 0
+    assert evs(events) == ["started", "need_mfa", "mfa_result", "session", "done"]
+    assert events[3]["trust_expires"] == "2027-01-19T09:12:13+00:00"
+    (renewal,) = seen
+    assert Path(renewal.cookie_dir).parent == cookie_dir and renewal.cookie_dir != str(cookie_dir)
+    assert renewal.client_id == BASE["client_id"]
+    account = offline_service(str(cookie_dir), BASE["apple_id"])
+    assert worker_mod.adapter.trust_expiry(account) == TRUST_AT
+    assert json.loads(Path(account.session_path).read_text()) == {"trust_token": "new"}
+    assert sorted(p.name for p in cookie_dir.iterdir()) == ["aicloudcom", "aicloudcom.session"]
+
+
+def test_failed_renewal_keeps_the_old_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cookie_dir = tmp_path / "cookies"
+    _account_files(cookie_dir, OLD_TRUST_AT, "old")
+    before = {p.name: p.read_bytes() for p in cookie_dir.iterdir()}
+    seen: list[JobSpec] = []
+    monkeypatch.setattr(worker_mod.adapter, "authenticate", renewing_login("123456", seen))
+    job = {
+        **BASE, "cookie_dir": str(cookie_dir), "interactive": True, "renew": True,
+        "mfa_timeout_s": 0,
+    }
+    rc, events = run_main("auth", job, stdin="")  # no code ever arrives
+    assert rc == 1 and events[-1]["kind"] == "mfa_timeout"
+    assert "session" not in evs(events)
+    assert {p.name: p.read_bytes() for p in cookie_dir.iterdir()} == before  # renewal dir gone
+    assert len(seen) == 1
+
+
+def test_renew_without_session_files_keeps_the_old_ones(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cookie_dir = tmp_path / "cookies"
+    _account_files(cookie_dir, OLD_TRUST_AT, "old")
+    before = {p.name: p.read_bytes() for p in cookie_dir.iterdir()}
+    seen: list[JobSpec] = []
+    login = renewing_login("123456", seen, write=False)
+    monkeypatch.setattr(worker_mod.adapter, "authenticate", login)
+    job = {**BASE, "cookie_dir": str(cookie_dir), "interactive": True, "renew": True}
+    rc, events = run_main("auth", job, stdin='{"code": "123456"}\n')
+    assert rc == 1 and events[-1]["ev"] == "error" and "missing" in events[-1]["message"]
+    assert {p.name: p.read_bytes() for p in cookie_dir.iterdir()} == before
+
+
+def test_plain_auth_keeps_the_account_cookie_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[str] = []
+    monkeypatch.setattr(
+        worker_mod.adapter, "authenticate", lambda spec, *a: seen.append(spec.cookie_dir)
+    )
+    monkeypatch.setattr(worker_mod.adapter, "trust_expiry", lambda _i: None)
+    rc, _events = run_main("auth", {**BASE, "cookie_dir": str(tmp_path), "interactive": True})
+    assert rc == 0 and seen == [str(tmp_path)]
+
+
+def test_renew_whose_second_file_move_fails_keeps_the_old_pair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cookie_dir = tmp_path / "cookies"
+    _account_files(cookie_dir, OLD_TRUST_AT, "old")
+    before = {p.name: p.read_bytes() for p in cookie_dir.iterdir()}
+    seen: list[JobSpec] = []
+    monkeypatch.setattr(worker_mod.adapter, "authenticate", renewing_login("123456", seen))
+    real = os.replace
+    calls: list[str] = []
+
+    def replace(src: Any, dst: Any) -> None:
+        calls.append(str(dst))
+        if len(calls) == 2:
+            raise OSError(5, "Input/output error")
+        real(src, dst)
+
+    monkeypatch.setattr(worker_mod.adapter.os, "replace", replace)
+    job = {**BASE, "cookie_dir": str(cookie_dir), "interactive": True, "renew": True}
+    rc, events = run_main("auth", job, stdin='{"code": "123456"}\n')
+    assert rc == 1 and events[-1]["ev"] == "error" and "Input/output" in events[-1]["message"]
+    assert "session" not in evs(events) and "done" not in evs(events)
+    assert {p.name: p.read_bytes() for p in cookie_dir.iterdir()} == before  # no .renew-* left

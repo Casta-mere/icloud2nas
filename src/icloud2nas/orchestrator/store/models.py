@@ -63,6 +63,9 @@ class Account(Base):
     primary_dir: Mapped[str | None] = mapped_column(String(500), default=None)
     owner_uid: Mapped[int | None] = mapped_column(default=None)  # spec §16.3
     owner_gid: Mapped[int | None] = mapped_column(default=None)
+    # when Apple stops trusting the session (its HSA-TRUST cookie); estimated: code time + 60 d
+    session_expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime, default=None)
+    session_expiry_estimated: Mapped[bool] = mapped_column(default=False)
 
     libraries: Mapped[list[Library]] = relationship(back_populates="account")
 

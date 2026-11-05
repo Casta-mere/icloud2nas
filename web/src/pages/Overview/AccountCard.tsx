@@ -4,6 +4,7 @@ import type { Account, Library, Plan, Run } from "../../api/types";
 import { useCodeFlow } from "../../events/useCodeFlow";
 import { useT, type Key } from "../../i18n";
 import { fmtTime } from "../../lib/format";
+import { sessionExpiry } from "../../lib/session";
 import { libraryChip } from "../../lib/status";
 import { Button } from "../../ui/Button";
 import { Card, type CardTone } from "../../ui/Card";
@@ -54,6 +55,12 @@ export function AccountCard({
     setForceCode(false);
     flow.resend();
   };
+  // 立即续期: the renewal login asks for a code; the account turns awaiting_code and the code card shows
+  const renew = () => {
+    setForceCode(false);
+    flow.renew();
+  };
+  const expiry = account.status === "ok" ? sessionExpiry(account) : null;
 
   const runningLibs = new Set(runs.filter((r) => r.status === "running").map((r) => r.library_id));
   const pendingLibs = new Set(plans.filter((p) => p.status === "pending").map((p) => p.library_id));
@@ -66,6 +73,19 @@ export function AccountCard({
           <Chip tone={chip.tone}>{t(chip.key)}</Chip>
         </h2>
         <p className="m-0 mt-0.5 truncate font-mono text-[12px] text-[#6b7280]">{account.apple_id}</p>
+
+        {expiry && !showCode ? (
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <Chip tone={expiry.warn ? "warn" : "neutral"}>{t(expiry.key, { n: expiry.days })}</Chip>
+            <Button
+              variant={expiry.warn ? "primary" : "ghost"}
+              onClick={renew}
+              disabled={flow.resending || flow.authWaiting}
+            >
+              {t("renew-now")}
+            </Button>
+          </div>
+        ) : null}
 
         {showCode ? (
           <div className="mt-3">

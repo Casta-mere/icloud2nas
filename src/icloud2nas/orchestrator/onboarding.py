@@ -21,7 +21,7 @@ from icloud2nas.orchestrator.jobs import (
     build_job,
     validate_job,
 )
-from icloud2nas.orchestrator.runs import RunManager
+from icloud2nas.orchestrator.runs import EXIT_OK, EXIT_PASSWORD, RunManager
 from icloud2nas.orchestrator.settings import Settings
 from icloud2nas.orchestrator.store import repo
 from icloud2nas.orchestrator.store.db import Store
@@ -176,7 +176,10 @@ class Onboarding:
 
     # -- interactive auth ----------------------------------------------------------------------
 
-    async def start_auth(self, account_id: str, *, trigger: str = "onboarding") -> AuthSession:
+    async def start_auth(
+        self, account_id: str, *, trigger: str = "onboarding", renew: bool = False
+    ) -> AuthSession:
+        """Start an interactive login; `renew` makes Apple ask for a code and trust us anew."""
         if account_id in self.sessions:
             raise ValueError(f"an auth session is already active for {account_id}")
         with self.store.session() as s:
@@ -184,13 +187,24 @@ class Onboarding:
             if account is None:
                 raise KeyError(account_id)
             job = build_job(
-                self.config, account, None, interactive=True, policy=self.settings.policy()
+                self.config,
+                account,
+                None,
+                interactive=True,
+                renew=renew,
+                policy=self.settings.policy(),
             )
             password = self.password_for(account)
             owner = owners.owner_for(account)
+            status_before = account.status
         validate_job("auth", job)
         run_id = self.runs.start_run(
-            account_id=account_id, library_id=None, mode="auth", trigger=trigger
+            account_id=account_id,
+            library_id=None,
+            mode="auth",
+            trigger=trigger,
+            # persisted, so a restart mid-renewal can still put the account back (startup sweep)
+            stats={repo.RENEW_FROM: status_before} if renew else None,
         )
         prompted = asyncio.Event()
 
@@ -208,14 +222,15 @@ class Onboarding:
             owners.prepare_spawn(self.config, account_id, owner)
             await process.start()
         except Exception as exc:
-            self.runs.finish_run(
-                run_id,
-                WorkerResult(
-                    exit_code=1,
-                    events=[],
-                    terminal={"ev": "error", "kind": "spawn", "message": str(exc)},
-                ),
+            spawn_failed = WorkerResult(
+                exit_code=1,
+                events=[],
+                terminal={"ev": "error", "kind": "spawn", "message": str(exc)},
             )
+            if renew:
+                self._finish_renewal(run_id, account_id, spawn_failed, status_before)
+            else:
+                self.runs.finish_run(run_id, spawn_failed)
             raise
         session = AuthSession(account_id, run_id, process, prompted, asyncio.Event())
         self.sessions[account_id] = session
@@ -223,11 +238,16 @@ class Onboarding:
         async def finish() -> None:
             try:
                 result = await process.wait(timeout_s=MFA_TIMEOUT_S + 60)
-                self.runs.finish_run(run_id, result)
+                if renew:
+                    self._finish_renewal(run_id, account_id, result, status_before)
+                else:
+                    self.runs.finish_run(run_id, result)
                 session.result = result
             except Exception as exc:  # noqa: BLE001 - the session must never wedge
                 log.exception("auth session for %s failed", account_id)
                 session.error = f"{type(exc).__name__}: {exc}"
+                if renew:
+                    self._restore_status(account_id, status_before)
             finally:
                 session.finished.set()
                 if self.sessions.get(account_id) is session:
@@ -235,6 +255,30 @@ class Onboarding:
 
         session.task = asyncio.create_task(finish())
         return session
+
+    def _finish_renewal(
+        self, run_id: str, account_id: str, result: WorkerResult, status_before: str
+    ) -> None:
+        """Record a renewal run. Only success and a rejected password speak for the account.
+
+        Anything else (no code in time, Apple unreachable, killed, a spawn failure) leaves the
+        account as it was when the renewal started: the worker kept its stored session, which
+        still works, so syncing must go on. The run itself is still recorded as failed.
+        """
+        decisive = not result.killed and result.exit_code in (EXIT_OK, EXIT_PASSWORD)
+        if not decisive:
+            self._restore_status(account_id, status_before)  # before run.finished goes out
+        self.runs.finish_run(run_id, result, account_state=decisive)
+
+    def _restore_status(self, account_id: str, status: str) -> None:
+        """Undo the renewal's `awaiting_code` (publishes account.status only on a change)."""
+        with self.store.session() as s:
+            account = repo.get_account(s, account_id)
+            changed = account is not None and account.status != status
+            if account is not None and changed:
+                account.status = status
+        if changed:
+            self.bus.publish("account.status", account_id=account_id, status=status)
 
     async def submit_code(self, account_id: str, code: str) -> None:
         session = self.sessions[account_id]

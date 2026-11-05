@@ -80,6 +80,7 @@ class JobSpec:
     target_dir: str | None = None
     plan_dir: str | None = None
     interactive: bool = False
+    renew: bool = False
     full: bool = False
     until_found: int = 50
     recent: int | None = None
@@ -135,6 +136,10 @@ class JobSpec:
             _ = spec.library_rel  # validates containment
         if mode == "reconcile" and not apply_plan and not spec.plan_dir:
             raise ValueError("reconcile needs plan_dir (or --apply-plan)")
+        if not isinstance(spec.renew, bool):
+            raise ValueError("renew must be a boolean")
+        if spec.renew and (mode != "auth" or not spec.interactive):
+            raise ValueError("renew is for interactive auth jobs only")
         return spec
 
     @classmethod
