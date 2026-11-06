@@ -84,18 +84,60 @@ the GitHub Release. Then update your hosts, as in [Updating](deploy.md#updating)
 ### The GitHub Release
 
 ci.yml's `github-release` job runs only once `publish` has succeeded, so a Release never points
-at an image that is not there. It runs
+at an image that is not there. It checks out the tag, then:
 
-    gh release create vX.Y.Z --verify-tag --generate-notes --title vX.Y.Z
+1. asks GitHub for the generated notes (`gh api repos/OWNER/REPO/releases/generate-notes`): the
+   pull requests merged since the previous Release, as `--generate-notes` would list them;
+2. reads each of those pull requests' body and keeps its `## Release notes` section
+   (`scripts/release_notes.py`);
+3. writes the notes and creates the Release:
 
-with the built-in `GITHUB_TOKEN` (`contents: write` on that job only; `RELEASE_TOKEN` is not
-used). The notes open with the image tags `publish` pushed, followed by GitHub's generated notes:
-the pull requests merged since the previous Release. When the Release already exists (a re-run of
-the tag's CI run), the job leaves it as it is.
+       gh release create vX.Y.Z --verify-tag --title vX.Y.Z --notes-file release-notes.md
+
+The Release page:
+
+    ## Summary          each listed pull request's Release notes section, in the order
+                        What's Changed lists them; no Summary at all when none has one
+    ## Image            the image tags `publish` pushed, and how to update a host
+    ## What's Changed   GitHub's generated notes, then the Full Changelog link
+
+The job uses the built-in `GITHUB_TOKEN` with `contents: write` (create the Release and its
+generated notes) and `pull-requests: read` (read the bodies), on that job only; `RELEASE_TOKEN`
+is not used. When the Release already exists (a re-run of the tag's CI run), the job leaves it as
+it is. If any `gh` call fails, the job fails before it creates the Release, so re-running the
+failed job is safe.
+
+#### Release notes in a pull request
+
+A pull request's body may carry a `## Release notes` section for whoever runs icloud2nas: what
+changes for them, and anything to do when upgrading, normally 1–3 bullets. Leave it empty for
+changes they won't notice (CI, docs, refactors). The
+[pull request template](../.github/pull_request_template.md) has it; `gh pr create --body` skips
+the template, so write it yourself there.
+
+```markdown
+## Release notes
+
+- The overview shows when each account's Apple session expires, with a Renew now button.
+- After upgrading, turn on Settings → Session expiring to get a warning a week before.
+
+## Why
+```
+
+- The heading is `## Release notes` in any case. The section runs to the next `#` or `##`
+  heading or the end of the body, so `###` headings inside it stay.
+- HTML comments are dropped (the template's hint is one) and so are the blank lines around the
+  rest, which is copied as Markdown, verbatim. A section that is then empty, or no section,
+  adds nothing.
+- The body is read when the Release is created, so it can still be edited after the merge until
+  the tag's CI run gets to `github-release`. After that, edit the Release page itself.
+- Pull requests merged before this convention have no section and show only under What's
+  Changed.
 
 v0.1.0 to v0.1.3 were tagged before this job existed and have no Release. The owner may create
-them by hand with the command above, oldest first so that the newest ends up as the latest
-Release. Do it before the next tag if that tag's generated notes should start at v0.1.3.
+them by hand with `gh release create vX.Y.Z --verify-tag --generate-notes --title vX.Y.Z`, oldest
+first so that the newest ends up as the latest Release. Do it before the next tag if that tag's
+generated notes should start at v0.1.3.
 
 ## One-time setup: `RELEASE_TOKEN`
 

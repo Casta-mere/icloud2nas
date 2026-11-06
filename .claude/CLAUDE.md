@@ -13,6 +13,10 @@ All AI knowledge files are centralized in [`.agent/`](../.agent/) at the project
   icloudpd is pinned; bump it only together with `check_touchpoints()` and a probe run.
 - Library files are never unlinked. Deletes go through `engine/trash.py`.
 - Never `git push` from an agent session; commit only after the owner confirms.
+- Pull request bodies carry a `## Release notes` section, copied onto the GitHub Release page:
+  1–3 bullets for whoever runs icloud2nas (what changes, anything to do when upgrading), left
+  empty when they won't notice. `gh pr create --body` skips `.github/pull_request_template.md`,
+  so write it yourself; see docs/release.md.
 - Web (`web/`): npm only inside Docker (`make web-*`; never `npm`/`node` on the host). No UI
   component library, form library or extra state library (TanStack Query only). User-facing
   strings only via `t()` (`web/src/i18n`, keys in both `zh.ts` and `en.ts`; an ESLint rule rejects
