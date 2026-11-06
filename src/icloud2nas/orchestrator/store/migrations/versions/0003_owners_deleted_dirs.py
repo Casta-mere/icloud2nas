@@ -30,6 +30,6 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_table("deleted_dirs")
-    with op.batch_alter_table("accounts") as batch:
-        batch.drop_column("owner_gid")
-        batch.drop_column("owner_uid")
+    # plain DROP COLUMN: a batch rebuild drops accounts, which foreign keys forbid (see 0004)
+    op.drop_column("accounts", "owner_gid")
+    op.drop_column("accounts", "owner_uid")
