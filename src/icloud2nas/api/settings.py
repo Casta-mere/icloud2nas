@@ -7,6 +7,7 @@ import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
+from pydantic import BaseModel
 
 from icloud2nas.api.auth import hash_password, require_session
 from icloud2nas.api.state import AppState
@@ -65,18 +66,27 @@ async def put_settings(body: dict[str, Any], request: Request) -> dict[str, Any]
     return _view(state)
 
 
+class NotifyTestBody(BaseModel):
+    # unsaved addresses to try (one per line); absent or null means the saved setting
+    apprise_urls: str | None = None
+
+
 @router.post("/notify/test")
-async def notify_test(request: Request) -> dict[str, bool]:
+async def notify_test(request: Request, body: NotifyTestBody | None = None) -> dict[str, bool]:
+    """Send a test notification. Never writes settings: the page saves after a successful test."""
     state = _state(request)
-    urls = [line.strip() for line in str(state.settings.get("apprise_urls")).splitlines()]
+    raw = body.apprise_urls if body else None
+    if raw is None:
+        raw = str(state.settings.get("apprise_urls"))
+    urls = [line.strip() for line in raw.splitlines()]
     urls = [u for u in urls if u]
     if not urls:
         raise ValueError("apprise_urls is empty")
-    body = "通知渠道工作正常。/ Notifications are working."
+    text = "通知渠道工作正常。/ Notifications are working."
     link = str(state.settings.get("public_url") or "").strip() or state.last_origin
     if link:
-        body += f"\n{link}"
+        text += f"\n{link}"
     sent = await asyncio.to_thread(
-        state.notifier.send, urls, "icloud2nas 测试通知 / test notification", body
+        state.notifier.send, urls, "icloud2nas 测试通知 / test notification", text
     )
     return {"sent": bool(sent)}

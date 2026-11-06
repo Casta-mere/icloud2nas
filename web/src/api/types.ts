@@ -144,6 +144,11 @@ export interface SettingsResponse {
 /** PUT /api/settings body: values are strings (booleans "1"/"0"); `admin_password: ""` clears it. */
 export type SettingsUpdate = Partial<Record<SettingsKey, string>> & { admin_password?: string };
 
+/** POST /api/notify/test body: addresses to try (one per line) instead of the saved ones; never saved by the call. */
+export interface NotifyTestBody {
+  apprise_urls?: string;
+}
+
 /** The last update check (`GET /api/status`; `POST /api/version/check` answers a fresh one). */
 export interface UpdateInfo {
   /** Newest plain `X.Y.Z` release on GHCR; null before any successful check. */

@@ -205,7 +205,7 @@ libraries at startup; trash of unknown folders is left in place and logged.
 |---|---|---|---|---|
 | GET | `/api/settings` | | `{values, admin_password_set, public_url_fallback}`; the fallback is the origin of the last authorised browser page load from a non-loopback host, used for notification links while `public_url` is empty | |
 | PUT | `/api/settings` | `{<key>: <value>, ..., admin_password?}`; values are strings (booleans `1`/`0`); `admin_password: ""` clears it and switches to `lan`, a non-empty one switches `lan` to `wan` | same as GET | 400 unknown key, bad value, internal key, null |
-| POST | `/api/notify/test` | | `{sent}` | 400 `apprise_urls` empty |
+| POST | `/api/notify/test` | `{apprise_urls?}`: addresses to try, one per line, used instead of the saved setting (absent or `null` means the saved one); never saved here, the link in the message still comes from the saved `public_url` (or the fallback) | `{sent}` | 400 `apprise_urls` empty (after trimming blank lines) |
 
 Keys: `max_workers, min_free_gb, threads_per_worker, trash_retention_days, log_retention_runs,
 file_match_policy, live_photo_mov_filename_policy, keep_unicode_in_filenames, folder_structure,

@@ -11,12 +11,14 @@ import { QueryState } from "../../ui/QueryState";
 import { Toggle } from "../../ui/Toggle";
 import { AdminPassword } from "./AdminPassword";
 import { FieldRow } from "./FieldRow";
+import { SaveBar } from "./SaveBar";
 import { FIELDS, fromValues, validate, type Field, type FieldKey } from "./schema";
 import { VersionInfo } from "./VersionInfo";
 
 type DataKey = Exclude<FieldKey, "admin_password">;
 const DATA_FIELDS = FIELDS.filter((f) => f.kind !== "password");
 const inGroup = (g: Field["group"]) => DATA_FIELDS.filter((f) => f.group === g);
+const errorText = (e: Error) => (e instanceof ApiError ? e.detail : e.message);
 
 function Group({ id, title, children }: { id?: string; title: string; children: ReactNode }) {
   const heading = useId();
@@ -37,6 +39,8 @@ export function Settings() {
   const settings = useSettings();
   const put = usePutSettings();
   const notify = useNotifyTest();
+  // saves just apprise_urls after a successful test of an edited value
+  const saveUrls = usePutSettings();
   const [draft, setDraft] = useState<Partial<Record<DataKey, string>>>({});
   const [serverError, setServerError] = useState<{ key: string; detail: string } | null>(null);
   const { hash, key: visit } = useLocation();
@@ -72,10 +76,36 @@ export function Settings() {
     put.mutate(body, {
       onSuccess: () => setDraft({}),
       onError: (e) => {
-        const detail = e instanceof ApiError ? e.detail : e.message;
+        const detail = errorText(e);
         setServerError({ key: detail.split(":")[0] ?? "", detail });
       },
     });
+  };
+  // 发一条测试 sends what is in the box; an edited value that worked is saved on its own
+  const testNotify = () => {
+    const urls = valueOf("apprise_urls");
+    const edited = dirty.includes("apprise_urls");
+    saveUrls.reset();
+    notify.mutate(
+      { apprise_urls: urls },
+      {
+        onSuccess: ({ sent }) => {
+          if (!sent || !edited) return;
+          saveUrls.mutate(
+            { apprise_urls: urls },
+            {
+              onSuccess: () =>
+                setDraft((d) => {
+                  if (d.apprise_urls !== urls) return d; // typed on while saving: keep the newer text
+                  const next = { ...d };
+                  delete next.apprise_urls;
+                  return next;
+                }),
+            },
+          );
+        },
+      },
+    );
   };
 
   const row = (f: Field) => {
@@ -101,14 +131,13 @@ export function Settings() {
 
   const notifyFields = inGroup("notify");
   const events = notifyFields.filter((f) => f.kind === "toggle");
-  const notifyResult = notify.isPending
+  const testing = notify.isPending || saveUrls.isPending;
+  const notifyResult = testing
     ? ""
     : notify.error
-      ? notify.error instanceof ApiError
-        ? notify.error.detail
-        : notify.error.message
+      ? errorText(notify.error)
       : notify.data
-        ? t(notify.data.sent ? "notify-sent" : "notify-failed")
+        ? t(!notify.data.sent ? "notify-failed" : saveUrls.isSuccess ? "notify-sent-saved" : "notify-sent")
         : "";
   const unknownError =
     serverError && !DATA_FIELDS.some((f) => f.key === serverError.key) ? serverError.detail : null;
@@ -120,12 +149,18 @@ export function Settings() {
           {row(notifyFields[0] as Field)}
           <FormRow label="">
             <div className="flex flex-wrap items-center gap-2">
-              <Button variant="ghost" disabled={notify.isPending} onClick={() => notify.mutate()}>
+              <Button variant="ghost" disabled={testing} onClick={testNotify}>
                 {t("notify-test")}
               </Button>
               {notifyResult && (
                 <span role="status" className="min-w-0 text-xs text-[#6b7280]">
                   {notifyResult}
+                </span>
+              )}
+              {saveUrls.error && (
+                <span role="alert" className="min-w-0 text-xs text-[#9a3412]">
+                  {t("err-form")}
+                  {errorText(saveUrls.error)}
                 </span>
               )}
             </div>
@@ -156,21 +191,16 @@ export function Settings() {
           </Group>
         </div>
       </div>
-      <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
-        <span className="mr-auto text-xs text-[#6b7280]">{t("settings-note")}</span>
-        {unknownError && (
-          <span role="alert" className="text-xs text-[#9a3412]">
-            {t("err-form")}
-            {unknownError}
-          </span>
-        )}
-        <Button variant="ghost" disabled={dirty.length === 0} onClick={() => setDraft({})}>
-          {t("discard")}
-        </Button>
-        <Button variant="primary" disabled={dirty.length === 0 || invalid || put.isPending} onClick={save}>
-          {t("save-n", { n: dirty.length })}
-        </Button>
-      </div>
+      <SaveBar
+        count={dirty.length}
+        canSave={!invalid && !put.isPending && !saveUrls.isPending}
+        error={unknownError}
+        onDiscard={() => {
+          setServerError(null);
+          setDraft({});
+        }}
+        onSave={save}
+      />
     </div>
   );
 }
