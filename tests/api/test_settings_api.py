@@ -70,6 +70,63 @@ def test_notify_test_endpoint(api: API, sent: list[tuple[list[str], str, str]]) 
     assert body.startswith("通知渠道工作正常。/ Notifications are working.")
 
 
+def test_notify_test_sends_to_posted_urls_over_the_saved_ones(
+    api: API, sent: list[tuple[list[str], str, str]]
+) -> None:
+    client, _ = api
+    client.put(
+        "/api/settings",
+        json={"apprise_urls": "json://saved", "public_url": "https://photos.example"},
+    )
+    response = client.post(
+        "/api/notify/test", json={"apprise_urls": " json://draft-a \n\n json://draft-b\n"}
+    )
+    assert response.status_code == 200
+    assert response.json() == {"sent": True}
+    urls, _, body = sent[0]
+    assert urls == ["json://draft-a", "json://draft-b"]
+    # the link still comes from the saved public_url, not from the posted body
+    assert body.endswith("\nhttps://photos.example")
+
+
+def test_notify_test_without_urls_in_the_body_uses_the_saved_ones(
+    api: API, sent: list[tuple[list[str], str, str]]
+) -> None:
+    client, _ = api
+    client.put("/api/settings", json={"apprise_urls": "json://saved"})
+    assert client.post("/api/notify/test", json={}).json() == {"sent": True}
+    assert client.post("/api/notify/test", json={"apprise_urls": None}).json() == {"sent": True}
+    assert [urls for urls, _, _ in sent] == [["json://saved"], ["json://saved"]]
+
+
+def test_notify_test_posted_blank_urls_are_empty_even_when_saved_ones_exist(
+    api: API, sent: list[tuple[list[str], str, str]]
+) -> None:
+    client, _ = api
+    client.put("/api/settings", json={"apprise_urls": "json://saved"})
+    for blank in ("", "  \n\n \n"):
+        response = client.post("/api/notify/test", json={"apprise_urls": blank})
+        assert response.status_code == 400, repr(blank)
+        assert response.json() == {"error": "invalid", "detail": "apprise_urls is empty"}
+    assert sent == []
+
+
+def test_notify_test_never_writes_settings(
+    api: API, sent: list[tuple[list[str], str, str]]
+) -> None:
+    client, state = api
+    client.put("/api/settings", json={"apprise_urls": "json://saved"})
+    topics: list[str] = []
+    state.bus.subscribe(lambda topic, payload: topics.append(topic))
+    before = client.get("/api/settings").json()
+    assert client.post("/api/notify/test", json={"apprise_urls": "json://draft"}).status_code == 200
+    assert client.post("/api/notify/test", json={"apprise_urls": ""}).status_code == 400
+    assert client.get("/api/settings").json() == before
+    assert state.settings.get("apprise_urls") == "json://saved"
+    assert "settings.updated" not in topics
+    assert len(sent) == 1
+
+
 def test_put_rejects_internal_keys(api: API) -> None:
     client, state = api
     client.put("/api/settings", json={"admin_password": PASSWORD})
