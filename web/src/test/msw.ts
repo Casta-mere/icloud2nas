@@ -681,11 +681,14 @@ const handlers = [
   ),
   route("post", 
     "/api/notify/test",
-    guarded(() =>
-      db.settings.values.apprise_urls
+    guarded(async ({ request }) => {
+      // as the real server: posted addresses win over the saved ones; nothing is saved here
+      const body = (await request.json()) as { apprise_urls?: string | null };
+      const raw = body.apprise_urls ?? db.settings.values.apprise_urls;
+      return raw.split("\n").some((line) => line.trim() !== "")
         ? HttpResponse.json({ sent: true })
-        : err(400, "invalid", "apprise_urls is empty"),
-    ),
+        : err(400, "invalid", "apprise_urls is empty");
+    }),
   ),
 ];
 

@@ -13,6 +13,7 @@ import type {
   Library,
   LibraryPatch,
   NewAccount,
+  NotifyTestBody,
   Plan,
   PlanDetail,
   PlanStatus,
@@ -285,7 +286,7 @@ export const useSetAdminPassword = () => {
 };
 
 export const useNotifyTest = () =>
-  useAction<void, { sent: boolean }>(() => request<{ sent: boolean }>("POST", "/api/notify/test"), []);
+  useAction((body: NotifyTestBody) => request<{ sent: boolean }>("POST", "/api/notify/test", body), []);
 
 /** A fresh update check (joins one already running); the result lands on `/api/status`. */
 export const useCheckForUpdates = () =>

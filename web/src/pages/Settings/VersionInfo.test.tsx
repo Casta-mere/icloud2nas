@@ -176,7 +176,7 @@ describe("About card", () => {
     const toggle = await card.findByRole("switch", { name: "自动检查更新" });
     expect(toggle).toHaveAttribute("aria-checked", "true");
     await user.click(toggle);
-    await user.click(screen.getByRole("button", { name: "保存 1 项" }));
+    await user.click(screen.getByRole("button", { name: "保存" }));
     await waitFor(() => expect(puts()).toHaveLength(1));
     expect(puts()[0]?.body).toEqual({ update_check: "0" });
     await waitFor(() => expect(db.settings.values.update_check).toBe(false));

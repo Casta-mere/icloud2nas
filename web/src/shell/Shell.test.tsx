@@ -40,7 +40,7 @@ test("nav links route between the five pages", async () => {
   await user.click(within(top).getByRole("link", { name: "设置" }));
   expect(within(top).getByRole("link", { name: "设置" })).toHaveAttribute("aria-current", "page");
   expect(within(top).getByRole("link", { name: "总览" })).not.toHaveAttribute("aria-current");
-  expect(await screen.findByText("改动在保存前不会生效")).toBeInTheDocument();
+  expect(await screen.findByRole("button", { name: "发一条测试" })).toBeInTheDocument();
 });
 
 test("under 640px the bottom tabs render and the top nav does not", async () => {
